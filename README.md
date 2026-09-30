@@ -75,9 +75,12 @@ npx wrangler deploy
 npx wrangler deploy --dry-run --outdir=dist
 ```
 
-`dist/` 里会得到一个 `index.js`。在 Cloudflare 控制台的 Workers 编辑器里新建一个
-Worker，把内容整个替换成它；再在面板上**创建一个 KV 命名空间**并绑定为 `CHECKIN_KV`，
-配好 cron（`*/30 * * * *`），并在「设置 → 变量和机密」里设 Secret `PASSWORD`。
+结尾那行 `--dry-run: exiting now.` 是「到此为止、不真的部署」的正常提示，**不是报错**。
+`dist/` 里会出来 3 个文件，**只需要其中的 `index.js`**，另外两个（`.map` 与
+`README.md`）不用管。在 Cloudflare 控制台的 Workers 编辑器里新建一个 Worker，
+把 `index.js` 的内容整个粘贴进去；再在面板上**创建一个 KV 命名空间**并绑定为
+`CHECKIN_KV`，配好 cron（`*/30 * * * *`），并在「设置 → 变量和机密」里设
+Secret `PASSWORD`。
 
 </details>
 
