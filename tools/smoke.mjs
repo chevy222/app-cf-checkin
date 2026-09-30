@@ -2362,7 +2362,7 @@ test("[workbuddy] 到站礼物没领到就不派新行程", async () => {
   } finally { stub.restore(); }
 });
 
-test("[workbuddy] target:0 的「0/0」任务不许每天白发一次 accept", async () => {
+test("[workbuddy] target:0 的「0/0」任务照样能领：不许把 target 用 || 1 兜底", async () => {
   const kv = fakeKv();
   seedWorkbuddy(kv);
   const stub = stubUpstream(wbIdleRoutes({

@@ -210,8 +210,10 @@ export default {
           const progress = task.progress || {};
           const target = api.num(progress.target);
           const current = api.num(progress.current) || 0;
-          // 给了 0 就是 0：不要写 `progress.target || 1`，那会让 "0/0" 的任务
-          // 永远被当成已完成，每天白发一次 accept
+          // 给了 0 就是 0：不要写 `progress.target || 1`，那会把 target=0 兜成 1，
+          // "0/0" 永远满足不了 1 <= current，奖励就领不到了。
+          // target 缺失时按 1 处理：JS 里 null <= 0 恒真，会把没有进度字段的任务
+          // 误判成已完成，每天白白发一次 accept
           return (target === null ? 1 : target) <= current && task.accept_status !== "claimed" && task.has_reward;
         });
         if (eligible.length === 0) return { status: "ok", message: "没有待领的任务奖励", credits: 0, cred: ctx.rotated };
