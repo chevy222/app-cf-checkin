@@ -1980,6 +1980,9 @@ test("[schedule] resetHour 填错的后果：日界决定「今天已领」的�
   // Qoder 的 notBeforeHour 必须不早于 resetHour，否则 10 点前会白打并烧掉 pending 机会
   assert.ok(findTool("qoder").schedule.notBeforeHour >= findTool("qoder").schedule.resetHour,
     "Qoder 的 notBeforeHour 不该早于 resetHour");
+  assert.equal(findTool("qoder").schedule.notBeforeHour, 10, "Qoder 10 点之前打只是白烧子请求");
+  assert.equal(findTool("trae").schedule.notBeforeHour, 0, "Trae 零点第一轮就跑");
+  assert.equal(findTool("workbuddy").schedule.notBeforeHour, 0, "WorkBuddy 零点第一轮就跑");
 });
 
 // ═══════════ Trae ═══════════

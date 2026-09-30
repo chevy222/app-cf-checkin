@@ -79,7 +79,7 @@ export default {
 
   schedule: {
     resetHour: 0,          // 上游按北京零点判"今天签没签"
-    notBeforeHour: 8,      // 北京时间 08:00 之后
+    notBeforeHour: 0,      // 零点第一轮就跑，越早领越好
     minIntervalSec: 1800,
     maxDaily: 20,
     // 跨轮退避（分钟）：内核把它写在 retryAt 上，不在进程内睡眠
