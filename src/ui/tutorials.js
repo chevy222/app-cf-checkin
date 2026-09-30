@@ -253,7 +253,7 @@ if (-not $rt) { Write-Host "（回调里没有 refreshToken —— 请确认整�
 
 $at = $r.data.accessToken
 $rt = $r.data.refreshToken
-# 解 JWT 载荷拿 uid（平台也会自己解一遍，这里只是让你能对得上是哪���号）
+# 解 JWT 载荷拿 uid（平台也会自己解一遍，这里只是让你能对上是哪个号）
 $p = $at.Split('.')[1].Replace('-','+').Replace('_','/')
 $p = $p.PadRight($p.Length + (4 - $p.Length % 4) % 4, '=')
 $j = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p)) | ConvertFrom-Json

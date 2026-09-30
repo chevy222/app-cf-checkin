@@ -93,10 +93,13 @@ npm run dev
 
 ## 凭据怎么取
 
-三个工具的凭据都在**本机客户端上**取值，平台不参与 —— 这一点是安全设计的核心。
+三个工具的凭据都在**本机的客户端上**取值，平台不参与 —— 这一点是安全设计的核心，
+也意味着**全程不需要 F12 抓包**。
 
-**界面里就有完整教程**：点「新增账号」或「工具配置」，左侧会显示分步的 PowerShell 脚本，
-整段复制到 PowerShell 回车即可，**不需要 F12 抓包**。下面只列字段对照，脚本在界面里。
+下面每一段脚本都整段复制到 **PowerShell** 回车即可（Windows）。
+**界面上也有同一份教程**（「新增账号」与「工具配置」页左侧），脚本抄自那里，两边一致。
+
+**令牌到期时间一律不用填** —— 平台从令牌自己解出来。
 
 | 工具 | 令牌从哪来 | 设备标识从哪来 |
 |---|---|---|
@@ -104,24 +107,253 @@ npm run dev
 | Trae | 登录后浏览器跳到的那条 `127.0.0.1` 地址（页面打不开是**正常的**），脚本从里面解析 | 客户端 `storage.json` 里的 8–16 位数字 |
 | WorkBuddy | 官方短信登录接口换明文 Token | 无（uid 平台自己解） |
 
-**令牌到期时间一律不用填** —— 平台从令牌自己解出来。
-
 ### Qoder
 
-工具配置里那 8 个 `COSY_*` 值由教程第 2 步一并打印。
-**`COSY_CLIENT_TYPE` 必须是 10**，缺了活动列表会直接返回空。
+Qoder 服务端要求请求带一整套设备头才下发每日活动，**缺了它们（尤其是
+`Cosy-ClientType: 10`）活动列表会直接返回空**。云端跑不了 Windows exe，
+所以要在装过 Qoder 客户端的机器上取一次。
+
+**第 1 步**：设安装目录，就是包含 `Qoder CN.exe` 的那个文件夹：
+
+```powershell
+$qoderRoot = "D:\Program\Qoder CN"
+```
+
+**第 2 步**：整段复制回车。它会跑客户端自带的 `runtime-info.exe` 取设备标识，
+并用 DPAPI 解密登录凭据：
+
+```powershell
+& {
+if (-not $qoderRoot) { throw "请先执行 `$qoderRoot = `"你的Qoder安装目录`" 设置路径" }
+
+# DPAPI 解密辅助（用于解 Token）
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class Dpapi {
+    [StructLayout(LayoutKind.Sequential)] struct BLOB { public int cb; public IntPtr pb; }
+    [DllImport("crypt32.dll", SetLastError=true)] static extern bool CryptUnprotectData(ref BLOB i, IntPtr d, IntPtr e, IntPtr r, IntPtr p, int f, ref BLOB o);
+    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr m);
+    public static byte[] Unprotect(byte[] data) {
+        var bi = new BLOB { cb = data.Length, pb = Marshal.AllocHGlobal(data.Length) };
+        Marshal.Copy(data, 0, bi.pb, data.Length);
+        var bo = new BLOB();
+        if (!CryptUnprotectData(ref bi, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 1, ref bo)) {
+            Marshal.FreeHGlobal(bi.pb); throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        }
+        Marshal.FreeHGlobal(bi.pb);
+        var r = new byte[bo.cb]; Marshal.Copy(bo.pb, r, 0, bo.cb); LocalFree(bo.pb); return r;
+    }
+}
+"@
+
+$dataDir = Join-Path $env:APPDATA "com.qodercn.app.stable"
+
+# 1. runtime-info.exe（设备标识）
+$umidExe = Join-Path $qoderRoot "resources\umid\runtime-info.exe"
+if (-not (Test-Path $umidExe)) { throw "找不到 $umidExe，请检查 `$qoderRoot 是否正确" }
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = $umidExe; $psi.Arguments = "--account-stdin"
+$psi.UseShellExecute = $false; $psi.RedirectStandardInput = $true
+$psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true; $psi.CreateNoWindow = $true
+$p = [System.Diagnostics.Process]::Start($psi)
+$p.StandardInput.Close() | Out-Null
+$out = $p.StandardOutput.ReadToEnd()
+$p.WaitForExit(40000) | Out-Null
+$ri = ($out -split "\`r?\`n" | Where-Object { $_.Trim() } | Select-Object -Last 1) | ConvertFrom-Json
+
+# 2. 版本号
+$cosyVersion = ""
+$mf = Join-Path $qoderRoot "resources\build-manifest.json"
+if (Test-Path $mf) { try { $cosyVersion = [string]((Get-Content $mf -Raw | ConvertFrom-Json).productVersion) } catch {} }
+
+# 3. machine-id
+$cosyMachineId = ""
+$midFile = Join-Path $dataDir "auth.machine-id"
+if (Test-Path $midFile) { $cosyMachineId = (Get-Content $midFile -Raw).Trim() }
+
+# 4. 架构
+$arch = if ($env:PROCESSOR_ARCHITECTURE -match "ARM|arm64|aarch64") { "aarch64" } else { "x86_64" }
+
+# 5. Token 解密（DPAPI + AES-256-GCM）
+$sess = $null
+$tokenNote = ""
+$authFile = Join-Path $dataDir "auth.v1.dat"
+$stateFile = Join-Path $dataDir "Local State"
+if ((Test-Path $authFile) -and (Test-Path $stateFile)) {
+    try {
+        $raw = [IO.File]::ReadAllBytes($authFile)
+        if ($raw.Length -ge 60 -and [Text.Encoding]::ASCII.GetString($raw, 0, 3) -eq "v10") {
+            $st = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            $ek = [Convert]::FromBase64String($st.os_crypt.encrypted_key)
+            $key = [Dpapi]::Unprotect($ek[5..($ek.Length - 1)])
+            $nonce = $raw[3..14]; $ct = $raw[15..($raw.Length - 17)]; $tag = $raw[($raw.Length - 16)..($raw.Length - 1)]
+            $pt = New-Object byte[] $ct.Length
+            $gcm = [System.Security.Cryptography.AesGcm]::new($key)
+            $gcm.Decrypt($nonce, $ct, $tag, $pt)
+            $sess = [Text.Encoding]::UTF8.GetString($pt) | ConvertFrom-Json
+        }
+    } catch { $tokenNote = "Token 解密出错：$($_.Exception.Message)" }
+} else {
+    $tokenNote = "找不到 $dataDir\auth.v1.dat 或 Local State，Qoder 桌面端登录过吗？"
+}
+
+# === 输出设备标识 ===
+Write-Host ""
+Write-Host "====== 设备标识（填到「工具配置」）======" -ForegroundColor Green
+Write-Host "COSY_CLIENT_TYPE      = 10"
+Write-Host "COSY_MACHINE_OS       = ${arch}_windows"
+Write-Host "COSY_MACHINE_HOSTNAME = $env:COMPUTERNAME"
+if ($cosyVersion)     { Write-Host "COSY_VERSION          = $cosyVersion" }
+if ($cosyMachineId)   { Write-Host "COSY_MACHINE_ID       = $cosyMachineId" }
+if ($ri.machineToken) { Write-Host "COSY_MACHINE_TOKEN    = $($ri.machineToken)" }
+if ($ri.machineCode)  { Write-Host "COSY_MACHINE_CODE     = $($ri.machineCode)" }
+if ($ri.machineType)  { Write-Host "COSY_MACHINE_TYPE     = $($ri.machineType)" }
+Write-Host "=============================================" -ForegroundColor Green
+
+# === 输出 Token ===
+if ($sess -and $sess.token) {
+    Write-Host ""
+    Write-Host "====== 登录凭据（填到「新增账号」）======" -ForegroundColor Cyan
+    Write-Host "已读取：com.qodercn.app.stable（有效期至 $($sess.expiresAt)）"
+    Write-Host "TOKEN:$($sess.token)"
+    Write-Host "REFRESH:$($sess.refreshToken)"
+    Write-Host "=========================================" -ForegroundColor Cyan
+} else {
+    Write-Host ""
+    Write-Host "（Token 未提取到——$tokenNote）" -ForegroundColor Yellow
+    Write-Host "设备标识已正常输出，不影响签到配置。" -ForegroundColor Yellow
+}
+}
+```
+
+**第 3 步**：两段输出分别填到对应位置 ——
+
+- **设备标识**（8 个 `COSY_*`）填到「工具配置」页
+- **`TOKEN:` / `REFRESH:`** 两行填到「新增账号」的表单里
+
+⚠️ **设备标识的有效期是本方案唯一的不确定性**。如果它是长期有效的，配一次即可；
+如果会过期，活动列表会突然变空，届时重跑第 2 步更新「工具配置」即可。
 
 ### Trae
 
+**第 1 步 · 取出 Aha 设备号**（8–16 位数字）。三个候选路径对应 SOLO 国内版 /
+Trae 国内版 / Trae 国际版，哪个存在就打印哪一行：
+
+```powershell
+$paths = @(
+  "$env:APPDATA\TRAE SOLO CN\User\globalStorage\storage.json",
+  "$env:APPDATA\Trae CN\User\globalStorage\storage.json",
+  "$env:APPDATA\Trae\User\globalStorage\storage.json"
+)
+foreach ($p in $paths) {
+  if (Test-Path $p) {
+    Select-String -Path $p -Pattern 'iCubeAuthInfo://icube-dc:(\d{8,16})' -AllMatches |
+      ForEach-Object { $_.Matches } |
+      ForEach-Object { "找到设备号: " + $_.Groups[1].Value }
+  }
+}
+```
+
+**第 2 步 · 打开登录链接**。复制这行到 PowerShell 回车，会用默认浏览器打开 Trae 登录页：
+
+```powershell
+Start-Process "https://api.trae.cn/ide/v1/auth/authorize?login_version=1&auth_from=solo&login_channel=native_ide&plugin_version=0.1.43&auth_type=local&client_id=en1oxy7wnw8j9n&redirect=0&auth_callback_url=http://127.0.0.1:18080/authorize&machine_id=&device_id=&x_device_brand=PC&x_device_type=PC&x_os_version=1.0&x_app_version=0.1.43&x_app_type=stable"
+```
+
+> 链接**现取现用**，每次都会生成新的。
+
+**第 3 步 · 登录，然后复制那条打不开的地址**。用手机号 + 验证码登录**与第 1 步
+设备号同一个账号**。登录成功后浏览器会跳到 `http://127.0.0.1:18080/authorize?...`
+开头的页面，显示「无法访问此网站」—— **这是正常的**，本机没有服务在监听。
+
+在地址栏 `Ctrl+A` → `Ctrl+C`（macOS `Cmd+A` → `Cmd+C`），把这一整条完整 URL 复制下来。
+它很长，带 `refreshToken=...` 等参数；在浏览器里复制不会被截断。
+
+**第 4 步 · 解析出令牌**。把下面第一行的引号内换成你刚复制的那条完整 URL，整段回车：
+
+```powershell
+$cb = "粘贴你复制的整条 127.0.0.1 开头的 URL"
+
+# 与服务端同一套解析：只做一次 %XX 解码，不做 '+' → 空格转换
+# （searchParams.get 会把字面量 '+' 解成空格，令牌里含 '+' 会被悄悄破坏）
+$u = [Uri]$cb.Trim()
+# 查询串与 # 后的片段都试（有的浏览器把参数放 hash 里），.Query / .Fragment 自带 ? 与 # 前缀
+$raw = ($u.Query.TrimStart('?') + $u.Fragment.TrimStart('#'))
+function Q($n) {
+  # 这里必须用双引号：$n 要插值。(?:^|&) 里的 $ 后面跟的是 ^ ，不会被当成 $& 转义
+  $m = [regex]::Match($raw, "(?:^|&)$n=([^&]*)")
+  if (-not $m.Success) { return "" }
+  try { return [Uri]::UnescapeDataString($m.Groups[1].Value) } catch { return $m.Groups[1].Value }
+}
+function J($v) {
+  if (-not $v) { return $null }
+  foreach ($t in @($v, [Uri]::UnescapeDataString($v))) {
+    try { $o = $t | ConvertFrom-Json; if ($o) { return $o } } catch {}
+  }
+  return $null
+}
+
+$info = J (Q "userInfo")
+$jwt  = J (Q "userJwt")
+$rt   = Q "refreshToken"
+if (-not $rt -and $jwt) { $rt = $jwt.RefreshToken }
+
+Write-Host ""
+Write-Host "====== 填到「新增账号」======" -ForegroundColor Cyan
+Write-Host "Access Token : $($jwt.Token)"
+Write-Host "Refresh Token: $rt"
+Write-Host "Aha 设备号   : 填第 1 步拿到的那个"
+Write-Host "=================================" -ForegroundColor Cyan
+if (-not $rt) { Write-Host "（回调里没有 refreshToken —— 请确认整条 URL 都复制了）" -ForegroundColor Yellow }
+```
+
+**第 5 步**：把 `Access Token` 与 `Refresh Token` 填到「新增账号」，设备号填第 1 步那个。
 工具级配置里的 `clientId` 与 `appVersion` **必填**（从客户端里抄）。
 
-⚠️ **设备号不能编**。签到风控按它判定，随手填一个能过格式校验的值，
-之后每天会稳定返回「服务器繁忙」—— 看着像限频，其实是设备号错了。
+⚠️ **设备号必须是真实的。** 签到风控按它判定，随手编一个（哪怕 8–16 位格式看着对）
+会每天稳定返回「服务器繁忙」—— 看着像限频，其实是设备号错了。
 
 ### WorkBuddy
 
-换票走线下脚本，**界面不发短信验证码**（这是有意的决定）。
-新版桌面端可能给的是一段包装格式，原样粘进表单就行，平台会自动展开。
+新版桌面端把凭据文件加密了（复制不出来），所以改用官方短信登录接口换明文 Token ——
+值在本机拿，不经过 Cloudflare。**界面不发短信验证码**（这是有意的决定）。
+
+**第 1 步 · 发验证码**。把 `13800000000` 换成你的手机号，返回 `code: 0` 即发送成功：
+
+```powershell
+Invoke-RestMethod -Uri "https://www.workbuddy.cn/v2/plugin/login/send-sms" `
+  -Method Post -ContentType "application/json" -Body '{"phone":"13800000000"}'
+```
+
+**第 2 步 · 用验证码换 Token**。把手机号和 `123456` 换成实际收到的验证码
+（有效期约 5 分钟）：
+
+```powershell
+$r = Invoke-RestMethod -Uri "https://www.workbuddy.cn/v2/plugin/login/token" `
+  -Method Post -ContentType "application/json" `
+  -Body '{"login_method":"phone","phone":"13800000000","sms_code":"123456"}'
+
+$at = $r.data.accessToken
+$rt = $r.data.refreshToken
+# 解 JWT 载荷拿 uid（平台也会自己解一遍，这里只是让你能对上是哪个号）
+$p = $at.Split('.')[1].Replace('-','+').Replace('_','/')
+$p = $p.PadRight($p.Length + (4 - $p.Length % 4) % 4, '=')
+$j = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p)) | ConvertFrom-Json
+
+Write-Host ""
+Write-Host "====== 填到「新增账号」======" -ForegroundColor Cyan
+Write-Host "Access Token : $at"
+Write-Host "Refresh Token: $rt"
+Write-Host "uid 校验      : $($j.sub)"
+Write-Host "=================================" -ForegroundColor Cyan
+```
+
+**第 3 步**：两个令牌填进表单。**`uid` 不用填** —— 平台会从令牌的 `sub` 自己解出来
+（上面那行 `uid 校验` 就是让你能对上是哪个号）。多账号时每个号都要走一遍这两步。
+
+新版桌面端可能给的是一段包装格式（`{"$wbEncrypted":1,…}`），**原样粘进表单就行**，
+平台会自动展开。
 
 ⚠️ **开盲盒每调一次服务端就扣 10 点能量**，所以平台每轮会自动限制次数。
 如果你看到「已开 N 个」比预期多，说明取到的可用次数变了，值得看一眼。
