@@ -63,7 +63,16 @@ export default {
       pattern: "^[^\\s]+$",
       patternMessage: "令牌里不能有空格（粘贴时别带上换行或 + 号被吃掉的痕迹）",
       offline: "tools/extract/qoder-device.ps1",
-      help: "账号标识（uid）就从这张 JWT 的 sub 里解出来，不用另外填",
+      help: "是 eyJ 开头的长串（JWT）时，账号标识从它的 sub 自己解；是 dt-- 开头的短串（新版客户端的设备令牌）时，要靠下面的「账号标识」栏",
+    },
+    {
+      key: "uid",
+      label: "账号标识",
+      type: "text",
+      required: false,
+      pattern: "^[A-Za-z0-9._-]{1,64}$",
+      patternMessage: "只允许字母、数字、点、下划线、横线，最长 64",
+      help: "仅当 Access Token 不是 JWT 时才需要填：给它起个固定代号（如 main）。它是账号的键名，建号后不要再改 —— 改了等于另起一个账号",
     },
     {
       key: "refreshToken",
@@ -79,7 +88,7 @@ export default {
     { key: "expiresAt", label: "令牌到期时间", type: "datetime", readonly: true },
   ],
 
-  // uid 从凭据里算，不让人抄第二遍（抄错就是另一个键名）
+  // uid 从凭据里算（JWT 的 sub），新客户端的设备令牌解不出时退到手填代号
   uidOf: (ctx) => api.uidFromToken(ctx.values),
 
   schedule: {

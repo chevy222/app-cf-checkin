@@ -1793,10 +1793,34 @@ test("[qoder] 解不出 sub 就拒存，且绝不退化成用 refresh_token 派�
     body: form({ pwd: PASSWORD, label: "坏票据", accessToken: "not-a-jwt", refreshToken: "rt-y" }),
   });
   assert.equal(res.status, 400);
-  assert.match(res.text, /sub/);
+  assert.match(res.text, /账号标识/);
   assert.deepEqual([...kv.store.keys()].filter((k) => k.startsWith("v1:acct:")), [], "存了账号就等于允许多个键指向同一个人");
-  // 旧实现用 hashUid(refresh_token) 兜底，而 refresh_token 会轮换 —— 续一次期就换一个 uid，
+  // 新版客户端把 access token 换成了设备令牌（不透明串），解不出 sub 时要求手填代号；
+  // 但绝不退化成用 refresh_token 派生 —— 旧实现这么干，refresh_token 一轮换个 uid，
   // 旧记录（连同调度状态与日志）在 KV 里成孤儿
+});
+
+test("[qoder] 设备令牌形态：手填的固定代号当账号标识，JWT 形态照旧解 sub", async () => {
+  const kv = fakeKv();
+  kv.store.set("v1:tool:qoder", JSON.stringify({ clientType: "10", machineToken: "MT", machineCode: "MC", machineId: "MI" }));
+  // 设备令牌（dt-- 开头的不透明串）+ 手填代号 → 建号，键名就是代号
+  const res = await hit("/account/qoder/new", {
+    method: "POST", env: envFor(kv),
+    body: form({ pwd: PASSWORD, label: "主号", accessToken: "dt--CLUPwA4x8FGSGpkCm2zp0hKA", uid: "main", refreshToken: "rt-y" }),
+  });
+  assert.equal(res.status, 303);
+  const stored = JSON.parse(kv.store.get("v1:acct:qoder:main"));
+  assert.equal(stored.cred.accessToken, "dt--CLUPwA4x8FGSGpkCm2zp0hKA");
+  assert.equal(stored.cred.uid, "main", "代号要随凭据存下来，编辑重算时才拿得到");
+  // JWT 形态（旧客户端）不受影响：sub 优先，手填栏留空也放行
+  const kv2 = fakeKv();
+  kv2.store.set("v1:tool:qoder", JSON.stringify({ clientType: "10", machineToken: "MT", machineCode: "MC", machineId: "MI" }));
+  const res2 = await hit("/account/qoder/new", {
+    method: "POST", env: envFor(kv2),
+    body: form({ pwd: PASSWORD, label: "旧形态", accessToken: mkJwt({ sub: "qdr-77009", exp: cst(30) }), refreshToken: "rt-z" }),
+  });
+  assert.equal(res2.status, 303);
+  assert.ok(kv2.store.has("v1:acct:qoder:qdr-77009"), "JWT 的 sub 仍然优先，不需要手填");
 });
 
 test("[qoder] 把另一个号的票据粘进已有账号会被拒", async () => {

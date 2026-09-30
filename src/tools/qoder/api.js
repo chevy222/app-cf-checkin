@@ -140,13 +140,17 @@ export async function claimOne(ctx, campaign) {
 
 export const qoderHosts = [HOST];
 
-// 账号标识 = access token 里的 sub。绝不退化到用 refresh_token 派生：
-// refresh_token 会轮换，用它算 uid 等于每续一次期就换一个账号键名，
-// 旧记录（连同它的调度状态与日志）留在 KV 里成孤儿。
+// 账号标识按优先级两种来源：
+//   JWT（旧版客户端）→ sub，上游认的真号，永远优先；
+//   设备令牌（新版客户端，dt-- 开头的不透明串）→ 解不出 sub，退到用户手填的固定代号。
+// 绝不从 refresh_token 或任何会轮换的串派生：串一换 uid 就换，旧账号记录原地孤立。
+// 手填代号不随任何串变，是设备令牌形态下唯一稳定的锚点。
 export function uidFromToken(values) {
   const uid = subjectOf(values.accessToken);
-  if (!uid) {
-    throw new Error("这张 access token 里解不出账号标识（sub 字段）。要么它不是 JWT，要么已经损坏，请重新取值粘贴");
+  if (uid) return uid;
+  const fallback = String(values.uid || "").trim();
+  if (!fallback) {
+    throw new Error("这张 access token 不是 JWT（新版客户端的设备令牌），解不出账号标识 —— 请在「账号标识」栏给它起个固定代号（如 main），建号后不要再改");
   }
-  return uid;
+  return fallback;
 }
