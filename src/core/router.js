@@ -101,11 +101,12 @@ async function accountNewPage(ctx, tool) {
 }
 
 // 账号标识从哪来，两种来源都要过同一道 sanitizeUid：
-//   uidField —— 用户填的某个字段就是标识（demo 夹具的席位号）
+//   uidField —— 用户填的某个字段就是标识（员工编号、许可证 key 这类明面标识）
 //   uidOf    —— 标识藏在凭据里（三家的真实形态：qoder 是 JWT 的 sub，
 //                trae 得打一次 GetUserInfo）。让人再抄一遍 sub 只会抄出错别字，
 //                而抄错的 sub 会另起一个 acct 键 —— 旧 qoder 用会轮换的 refresh_token
 //                兜底算 uid，续一次期就把自己的账号记录孤立掉了。
+// 两者的差别只在"从哪来"，往后（存键、调度、进度、锁）完全共用同一条路。
 // uidOf 可以只返回 uid，也可以返回 {uid, cred}：后者允许它把解出来的派生字段
 // （比如令牌的到期时间）一并存进去。不这么做的话新账号没有 expiresAt，
 // 第一次运行就得白换一次票。

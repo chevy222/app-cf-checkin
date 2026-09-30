@@ -18,6 +18,63 @@ import { dayOf } from "../src/core/scheduler.js";
 const PASSWORD = "correct-horse-battery";
 const SECRET_VALUE = "eyJhbGciOiJIUzI1NiJ9.SUPERSECRETVALUE.doNotLeak";
 
+// ── 夹具工具 ──
+//
+// 它**不在注册表里**，只在需要它的测试里临时注入（withFixtureTool）。
+// 为什么这样而不是像从前那样放一个 FIX 进注册表：
+//   · 注册表是生产事实。放进去的工具会占导航一格、被 cron 每 30 分钟调度一次、
+//     往 /runs 写假记录 —— 演示夹具不该产生这些副作用。
+//   · 但内核有几条分支只有它能走到：三家全是 uidOf，而 uidField（标识就是用户
+//     填的某个字段）没有真实工具在用；creds 里的 select / config 里的 select 同理。
+//     把这些分支删掉等于让「加第 N 个工具」少掉契约的一半。
+// 所以：夹具不注册，但必须真跑。
+const FIXTURE = {
+  id: "fix",
+  name: "夹具",
+  order: 900,
+  summary: "架构验证夹具 · 不联网、不领取任何东西",
+  config: [
+    { key: "portal", label: "接入点", type: "select", required: true, default: "cn", options: [{ value: "cn", label: "国内站" }, { value: "sg", label: "新加坡" }] },
+    { key: "timeoutSec", label: "请求超时（秒）", type: "text", default: "15", pattern: "^[1-9][0-9]?$", patternMessage: "超时须为 1–99 的整数" },
+  ],
+  creds: [
+    { key: "session", label: "会话票据", type: "textarea", required: true, secret: true },
+    { key: "plan", label: "套餐", type: "select", required: true, options: ["free", "pro", "team"] },
+    { key: "seatId", label: "席位号", type: "text", required: true, pattern: "^[0-9A-Z]{4,16}$", patternMessage: "席位号须为 4–16 位大写字母或数字" },
+    { key: "code", label: "短验证码", type: "text", secret: true },
+  ],
+  schedule: { resetHour: 0, notBeforeHour: 8, minIntervalSec: 1800, maxDaily: 10, backoff: [5, 15] },
+  hosts: [],
+  steps: [
+    { id: "claim", label: "领取额度", cost: 4, async run() { return { status: "claimed", message: "领取试用额度 +50", credits: 50 }; } },
+    // cost 20 刻意大于「跑完一个账号后的剩余额度」，这样第二轮能观察到断点续跑。
+    // 别调回 30：内核允许一步开跑前要连收尾写入的余量一起算（runner 的 TAIL_RESERVE），
+    // 30 在默认 45 的轮次里连单账号都做不完，这个夹具就观察不到"两步都做成"了。
+    { id: "survey", label: "顺手做份问卷", cost: 20, dependsOn: ["claim"], async run() { return { status: "claimed", message: "问卷已提交 +20", credits: 20 }; } },
+  ],
+  uidField: "seatId",
+  async validate() { return { status: "ok", message: "会话票据格式有效（夹具不联网，不做真实校验）" }; },
+};
+
+// 临时把它塞进注册表，跑完再摘掉。TOOLS 是可变数组、findTool 每次现场查它，
+// 所以注入对路由层立即生效 —— 这正是"路由从 URL 反查工具"这条链路的可测性来源。
+async function withFixtureTool(fn) {
+  TOOLS.push(FIXTURE);
+  try { return await fn(); } finally {
+    const at = TOOLS.indexOf(FIXTURE);
+    if (at >= 0) TOOLS.splice(at, 1);
+  }
+}
+
+// 需要走 HTTP 路由的测试用它包一层：路由从 URL 里的 tool id 反查注册表，
+// 夹具不在注册表就会 404。
+//
+// 注入必须发生在**测试体内部**，不能在调用 test() 的那一刻就注入：
+// 模块求值时几十条 fixtureTest 会依次执行，若那时就 push，注册表里会堆着
+// 几十份夹具，首页于是渲染几十张重复卡片（实测 71 次子请求，超出 50 硬顶）。
+// 包在 async 测试体里，push 与 pop 严格包住这一条测试的执行期。
+const fixtureTest = (name, fn) => test(name, () => withFixtureTool(fn));
+
 // Node 的 Request 不会自动推导 content-length，但 Cloudflare 运行时一定会带。
 // 网关现在依赖这个头，所以测试必须显式给出，否则测的不是平台真实形态。
 function fakeKv({ pageSize = 1000, hardCap = Infinity } = {}) {
@@ -93,7 +150,7 @@ const form = (fields) => new URLSearchParams(fields).toString();
 const authed = (path, env) => hit(`${path}${path.includes("?") ? "&" : "?"}pwd=${PASSWORD}`, { env });
 
 async function createAccount(env, kv, seatId = "ABCD1234", label = "甲") {
-  return hit("/account/demo/new", {
+  return hit("/account/fix/new", {
     method: "POST", env,
     body: form({ pwd: PASSWORD, label, session: SECRET_VALUE, plan: "pro", seatId }),
   });
@@ -106,7 +163,7 @@ const NEW_BODY = { pwd: PASSWORD, label: "甲", session: SECRET_VALUE, plan: "pr
 test("未带口令 → 401，且不泄露任何工具名", async () => {
   const res = await hit("/", { env: envFor(fakeKv()) });
   assert.equal(res.status, 401);
-  assert.ok(!res.text.includes("示例 IDE"));
+  assert.ok(!res.text.includes("夹具"));
 });
 
 test("错口令 → 401，与未带口令不可区分", async () => {
@@ -140,13 +197,13 @@ test("缺 KV 绑定要大声失败", async () => {
   assert.ok(res.text.includes("CHECKIN_KV"));
 });
 
-test("总览渲染注册表里的工具", async () => {
+fixtureTest("总览渲染注册表里的工具", async () => {
   const res = await authed("/", envFor(fakeKv()));
-  assert.ok(res.text.includes("示例 IDE"));
+  assert.ok(res.text.includes("夹具"));
 });
 
-test("表单由字段 schema 自动生成：select 与 textarea 都在", async () => {
-  const res = await authed("/account/new?tool=demo", envFor(fakeKv()));
+fixtureTest("表单由字段 schema 自动生成：select 与 textarea 都在", async () => {
+  const res = await authed("/account/new?tool=fix", envFor(fakeKv()));
   assert.match(res.text, /<select[^>]*name="plan"/);
   assert.match(res.text, /<textarea[^>]*name="session"/);
 });
@@ -157,16 +214,16 @@ test("注册表外的 tool id 一律 404，且不写任何 KV 键", async () => 
   assert.equal(kv.store.size, 0);
 });
 
-test("格式不合规定的字段被拦下，不落 KV", async () => {
+fixtureTest("格式不合规定的字段被拦下，不落 KV", async () => {
   const kv = fakeKv();
   const res = await createAccount(envFor(kv), kv, "bad id!");
   assert.equal(res.status, 400);
   assert.equal(kv.store.size, 0);
 });
 
-test("select 的取值受白名单约束", async () => {
+fixtureTest("select 的取值受白名单约束", async () => {
   const kv = fakeKv();
-  const res = await hit("/account/demo/new", {
+  const res = await hit("/account/fix/new", {
     method: "POST", env: envFor(kv),
     body: form({ ...NEW_BODY, plan: "attacker" }),
   });
@@ -174,22 +231,22 @@ test("select 的取值受白名单约束", async () => {
   assert.equal(kv.store.size, 0);
 });
 
-test("表单里塞 schema 之外的字段会被丢弃", async () => {
+fixtureTest("表单里塞 schema 之外的字段会被丢弃", async () => {
   const kv = fakeKv();
-  await hit("/account/demo/new", { method: "POST", env: envFor(kv), body: form({ ...NEW_BODY, injected: "yes" }) });
-  const record = JSON.parse(kv.store.get("v1:acct:demo:ABCD1234"));
+  await hit("/account/fix/new", { method: "POST", env: envFor(kv), body: form({ ...NEW_BODY, injected: "yes" }) });
+  const record = JSON.parse(kv.store.get("v1:acct:fix:ABCD1234"));
   assert.equal(record.cred.injected, undefined);
   assert.equal(Object.keys(record.cred).sort().join(","), "plan,seatId,session");
   assert.equal(record.label, "甲");
 });
 
-test("建账号：303 重定向 + 键名精确 + 跟随跳转能看到", async () => {
+fixtureTest("建账号：303 重定向 + 键名精确 + 跟随跳转能看到", async () => {
   const kv = fakeKv(); const env = envFor(kv);
   const created = await createAccount(env, kv);
   assert.equal(created.status, 303);
   const location = created.headers.get("location");
-  assert.ok(location.includes("/tool/demo") && location.includes("done=saved"));
-  assert.ok(kv.store.has("v1:acct:demo:ABCD1234"));
+  assert.ok(location.includes("/tool/fix") && location.includes("done=saved"));
+  assert.ok(kv.store.has("v1:acct:fix:ABCD1234"));
   const page = await hit(location, { env });
   assert.ok(page.text.includes("ABCD1234") && page.text.includes("已保存"));
 });
@@ -197,62 +254,62 @@ test("建账号：303 重定向 + 键名精确 + 跟随跳转能看到", async (
 test("敏感值在任何页面上都不回显", async () => {
   const kv = fakeKv(); const env = envFor(kv);
   await createAccount(env, kv);
-  for (const path of ["/", "/tool/demo", "/account/demo/ABCD1234/edit", "/api/state", "/help"]) {
+  for (const path of ["/", "/tool/fix", "/account/fix/ABCD1234/edit", "/api/state", "/help"]) {
     const res = await authed(path, env);
     assert.ok(!res.text.includes("SUPERSECRETVALUE"), `${path} 泄露敏感值`);
   }
 });
 
-test("编辑时敏感字段留空 = 保持原值", async () => {
+fixtureTest("编辑时敏感字段留空 = 保持原值", async () => {
   const kv = fakeKv(); const env = envFor(kv);
   await createAccount(env, kv);
-  const updated = await hit("/account/demo/ABCD1234/edit", {
+  const updated = await hit("/account/fix/ABCD1234/edit", {
     method: "POST", env, body: form({ pwd: PASSWORD, label: "改名", session: "", plan: "team", seatId: "ABCD1234" }),
   });
   assert.equal(updated.status, 303);
-  const record = JSON.parse(kv.store.get("v1:acct:demo:ABCD1234"));
+  const record = JSON.parse(kv.store.get("v1:acct:fix:ABCD1234"));
   assert.equal(record.cred.session, SECRET_VALUE);
   assert.equal(record.cred.plan, "team");
 });
 
-test("重复 uid 拒绝覆盖", async () => {
+fixtureTest("重复 uid 拒绝覆盖", async () => {
   const kv = fakeKv(); const env = envFor(kv);
   await createAccount(env, kv);
   assert.equal((await createAccount(env, kv)).status, 409);
 });
 
-test("删除账号", async () => {
+fixtureTest("删除账号", async () => {
   const kv = fakeKv(); const env = envFor(kv);
   await createAccount(env, kv);
-  const del = await hit("/account/demo/ABCD1234/delete", { method: "POST", env, body: form({ pwd: PASSWORD }) });
+  const del = await hit("/account/fix/ABCD1234/delete", { method: "POST", env, body: form({ pwd: PASSWORD }) });
   assert.equal(del.status, 303);
-  assert.equal(kv.store.has("v1:acct:demo:ABCD1234"), false);
+  assert.equal(kv.store.has("v1:acct:fix:ABCD1234"), false);
 });
 
-test("工具配置存 KV、界面可改", async () => {
+fixtureTest("工具配置存 KV、界面可改", async () => {
   const kv = fakeKv(); const env = envFor(kv);
-  assert.ok((await authed("/tool/demo/settings", env)).text.includes("工具配置未完成"));
-  const saved = await hit("/tool/demo/settings", {
+  assert.ok((await authed("/tool/fix/settings", env)).text.includes("工具配置未完成"));
+  const saved = await hit("/tool/fix/settings", {
     method: "POST", env, body: form({ pwd: PASSWORD, portal: "sg", timeoutSec: "20" }),
   });
   assert.equal(saved.status, 303);
-  assert.deepEqual(JSON.parse(kv.store.get("v1:tool:demo")), { portal: "sg", timeoutSec: "20" });
-  assert.ok(!(await authed("/tool/demo/settings", env)).text.includes("工具配置未完成"));
+  assert.deepEqual(JSON.parse(kv.store.get("v1:tool:fix")), { portal: "sg", timeoutSec: "20" });
+  assert.ok(!(await authed("/tool/fix/settings", env)).text.includes("工具配置未完成"));
 });
 
-test("/api/state 输出脱敏后的结构", async () => {
+fixtureTest("/api/state 输出脱敏后的结构", async () => {
   const data = JSON.parse((await authed("/api/state", envFor(fakeKv()))).text);
   assert.equal(data.ok, true);
   // 与注册表对照，不写死名单：加一家工具不该让这条测试变红（也不该让它假绿）
   assert.deepEqual(data.tools.map((t) => t.id).sort(), TOOLS.map((t) => t.id).sort());
-  assert.equal(data.tools.find((t) => t.id === "demo").accounts, 0);
+  assert.equal(data.tools.find((t) => t.id === "fix").accounts, 0);
 });
 
 test("未知路径 404", async () => {
   assert.equal((await authed("/nope", envFor(fakeKv()))).status, 404);
 });
 
-test("scheduled 会真的跑一轮并输出结构化汇总", async () => {
+fixtureTest("scheduled 会真的跑一轮并输出结构化汇总", async () => {
   const kv = fakeKv();
   const env = envFor(kv);
   seedAccount(kv, "SEAT0001");
@@ -274,20 +331,20 @@ test("scheduled 会真的跑一轮并输出结构化汇总", async () => {
 
 // ═══════════ 阶段 2：到期队列 · 预算 · 断点续跑 · 逻辑日界 · 退避 ═══════════
 
-// demo 的 portal 是必填工具级配置，不补齐的话调度会正确地跳过整个工具
+// 夹具工具的 portal 是必填工具级配置，不补齐的话调度会正确地跳过整个工具
 function seedConfig(kv) {
-  if (!kv.store.has("v1:tool:demo")) kv.store.set("v1:tool:demo", JSON.stringify({ portal: "cn", timeoutSec: "15" }));
+  if (!kv.store.has("v1:tool:fix")) kv.store.set("v1:tool:fix", JSON.stringify({ portal: "cn", timeoutSec: "15" }));
 }
 function seedAccount(kv, uid, extra = {}) {
   seedConfig(kv);
-  kv.store.set(`v1:acct:demo:${uid}`, JSON.stringify({
+  kv.store.set(`v1:acct:fix:${uid}`, JSON.stringify({
     label: uid, cred: { seatId: uid, plan: "pro", session: SECRET_VALUE },
     createdAt: 1, updatedAt: 1, ...extra,
   }));
 }
 
 // 调度状态存在每工具的索引键里，不在账号记录里 —— 读状态必须走这里
-const IDX = "v1:schedidx:demo";
+const IDX = "v1:schedidx:fix";
 function seedSched(kv, uid, entry) {
   const idx = kv.store.has(IDX) ? JSON.parse(kv.store.get(IDX)) : { day: null, entries: {} };
   idx.entries[uid] = { ...schedOf(), ...entry };
@@ -297,19 +354,19 @@ function schedEntry(kv, uid) {
   const idx = kv.store.has(IDX) ? JSON.parse(kv.store.get(IDX)) : { entries: {} };
   return schedOf(idx.entries[uid]);
 }
-const acct = (kv, uid) => JSON.parse(kv.store.get(`v1:acct:demo:${uid}`));
+const acct = (kv, uid) => JSON.parse(kv.store.get(`v1:acct:fix:${uid}`));
 const progress = (kv, uid) => {
-  const raw = kv.store.get(`v1:step:demo:${uid}`);
+  const raw = kv.store.get(`v1:step:fix:${uid}`);
   return raw ? JSON.parse(raw) : null;
 };
 // CST 10:00 = UTC 02:00，在 notBeforeHour=8 之后
 const DAY = Date.UTC(2026, 8, 30) / 1000;
 const cst = (hour, minute = 0) => DAY + hour * 3600 + minute * 60 - 8 * 3600;
 
-// 默认只跑 demo 夹具这一家：注册表里有几家工具是运行时的事实，
-// 不该让每条断言都依赖"当前恰好只有两个工具、且谁排第一"。
+// 默认只跑夹具这一家：注册表里有几家工具是运行时的事实，
+// 不该让每条断言都依赖"当前恰好只有几个工具、且谁排第一"。
 // 要验多工具场景的测试自己传 tools: TOOLS。
-function tick(env, { now = cst(10), limit = 45, tools = [findTool("demo")] } = {}) {
+function tick(env, { now = cst(10), limit = 45, tools = [FIX] } = {}) {
   const budget = makeBudget(limit);
   return { budget, run: async () => {
     // 让 KV 的虚拟时钟跟着测试的模拟时间走，否则 90 秒的锁永远不会过期
@@ -320,8 +377,10 @@ function tick(env, { now = cst(10), limit = 45, tools = [findTool("demo")] } = {
 }
 // 按工具 id 取那一摊，不假设 plan 的顺序
 // 夹具工具按 id 取，不按注册表位置取：注册表会随阶段 4 加真工具，位置一变整批测试就集体报错
-const DEMO = findTool("demo");
-const planOf = (summary, toolId = "demo") => summary.plan.find((p) => p.tool === toolId) || { accounts: [], skipped: "缺项" };
+// 夹具的默认实例：只给不经过 HTTP 路由的测试用（它们自己把 tools 数组传给 runTick，
+// 不查注册表）。要走路由的测试必须用 withFixtureTool 把 FIXTURE 注入注册表。
+const FIX = FIXTURE;
+const planOf = (summary, toolId = "fix") => summary.plan.find((p) => p.tool === toolId) || { accounts: [], skipped: "缺项" };
 const firstAccount = (summary) => planOf(summary).accounts[0];
 
 test("未到 notBeforeHour 不排队，过了才跑", async () => {
@@ -351,7 +410,7 @@ test("预算装不下的步骤单独顺延，不影响已完成的部分", async
   assert.equal(result.status, "deferred");
   assert.deepEqual(result.steps.map((s) => s.status), ["claimed", "deferred"]);
   assert.ok(result.steps[1].message.includes("预算不足"), "顺延理由要写清楚");
-  assert.equal(kv.store.has("v1:step:demo:SEATA3"), true, "未完成时进度要落盘");
+  assert.equal(kv.store.has("v1:step:fix:SEATA3"), true, "未完成时进度要落盘");
 });
 
 test("断点续跑：第二轮跳过已完成步骤，只补剩下的", async () => {
@@ -365,7 +424,7 @@ test("断点续跑：第二轮跳过已完成步骤，只补剩下的", async ()
   assert.equal(round2.status, "claimed");
   assert.equal(round2.steps[0].reused, true, "claim 不该重跑");
   assert.equal(round2.steps[1].status, "claimed");
-  assert.equal(kv.store.has("v1:step:demo:SEATA4"), false, "全部完成后进度键应被清掉");
+  assert.equal(kv.store.has("v1:step:fix:SEATA4"), false, "全部完成后进度键应被清掉");
 });
 
 test("进度只在停止点写一次，不是每步都写", async () => {
@@ -407,7 +466,7 @@ test("maxDaily 闸：当日次数用尽就不排", async () => {
 });
 
 test("限频走退避阶梯，且退避期内不排队", async () => {
-  // 关掉 minIntervalSec，单独测退避：demo 的 30 分钟间隔比第 1 档 5 分钟更严，
+  // 关掉 minIntervalSec，单独测退避：FIX 的 30 分钟间隔比第 1 档 5 分钟更严，
   // 两个闸叠在一起就看不出退避本身对不对
   const tools = [rateLimitedTool()];
   const kv = fakeKv(); const env = envFor(kv);
@@ -436,15 +495,15 @@ test("限频走退避阶梯，且退避期内不排队", async () => {
 
 function rateLimitedTool() {
   return {
-    ...DEMO,
-    schedule: { ...DEMO.schedule, minIntervalSec: 0 },
+    ...FIX,
+    schedule: { ...FIX.schedule, minIntervalSec: 0 },
     steps: [{ id: "claim", label: "领取额度", cost: 4, async run() { return { status: "rate_limited", message: "操作过于频繁（9074）" }; } }],
   };
 }
 
 test("登录失效时后续步骤直接跳过，不白打请求", async () => {
   const tools = [{
-    ...DEMO,
+    ...FIX,
     steps: [
       { id: "a", label: "甲", cost: 4, async run() { return { status: "login_required", message: "401" }; } },
       { id: "b", label: "乙", cost: 4, async run() { throw new Error("不该被执行"); } },
@@ -460,7 +519,7 @@ test("登录失效时后续步骤直接跳过，不白打请求", async () => {
 test("已有锁的账号本轮跳过", async () => {
   const kv = fakeKv(); const env = envFor(kv);
   seedAccount(kv, "SEATB2");
-  kv.store.set("v1:lock:demo:SEATB2", String(cst(10)));
+  kv.store.set("v1:lock:fix:SEATB2", String(cst(10)));
   const result = firstAccount(await tick(env, {}).run());
   assert.equal(result.status, "skipped");
   assert.ok(result.message.includes("在途"));
@@ -488,20 +547,20 @@ test("一次调用一本账：预算用量等于真实子请求数", async () =>
 test("配置未完成的工具被整体跳过；补齐后同一年号即可执行", async () => {
   const kv = fakeKv(); const env = envFor(kv);
   seedAccount(kv, "SEATB5");
-  kv.store.delete("v1:tool:demo"); // 必填的 portal 缺失
+  kv.store.delete("v1:tool:fix"); // 必填的 portal 缺失
 
   const blocked = await tick(env, {}).run();
   assert.equal(blocked.ran, 0);
   assert.equal(blocked.plan[0].skipped, "配置未完成");
   assert.equal(kv.calls.filter((c) => c === "get").length, 2, "跳过时只该读一次配置 + 一次停用标记；多了就是在逐账号读");
 
-  kv.store.set("v1:tool:demo", JSON.stringify({ portal: "cn", timeoutSec: "15" }));
+  kv.store.set("v1:tool:fix", JSON.stringify({ portal: "cn", timeoutSec: "15" }));
   assert.equal(firstAccount(await tick(env, {}).run()).status, "claimed");
 });
 
 test("dependsOn 未满足的步骤不执行", async () => {
   const tools = [{
-    ...DEMO,
+    ...FIX,
     steps: [
       { id: "a", label: "甲", cost: 4, async run() { return { status: "error", message: "上游炸了" }; } },
       { id: "b", label: "乙", cost: 4, dependsOn: ["a"], async run() { throw new Error("不该被执行"); } },
@@ -571,7 +630,7 @@ test("顺延的剩余步骤在下一轮立即接续，不被 minIntervalSec 挡�
 
 test("登录失效不标记为可接续，避免每轮白打", async () => {
   const tools = [{
-    ...DEMO,
+    ...FIX,
     steps: [{ id: "a", label: "甲", cost: 4, async run() { return { status: "login_required", message: "401" }; } }],
   }];
   const kv = fakeKv(); const env = envFor(kv);
@@ -583,7 +642,7 @@ test("登录失效不标记为可接续，避免每轮白打", async () => {
 });
 
 test("真正跑过但失败的账号仍受 minIntervalSec 约束，不会每轮重试", async () => {
-  const tools = [{ ...DEMO, steps: [{ id: "a", label: "甲", cost: 4, async run() { return { status: "error", message: "上游 500" }; } }] }];
+  const tools = [{ ...FIX, steps: [{ id: "a", label: "甲", cost: 4, async run() { return { status: "error", message: "上游 500" }; } }] }];
   const kv = fakeKv(); const env = envFor(kv);
   seedAccount(kv, "SEATE2");
   const now = cst(10);
@@ -596,7 +655,7 @@ test("真正跑过但失败的账号仍受 minIntervalSec 约束，不会每轮�
 });
 
 test("全部做完但没有领取到东西 → already，不是 claimed", async () => {
-  const tools = [{ ...DEMO, steps: [{ id: "a", label: "甲", cost: 4, async run() { return { status: "already", message: "今日已领" }; } }] }];
+  const tools = [{ ...FIX, steps: [{ id: "a", label: "甲", cost: 4, async run() { return { status: "already", message: "今日已领" }; } }] }];
   const kv = fakeKv(); const env = envFor(kv);
   seedAccount(kv, "SEATC2");
   assert.equal(firstAccount(await tick(env, { tools }).run()).status, "already");
@@ -617,7 +676,7 @@ test("多账号：预算耗尽时后面的账号顺延，不报错", async () =>
 // ═══════════ 审核结论的回归断言 ═══════════
 
 test("[P0-1] 缺 content-length 的请求体不读、直接 413", async () => {
-  const res = await hit("/account/demo/new", {
+  const res = await hit("/account/fix/new", {
     method: "POST", env: envFor(fakeKv()), omitLength: true,
     body: form(NEW_BODY),
   });
@@ -625,7 +684,7 @@ test("[P0-1] 缺 content-length 的请求体不读、直接 413", async () => {
 });
 
 test("[P0-1] content-length 超上限时在读体之前就拒掉", async () => {
-  const res = await hit("/account/demo/new", {
+  const res = await hit("/account/fix/new", {
     method: "POST", env: envFor(fakeKv()),
     headers: { "content-length": String(70 * 1024) },
     body: form(NEW_BODY),
@@ -635,7 +694,7 @@ test("[P0-1] content-length 超上限时在读体之前就拒掉", async () => {
 
 test("[P0-1] 非 urlencoded 的请求体被拒", async () => {
   for (const type of ["text/plain", "multipart/form-data; boundary=x"]) {
-    const res = await hit("/account/demo/new", {
+    const res = await hit("/account/fix/new", {
       method: "POST", env: envFor(fakeKv()),
       headers: { "content-type": type }, body: form(NEW_BODY),
     });
@@ -644,7 +703,7 @@ test("[P0-1] 非 urlencoded 的请求体被拒", async () => {
 });
 
 test("[P0-1] 平台未配置时连请求体都不读", async () => {
-  const request = new Request("https://checkin.test/account/demo/new", {
+  const request = new Request("https://checkin.test/account/fix/new", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", "content-length": "20" },
     body: form(NEW_BODY),
@@ -655,15 +714,15 @@ test("[P0-1] 平台未配置时连请求体都不读", async () => {
   assert.equal(request.bodyUsed, false, "未配置 PASSWORD 时不该消耗请求体");
 });
 
-test("[P1-2] 编辑时改 uid 字段被拒，键与记录不脱钩", async () => {
+fixtureTest("[P1-2] 编辑时改 uid 字段被拒，键与记录不脱钩", async () => {
   const kv = fakeKv(); const env = envFor(kv);
   await createAccount(env, kv);
-  const res = await hit("/account/demo/ABCD1234/edit", {
+  const res = await hit("/account/fix/ABCD1234/edit", {
     method: "POST", env, body: form({ pwd: PASSWORD, label: "甲", session: "", plan: "pro", seatId: "WXYZ9999" }),
   });
   assert.equal(res.status, 409);
-  assert.deepEqual([...kv.store.keys()], ["v1:acct:demo:ABCD1234"]);
-  assert.equal(JSON.parse(kv.store.get("v1:acct:demo:ABCD1234")).cred.seatId, "ABCD1234");
+  assert.deepEqual([...kv.store.keys()], ["v1:acct:fix:ABCD1234"]);
+  assert.equal(JSON.parse(kv.store.get("v1:acct:fix:ABCD1234")).cred.seatId, "ABCD1234");
   assert.ok(res.text.includes("不可修改"));
 });
 
@@ -689,30 +748,30 @@ test("[P1-4] 可选非敏感字段能被明确清空", () => {
   assert.equal(cleared.values.note, "");
 });
 
-test("[P1-5] 损坏记录可见、可删，且不会把整页拖成 500", async () => {
+fixtureTest("[P1-5] 损坏记录可见、可删，且不会把整页拖成 500", async () => {
   const env = envFor(fakeKv());
   const kv = env.CHECKIN_KV;
-  kv.store.set("v1:acct:demo:BADJSON", "{not json");
-  kv.store.set("v1:acct:demo:BADSHAPE", "123");
+  kv.store.set("v1:acct:fix:BADJSON", "{not json");
+  kv.store.set("v1:acct:fix:BADSHAPE", "123");
 
-  const page = await authed("/tool/demo", env);
+  const page = await authed("/tool/fix", env);
   assert.equal(page.status, 200);
   assert.ok(page.text.includes("BADJSON") && page.text.includes("BADSHAPE"), "坏记录必须看得见，否则既看不见又删不掉");
   assert.ok(page.text.includes("记录损坏"));
 
   for (const uid of ["BADJSON", "BADSHAPE"]) {
-    const del = await hit(`/account/demo/${uid}/delete`, { method: "POST", env, body: form({ pwd: PASSWORD }) });
+    const del = await hit(`/account/fix/${uid}/delete`, { method: "POST", env, body: form({ pwd: PASSWORD }) });
     assert.equal(del.status, 303);
-    assert.equal(kv.store.has(`v1:acct:demo:${uid}`), false, `${uid} 删不掉`);
+    assert.equal(kv.store.has(`v1:acct:fix:${uid}`), false, `${uid} 删不掉`);
   }
 });
 
-test("[P1-6] 首页子请求数与账号数无关", async () => {
+fixtureTest("[P1-6] 首页子请求数与账号数无关", async () => {
   const costWith = async (n) => {
     const kv = fakeKv(); const env = envFor(kv);
     seedConfig(kv);
     for (let i = 0; i < n; i += 1) {
-      kv.store.set(`v1:acct:demo:SEAT${String(i).padStart(4, "0")}`, JSON.stringify({ label: "x", cred: { seatId: "s" }, updatedAt: 1 }));
+      kv.store.set(`v1:acct:fix:SEAT${String(i).padStart(4, "0")}`, JSON.stringify({ label: "x", cred: { seatId: "s" }, updatedAt: 1 }));
     }
     kv.calls.length = 0;
     const res = await authed("/", env);
@@ -732,12 +791,12 @@ test("[P1-6] 首页子请求数与账号数无关", async () => {
   assert.ok(many.text.includes("0/41"), `卡片应显示今日完成进度 0/41，实际片段：${many.text.match(/今日完成[^<]*/)?.[0] ?? "未找到"}`);
 });
 
-test("[P1-6] 调度索引读取也不随账号数增长", async () => {
+fixtureTest("[P1-6] 调度索引读取也不随账号数增长", async () => {
   const costWith = async (n) => {
     const kv = fakeKv(); const env = envFor(kv);
     seedConfig(kv);
     for (let i = 0; i < n; i += 1) {
-      kv.store.set(`v1:acct:demo:S${i}`, JSON.stringify({ label: "x", cred: { seatId: `S${i}` }, updatedAt: 1 }));
+      kv.store.set(`v1:acct:fix:S${i}`, JSON.stringify({ label: "x", cred: { seatId: `S${i}` }, updatedAt: 1 }));
     }
     const budget = makeBudget(45);
     await runTick({ env: { ...env, CHECKIN_KV: trackedKv(kv, budget) }, budget, tools: TOOLS, trigger: "manual", now: cst(10) });
@@ -749,10 +808,10 @@ test("[P1-6] 调度索引读取也不随账号数增长", async () => {
   assert.ok(many > one, "账号多时应当真的做了更多工作");
 });
 
-test("[P1-6] 工具页按 list+get 取明细，但坏数据不炸", async () => {
+fixtureTest("[P1-6] 工具页按 list+get 取明细，但坏数据不炸", async () => {
   const kv = fakeKv(); const env = envFor(kv);
   await createAccount(env, kv);
-  assert.equal((await authed("/tool/demo", env)).status, 200);
+  assert.equal((await authed("/tool/fix", env)).status, 200);
 });
 
 test("[P2] 畸形百分号编码 → 404 而不是 500", async () => {
@@ -766,16 +825,16 @@ test("[P2] 通过鉴权后，页面链接带的必须是那个正确的口令", 
   assert.ok(res.text.includes(`pwd=${PASSWORD}`));
 });
 
-test("[P2] 无关路由上的 ?tool= 不参与校验", async () => {
+fixtureTest("[P2] 无关路由上的 ?tool= 不参与校验", async () => {
   const env = envFor(fakeKv());
-  assert.equal((await authed("/api/state?tool=demo", env)).status, 200);
+  assert.equal((await authed("/api/state?tool=fix", env)).status, 200);
   assert.equal((await authed("/?tool=whatever", env)).status, 200);
-  assert.equal((await authed("/account/new?tool=demo", env)).status, 200);
+  assert.equal((await authed("/account/new?tool=fix", env)).status, 200);
 });
 
-test("[P2] 工具页导航列出全部已注册工具", async () => {
+fixtureTest("[P2] 工具页导航列出全部已注册工具", async () => {
   const env = envFor(fakeKv());
-  const page = await authed("/tool/demo", env);
+  const page = await authed("/tool/fix", env);
   for (const tool of TOOLS) assert.ok(page.text.includes(tool.name), `${tool.name} 不在导航里`);
 });
 
@@ -788,8 +847,8 @@ test("[P2] TOOLS 按 order 排序，且注册表拒绝保留字字段", () => {
 
 test("分页 list 能取全（真实 KV 每 1000 键分页，shim 默认不分页会漏测）", async () => {
   const kv = fakeKv({ pageSize: 10 });
-  for (let i = 0; i < 25; i += 1) kv.store.set(`v1:acct:demo:S${i}`, "{}");
-  const uids = await listUids(kv, "demo");
+  for (let i = 0; i < 25; i += 1) kv.store.set(`v1:acct:fix:S${i}`, "{}");
+  const uids = await listUids(kv, "fix");
   assert.equal(uids.length, 25);
   assert.equal(kv.calls.filter((c) => c === "list").length, 3, "应恰好翻 3 页");
 });
@@ -815,7 +874,7 @@ async function tickWith(kv, tools, limit = 45, now = cst(10)) {
 
 test("[P0-1] 调度枚举与账号数无关：3 工具 × 16 账号不撞 50 硬顶", async () => {
   const kv = fakeKv();
-  const tools = ["demo", "t2", "t3"].map((id) => syntheticTool(id));
+  const tools = ["fix", "t2", "t3"].map((id) => syntheticTool(id));
   for (const t of tools) {
     kv.store.set(`v1:tool:${t.id}`, "{}");
     for (let i = 0; i < 16; i += 1) {
@@ -835,25 +894,25 @@ test("[P0-2] 调度回写状态不会覆盖用户中途提交的凭据", async (
     id: "claim", label: "领取", cost: 4,
     async run(ctx) {
       // 模拟调度跑这几秒里用户在界面换了新票据
-      await saveAccount(ctx.env, "demo", {
+      await saveAccount(ctx.env, "fix", {
         uid: "SEATC9", label: "new-label", values: { seatId: "SEATC9", session: "NEW-TOKEN" },
-        existing: JSON.parse(kv.store.get("v1:acct:demo:SEATC9")),
+        existing: JSON.parse(kv.store.get("v1:acct:fix:SEATC9")),
       });
       return { status: "claimed", message: "ok" };
     },
   }];
-  await tickWith(kv, [syntheticTool("demo", clobberSteps)]);
-  const after = JSON.parse(kv.store.get("v1:acct:demo:SEATC9"));
+  await tickWith(kv, [syntheticTool("fix", clobberSteps)]);
+  const after = JSON.parse(kv.store.get("v1:acct:fix:SEATC9"));
   assert.equal(after.cred.session, "NEW-TOKEN", "调度把新凭据覆盖回了旧值");
   assert.equal(after.label, "new-label", "label 被回滚");
 });
 
 test("[P0-3] 损坏记录不参与调度，也不会被写回成僵尸", async () => {
   const kv = fakeKv();
-  kv.store.set("v1:tool:demo", "{}");
-  kv.store.set("v1:acct:demo:BROKEN", "{not json");
-  const { summary } = await tickWith(kv, [syntheticTool("demo")]);
-  assert.equal(kv.store.get("v1:acct:demo:BROKEN"), "{not json", "坏记录被调度器改写了");
+  kv.store.set("v1:tool:fix", "{}");
+  kv.store.set("v1:acct:fix:BROKEN", "{not json");
+  const { summary } = await tickWith(kv, [syntheticTool("fix")]);
+  assert.equal(kv.store.get("v1:acct:fix:BROKEN"), "{not json", "坏记录被调度器改写了");
   assert.equal(summary.plan[0].accounts[0].status, "error");
   assert.ok(summary.plan[0].accounts[0].message.includes("删除"));
 });
@@ -868,7 +927,7 @@ test("[P1-4] 步骤实际消耗超过 cost 会被显式记下，不静默吸收"
       return { status: "claimed", message: "ok" };
     },
   }];
-  const { summary } = await tickWith(kv, [syntheticTool("demo", greedy)]);
+  const { summary } = await tickWith(kv, [syntheticTool("fix", greedy)]);
   // cost 2、实际 3 次 → 超支 1，必须被记下来而不是静默吸收
   assert.equal(summary.plan[0].accounts[0].steps[0].over, 1, "超支未被记录");
 });
@@ -876,7 +935,7 @@ test("[P1-4] 步骤实际消耗超过 cost 会被显式记下，不静默吸收"
 test("[加固] 空 uid 不会静默造出畸形键", async () => {
   const kv = fakeKv();
   await assert.rejects(
-    () => saveAccount(envFor(kv), "demo", { uid: "", values: { seatId: "X" } }),
+    () => saveAccount(envFor(kv), "fix", { uid: "", values: { seatId: "X" } }),
     /非空 uid/,
   );
   assert.equal([...kv.store.keys()].filter((k) => k.endsWith(":")).length, 0, "写出了以冒号结尾的畸形键");
@@ -892,7 +951,7 @@ test("[P1-5] 账号框架开销纳入预约，账本不会一路花过上限", a
   const kv = fakeKv();
   seedConfig(kv);
   for (let i = 0; i < 12; i += 1) seedAccount(kv, `SEATE${i}`);
-  const { budget, summary } = await tickWith(kv, [syntheticTool("demo")], 20);
+  const { budget, summary } = await tickWith(kv, [syntheticTool("fix")], 20);
   assert.ok(budget.used <= 20, `账本花到 ${budget.used}，越过了自设上限 20`);
   assert.ok(summary.plan[0].accounts.some((a) => a.status === "deferred"), "后面的账号应被顺延");
 });
@@ -900,7 +959,7 @@ test("[P1-5] 账号框架开销纳入预约，账本不会一路花过上限", a
 test("[P1-7] 有步骤没打上游时就标记可接续", async () => {
   const kv = fakeKv();
   seedAccount(kv, "SEATF1");
-  const tools = [syntheticTool("demo", [
+  const tools = [syntheticTool("fix", [
     { id: "a", label: "甲", cost: 4, async run() { return { status: "deferred", message: "装不下" }; } },
     { id: "b", label: "乙", cost: 4, dependsOn: ["a"], async run() { return { status: "claimed", message: "ok" }; } },
   ])];
@@ -912,7 +971,7 @@ test("[P1-8] 未识别状态不会被当成「今天已结」而上闩", async (
   const kv = fakeKv();
   seedAccount(kv, "SEATF2");
   // 用真·不认识的状态：阶段 2 的原始缺陷就是把这类值聚合成 already，于是当天再也不重试
-  const tools = [syntheticTool("demo", [{ id: "a", label: "甲", cost: 4, async run() { return { status: "mystery", message: "上游给了个没见过的值" }; } }])];
+  const tools = [syntheticTool("fix", [{ id: "a", label: "甲", cost: 4, async run() { return { status: "mystery", message: "上游给了个没见过的值" }; } }])];
   const now = cst(10);
   const first = await tickWith(kv, tools, 45, now);
   assert.equal(planOf(first.summary).accounts[0].status, "error", "未识别状态被聚合成 already 就会当天不再重试");
@@ -923,7 +982,7 @@ test("[P1-8] 未识别状态不会被当成「今天已结」而上闩", async (
 test("[P1-9] 单步 cost 超过上限时报「永远排不进」，不是无限静默顺延", async () => {
   const kv = fakeKv();
   seedAccount(kv, "SEATG1");
-  const tools = [syntheticTool("demo", [{ id: "huge", label: "巨步", cost: 60, async run() { throw new Error("不该执行"); } }])];
+  const tools = [syntheticTool("fix", [{ id: "huge", label: "巨步", cost: 60, async run() { throw new Error("不该执行"); } }])];
   const { summary } = await tickWith(kv, tools);
   const step = summary.plan[0].accounts[0].steps[0];
   assert.equal(step.unreachable, true);
@@ -934,26 +993,26 @@ test("[P2] 可接续的账号不受 maxDaily 挡，顺延不烧配额", async ()
   const kv = fakeKv();
   seedAccount(kv, "SEATG2");
   seedSched(kv, "SEATG2", { attempts: 10, attemptsDate: logicalDay(0, cst(10)), resumable: true, lastStatus: "deferred" });
-  const { summary } = await tickWith(kv, [syntheticTool("demo")]);
+  const { summary } = await tickWith(kv, [syntheticTool("fix")]);
   assert.equal(summary.ran, 1, "可接续的账号不该被 maxDaily 挡在门外");
 });
 
 test("[P2] 缺 KV 绑定时调度抛清晰提示，不是 TypeError", async () => {
   const budget = makeBudget(45);
   await assert.rejects(
-    () => runTick({ env: { PASSWORD }, budget, tools: [syntheticTool("demo")], now: cst(10) }),
+    () => runTick({ env: { PASSWORD }, budget, tools: [syntheticTool("fix")], now: cst(10) }),
     /缺少 KV 绑定/,
   );
 });
 
-test("[测试保真度] scheduled 用计划时刻而非墙钟，凌晨触发也正确", async () => {
+fixtureTest("[测试保真度] scheduled 用计划时刻而非墙钟，凌晨触发也正确", async () => {
   const kv = fakeKv(); const env = envFor(kv);
   seedAccount(kv, "SEATH1");
   const logs = [];
   const orig = console.log;
   console.log = (...a) => logs.push(a.join(" "));
   try {
-    // CST 03:00：demo 的 notBeforeHour=8，应安静地不排队
+    // CST 03:00：FIX 的 notBeforeHour=8，应安静地不排队
     await worker.scheduled({ cron: "*/30 * * * *", scheduledTime: cst(3) * 1000 }, env);
     const early = logs.find((l) => l.startsWith("[checkin] {"));
     assert.ok(early, "应输出汇总");
@@ -987,7 +1046,7 @@ const credsFull = [
 ];
 function seedFull(kv, uid) {
   seedConfig(kv);
-  kv.store.set(`v1:acct:demo:${uid}`, JSON.stringify({
+  kv.store.set(`v1:acct:fix:${uid}`, JSON.stringify({
     label: `备注-${uid}`,
     cred: { seatId: uid, plan: "pro", session: SECRET_VALUE, code: PIN },
     createdAt: 1, updatedAt: 1,
@@ -996,7 +1055,7 @@ function seedFull(kv, uid) {
 const okStep = (message = "ok", credits = 1) => [{
   id: "claim", label: "领取", cost: 4, async run() { return { status: "claimed", message, credits }; },
 }];
-const leakyTool = (steps) => ({ ...syntheticTool("demo", steps), creds: credsFull });
+const leakyTool = (steps) => ({ ...syntheticTool("fix", steps), creds: credsFull });
 const logKeys = (kv) => [...kv.store.keys()].filter((k) => k.startsWith("v1:run:") || k.startsWith("v1:tick:"));
 // 日志的可见面 = 正文 + metadata（列表页只读 metadata，正文没写全也不代表干净）
 const everyLogText = (kv) => logKeys(kv).map((k) => `${k}\n${kv.store.get(k)}\n${JSON.stringify(kv.metas.get(k) || {})}`).join("\n");
@@ -1029,7 +1088,7 @@ test("[阶段3] 两类日志都带 30 天 TTL", async () => {
   assert.ok(ttls.every((t) => t === 30 * 86400), `TTL 应为 30 天，实际 ${ttls.join(", ")}`);
 });
 
-test("[阶段3] 列表页零次 get，且摘要文本确实来自 metadata", async () => {
+fixtureTest("[阶段3] 列表页零次 get，且摘要文本确实来自 metadata", async () => {
   const kv = fakeKv();
   seedFull(kv, "LOGB1");
   await tickWith(kv, [leakyTool(okStep("唯一摘要标记-7F3A", 7))]);
@@ -1062,7 +1121,7 @@ test("[阶段3] 键名不合法或指向别的命名空间时返回未找到页�
   assert.equal((await authed("/runs/%2e%2e%2fsecret", env)).status, 200);
   assert.equal((await authed("/runs/nope:whatever", env)).status, 200);
   // 借详情路由去读凭据键 / 调度索引 / 配置键：读不到，也不能把内容渲出来
-  for (const foreign of ["v1:acct:demo:LOGC0", "v1:schedidx:demo", "v1:tool:demo"]) {
+  for (const foreign of ["v1:acct:fix:LOGC0", "v1:schedidx:fix", "v1:tool:fix"]) {
     const res = await authed(`/runs/${encodeURIComponent(foreign)}`, env);
     assert.equal(res.status, 200, `${foreign} 应走未找到页`);
     assert.ok(!res.text.includes(SECRET_VALUE), `${foreign} 的内容被渲到页面上了`);
@@ -1081,14 +1140,14 @@ test("[阶段3] 凭据不进日志：原文、5 位短码、URL 编码与 base64
   assert.ok(blob.includes("••••"), "被洗掉的位置要留下打码符，否则分不清是没泄漏还是压根没写入");
 });
 
-test("[阶段3审核] 凭据的四个出口：响应 HTML、/api/tick、cron 的 console.log、落盘日志", async () => {
-  const savedSteps = DEMO.steps;
-  DEMO.steps = [leakStep()];
+fixtureTest("[阶段3审核] 凭据的四个出口：响应 HTML、/api/tick、cron 的 console.log、落盘日志", async () => {
+  const savedSteps = FIX.steps;
+  FIX.steps = [leakStep()];
   const kv = fakeKv();
   const env = envFor(kv);
   try {
     seedFull(kv, "EXIT1");
-    const html = await hit(`/account/demo/EXIT1/run?pwd=${PASSWORD}`, { method: "POST", body: form({ pwd: PASSWORD }), env });
+    const html = await hit(`/account/fix/EXIT1/run?pwd=${PASSWORD}`, { method: "POST", body: form({ pwd: PASSWORD }), env });
     assert.equal(html.status, 200);
     assert.ok(!html.text.includes(SECRET_VALUE), "手动执行的响应 HTML 里有凭据原文");
     assert.ok(!html.text.includes(PIN), "手动执行的响应 HTML 里有短验证码原文");
@@ -1112,7 +1171,7 @@ test("[阶段3审核] 凭据的四个出口：响应 HTML、/api/tick、cron 的
     assert.ok(!logs.join("\n").includes(SECRET_VALUE), "cron 的 console.log 里有凭据原文");
     assert.ok(!everyLogText(kv).includes(SECRET_VALUE), "落盘日志里有凭据原文");
   } finally {
-    DEMO.steps = savedSteps;
+    FIX.steps = savedSteps;
   }
 });
 
@@ -1149,7 +1208,7 @@ test("[阶段3审核] 一步没做的轮次报「今日已领」，且不重复�
   const kv = fakeKv();
   seedFull(kv, "REU1");
   // 造一个 stale 进度（clearProgress 写失败留下的）：单步工具、这一步今天已经 claimed
-  kv.store.set("v1:step:demo:REU1", JSON.stringify({
+  kv.store.set("v1:step:fix:REU1", JSON.stringify({
     day: logicalDay(0, cst(10)), done: { claim: { status: "claimed", message: "ok", credits: 50 } }, order: ["claim"],
   }));
   const { summary } = await tickWith(kv, [leakyTool([{ id: "claim", label: "领取", cost: 4, async run() { return { status: "claimed", message: "又领了一次", credits: 50 }; } }])]);
@@ -1158,24 +1217,24 @@ test("[阶段3审核] 一步没做的轮次报「今日已领」，且不重复�
   assert.equal(view.credits, 0, "复用来的积分不该再算一遍");
 });
 
-test("[阶段3] 「执行」跳过到期判定立刻跑，但仍受预算约束", async () => {
+fixtureTest("[阶段3] 「执行」跳过到期判定立刻跑，但仍受预算约束", async () => {
   const kv = fakeKv();
   seedFull(kv, "MANUAL1");
   const tool = leakyTool(okStep());
   const budget = makeBudget(45);
   await runTick({ env: { ...envFor(kv), CHECKIN_KV: trackedKv(kv, budget) }, budget, tools: [tool], trigger: "manual", now: cst(10) });
-  assert.equal(JSON.parse(kv.store.get("v1:schedidx:demo")).entries.MANUAL1.lastStatus, "claimed");
+  assert.equal(JSON.parse(kv.store.get("v1:schedidx:fix")).entries.MANUAL1.lastStatus, "claimed");
   kv.calls.length = 0;
-  const res = await hit("/account/demo/MANUAL1/run", { method: "POST", body: form({ pwd: PASSWORD }), env: envFor(kv) });
+  const res = await hit("/account/fix/MANUAL1/run", { method: "POST", body: form({ pwd: PASSWORD }), env: envFor(kv) });
   assert.equal(res.status, 200);
   assert.ok(res.text.includes("MANUAL1"));
   assert.ok(kv.count > 0, "手动执行应当真的动了 KV");
 });
 
-test("[阶段3审核] 工具配置未完成时「执行」被拒绝，不拿残缺配置打上游", async () => {
+fixtureTest("[阶段3审核] 工具配置未完成时「执行」被拒绝，不拿残缺配置打上游", async () => {
   const kv = fakeKv();
   seedFull(kv, "CFG1");
-  kv.store.delete("v1:tool:demo");          // 配置整个没填
+  kv.store.delete("v1:tool:fix");          // 配置整个没填
   const tool = leakyTool([]);
   tool.config = [{ key: "endpoint", label: "接入点", required: true }];
   tool.steps = [{ id: "claim", label: "领取", cost: 4, async run() { throw new Error("不该被执行"); } }];
@@ -1185,87 +1244,87 @@ test("[阶段3审核] 工具配置未完成时「执行」被拒绝，不拿残�
   assert.match(view.message, /工具配置未完成/, "要如实说是被配置闸挡住的");
   assert.match(view.message, /接入点/, "要说出缺哪一项");
   assert.ok(kv.count - callsBefore <= 1 + FLAGS_FRAME, `拒绝路径只该花一次读 + 一次停用标记，实际 ${kv.count - callsBefore} 次`);
-  assert.ok(!kv.store.has("v1:step:demo:CFG1"), "被拒绝的执行不该留下进度");
-  const page = await hit("/account/demo/CFG1/run", { method: "POST", body: form({ pwd: PASSWORD }), env: envFor(kv) });
+  assert.ok(!kv.store.has("v1:step:fix:CFG1"), "被拒绝的执行不该留下进度");
+  const page = await hit("/account/fix/CFG1/run", { method: "POST", body: form({ pwd: PASSWORD }), env: envFor(kv) });
   assert.ok(page.text.includes("工具配置未完成"), "页面上要看得出的原因");
 });
 
-test("[阶段3] 「测试」按钮只在工具实现了 validate 时出现", async () => {
+fixtureTest("[阶段3] 「测试」按钮只在工具实现了 validate 时出现", async () => {
   const kv = fakeKv();
   const env = envFor(kv);
   seedFull(kv, "VALA1");
-  const withValidate = await authed("/tool/demo", env);
+  const withValidate = await authed("/tool/fix", env);
   assert.match(withValidate.text, /name="pwd"[^>]*>\s*<button[^>]*type="submit"[^>]*>测试/);
 
-  const original = DEMO.validate;
-  delete DEMO.validate;
+  const original = FIX.validate;
+  delete FIX.validate;
   try {
-    const without = await authed("/tool/demo", env);
+    const without = await authed("/tool/fix", env);
     assert.ok(!/>\s*测试\s*</.test(without.text), "工具没实现 validate，按钮不该出现");
   } finally {
-    DEMO.validate = original;
+    FIX.validate = original;
   }
 });
 
-test("[阶段3] 手动测试不写状态、不写日志、不新建索引", async () => {
+fixtureTest("[阶段3] 手动测试不写状态、不写日志、不新建索引", async () => {
   const kv = fakeKv();
   seedFull(kv, "VALB1");
-  const res = await hit("/account/demo/VALB1/validate", { method: "POST", body: form({ pwd: PASSWORD }), env: envFor(kv) });
+  const res = await hit("/account/fix/VALB1/validate", { method: "POST", body: form({ pwd: PASSWORD }), env: envFor(kv) });
   assert.equal(res.status, 200);
   assert.ok(res.text.includes("会话票据格式有效"));
   assert.equal(logKeys(kv).length, 0, "测试不该写运行日志");
-  assert.ok(!kv.store.has("v1:schedidx:demo"), "测试连调度索引都不该新建");
+  assert.ok(!kv.store.has("v1:schedidx:fix"), "测试连调度索引都不该新建");
 });
 
 test("[阶段3审核] 测试的响应 HTML 也不含凭据原文", async () => {
-  const savedValidate = DEMO.validate;
-  DEMO.validate = async (ctx) => ({ status: "error", message: `票据 ${JSON.stringify(ctx.account.cred)} 被拒` });
+  const savedValidate = FIX.validate;
+  FIX.validate = async (ctx) => ({ status: "error", message: `票据 ${JSON.stringify(ctx.account.cred)} 被拒` });
   const kv = fakeKv();
   seedFull(kv, "VALC1");
   try {
-    const res = await hit("/account/demo/VALC1/validate", { method: "POST", body: form({ pwd: PASSWORD }), env: envFor(kv) });
+    const res = await hit("/account/fix/VALC1/validate", { method: "POST", body: form({ pwd: PASSWORD }), env: envFor(kv) });
     assert.ok(!res.text.includes(SECRET_VALUE), "validate 的响应把凭据回显出来了");
     assert.ok(!res.text.includes(PIN), "validate 的响应把短验证码回显出来了");
   } finally {
-    DEMO.validate = savedValidate;
+    FIX.validate = savedValidate;
   }
 });
 
-test("[阶段3] 需要处理的账号会在工具页顶部出现红条，损坏记录也算", async () => {
+fixtureTest("[阶段3] 需要处理的账号会在工具页顶部出现红条，损坏记录也算", async () => {
   const kv = fakeKv();
   seedFull(kv, "STUCK1");
-  kv.store.set("v1:acct:demo:BRK9", "{not json");
+  kv.store.set("v1:acct:fix:BRK9", "{not json");
   await tickWith(kv, [leakyTool([{ id: "a", label: "甲", cost: 4, async run() { return { status: "login_required", message: "401" }; } }])]);
-  const page = await authed("/tool/demo", envFor(kv));
+  const page = await authed("/tool/fix", envFor(kv));
   assert.ok(page.text.includes("需要你处理"), "缺红条");
   assert.ok(page.text.includes("STUCK1"));
   // 损坏记录进不了调度索引，而红条是从索引算的 —— 它必须靠账号列表补上
   assert.ok(/需要你处理[\s\S]{0,200}BRK9/.test(page.text), "红条漏了损坏记录");
 });
 
-test("[阶段3审核] 损坏记录要在 /runs 里露头", async () => {
+fixtureTest("[阶段3审核] 损坏记录要在 /runs 里露头", async () => {
   const kv = fakeKv();
   seedFull(kv, "BRKOK");
-  kv.store.set("v1:acct:demo:BRKX", "{not json");
+  kv.store.set("v1:acct:fix:BRKX", "{not json");
   await tickWith(kv, [leakyTool(okStep())]);
-  const runs = await listRunLog(envFor(kv), { limit: 20, toolIds: ["demo"] });
+  const runs = await listRunLog(envFor(kv), { limit: 20, toolIds: ["fix"] });
   assert.ok(runs.some((r) => r.key.includes("BRKX")), "损坏记录没写账号日志，它在观测层是隐形的");
   const page = await authed("/runs", envFor(kv));
   assert.ok(page.text.includes("BRKX"), "日志列表页搜不到损坏记录");
   // 但不许因此把假状态固化进索引（阶段 2 的 P0-3）
-  const idx = JSON.parse(kv.store.get("v1:schedidx:demo") || '{"entries":{}}');
+  const idx = JSON.parse(kv.store.get("v1:schedidx:fix") || '{"entries":{}}');
   assert.equal(idx.entries.BRKX, undefined, "坏记录不该被写进调度索引");
 });
 
-test("[阶段3审核] 工具页成本有上界：60 个账号不撞 50 硬顶，并如实说明截断", async () => {
+fixtureTest("[阶段3审核] 工具页成本有上界：60 个账号不撞 50 硬顶，并如实说明截断", async () => {
   const kv = fakeKv();
-  kv.store.set("v1:tool:demo", JSON.stringify({ portal: "cn", timeoutSec: "15" }));
+  kv.store.set("v1:tool:fix", JSON.stringify({ portal: "cn", timeoutSec: "15" }));
   for (let i = 0; i < 60; i += 1) {
-    kv.store.set(`v1:acct:demo:SEAT${i}`, JSON.stringify({
+    kv.store.set(`v1:acct:fix:SEAT${i}`, JSON.stringify({
       label: `座${i}`, cred: { seatId: `SEAT${i}`, plan: "pro", session: SECRET_VALUE }, createdAt: 1, updatedAt: 1,
     }));
   }
-  const res = await authed("/tool/demo", envFor(kv));
+  const res = await authed("/tool/fix", envFor(kv));
   assert.equal(res.status, 200, `60 个账号时工具页 500 了（子请求 ${kv.count} 次）`);
   assert.ok(kv.count < 50, `工具页用了 ${kv.count} 次子请求`);
   assert.match(res.text, /只列出前 20 个/, "截断了要说明");
@@ -1277,20 +1336,20 @@ test("[阶段3审核] 索引写回只覆盖自己改过的那几位", async () =
   const env = envFor(kv);
   seedFull(kv, "PARA1");
   seedFull(kv, "PARA2");
-  const stale = await loadSchedIndex(env, "demo");          // A 轮次开始时读的快照
+  const stale = await loadSchedIndex(env, "fix");          // A 轮次开始时读的快照
   await runAccountNow({
     env: { ...env, CHECKIN_KV: trackedKv(kv, makeBudget(45)) }, budget: makeBudget(45),
     tool: leakyTool(okStep()), uid: "PARA2", now: cst(10),
   });                                                        // B 在 A 运行期间写完并落了条目
   stale.entries.PARA1 = { ...schedOf(stale.entries.PARA1), lastStatus: "claimed", lastStatusDate: logicalDay(0, cst(10)) };
-  await commitSchedEntries(env, "demo", { PARA1: stale.entries.PARA1 });
-  const entries = JSON.parse(kv.store.get("v1:schedidx:demo")).entries;
+  await commitSchedEntries(env, "fix", { PARA1: stale.entries.PARA1 });
+  const entries = JSON.parse(kv.store.get("v1:schedidx:fix")).entries;
   // 老写法是整份覆盖：A 那份 stale 快照一写，B 刚落的条目就没了
   assert.deepEqual(Object.keys(entries).sort(), ["PARA1", "PARA2"], "只提交自己那几位，别人的更新必须留着");
   assert.equal(entries.PARA2.lastStatus, "claimed");
 });
 
-test("[阶段3] 首页有最近运行流", async () => {
+fixtureTest("[阶段3] 首页有最近运行流", async () => {
   const kv = fakeKv();
   seedFull(kv, "FEED1");
   await tickWith(kv, [leakyTool(okStep())]);
@@ -1304,7 +1363,7 @@ test("[阶段3] ?tool= 筛选日志，且成本与日志总量无关", async () 
   seedFull(kv, "FILT1");
   await tickWith(kv, [leakyTool(okStep())]);
   const env = envFor(kv);
-  assert.ok((await authed("/runs?tool=demo", env)).text.includes("FILT1"));
+  assert.ok((await authed("/runs?tool=fix", env)).text.includes("FILT1"));
   assert.ok(!(await authed("/runs?tool=nonexistent", env)).text.includes("FILT1"));
 
   // 工具段在键名里 ⇒ 筛一个几乎没记录的工具也只需一次 list。
@@ -1313,9 +1372,9 @@ test("[阶段3] ?tool= 筛选日志，且成本与日志总量无关", async () 
     kv.store.set(`v1:run:other:${String(8209000000000 - i).padStart(13, "0")}:U${i}`, "{}");
   }
   kv.calls.length = 0;
-  const filtered = await listRunLog(env, { limit: 30, toolId: "demo" });
-  assert.equal(filtered.length, 1, `筛 demo 只该拿到那一条 demo 日志，实际 ${filtered.length} 条`);
-  assert.equal(kv.calls.filter((c) => c === "list").length, 1, `4000 条他工具日志下筛 demo 用了 ${kv.count} 次 list`);
+  const filtered = await listRunLog(env, { limit: 30, toolId: "fix" });
+  assert.equal(filtered.length, 1, `筛 FIX 只该拿到那一条 FIX 日志，实际 ${filtered.length} 条`);
+  assert.equal(kv.calls.filter((c) => c === "list").length, 1, `4000 条他工具日志下筛 FIX 用了 ${kv.count} 次 list`);
 });
 
 test("[阶段3] 归并后的日志列表按时间倒序，身份取自键名而不是 metadata", async () => {
@@ -1329,10 +1388,10 @@ test("[阶段3] 归并后的日志列表按时间倒序，身份取自键名而�
       result: { uid: `U${String(i).padStart(2, "0")}`, label: "L", status: "claimed", message: "ok", credits: 0, steps: [] },
     });
   }
-  const recent = await listRunLog(env, { limit: 3, toolIds: ["demo"] });
+  const recent = await listRunLog(env, { limit: 3, toolIds: ["fix"] });
   assert.deepEqual(recent.map((e) => e.uid), ["U11", "U10", "U09"], "列表应从最新往旧取");
   assert.deepEqual(recent.map((e) => e.kind), ["run", "run", "run"]);
-  assert.equal(recent[0].tool, "demo");
+  assert.equal(recent[0].tool, "fix");
   assert.ok(Number.isFinite(recent[0].at));
 });
 
@@ -2749,7 +2808,7 @@ test("[阶段5] 停用期间删不得任何东西：重开后当天进度接着�
   const kv = fakeKv();
   seedAccount(kv, "SEATD1");
   const runs = [];
-  const tool = (steps) => syntheticTool("demo", steps);
+  const tool = (steps) => syntheticTool("fix", steps);
   // 一步成功 + 一步极贵（装不下）→ 正好造出"做了一半"的形态
   const steps = [
     { id: "a", label: "甲", cost: 3, async run() { runs.push("a"); return { status: "claimed", message: "甲成了", credits: 1 }; } },
@@ -2760,26 +2819,26 @@ test("[阶段5] 停用期间删不得任何东西：重开后当天进度接着�
   const first = await tickWith(kv, [tool(steps)], 22, cst(10));
   assert.equal(first.summary.plan[0].accounts[0].steps[0].status, "claimed", "前置：这一轮该做成 a");
   assert.equal(first.summary.plan[0].accounts[0].steps[1].status, "deferred", "前置：b 该装不下");
-  const done = Object.keys(JSON.parse(kv.store.get("v1:step:demo:SEATD1")).done);
+  const done = Object.keys(JSON.parse(kv.store.get("v1:step:fix:SEATD1")).done);
   assert.deepEqual(done, ["a"], "前置：进度键里只该有 a");
 
   // 关掉，两小时后再打开（锁的 TTL 90s，靠虚拟时钟过期）
-  offFlags(kv, ["demo"]);
+  offFlags(kv, ["fix"]);
   const mark = kv.mark();
   const gap = await tickWith(kv, [tool(steps)], 45, cst(12));
   assert.equal(gap.summary.plan[0].skipped, "已停用");
   // 判据 2 的字面要求：这几类键一个都不许少
-  assert.ok(kv.store.has("v1:step:demo:SEATD1"), "停用把步骤进度删了：重开后要从零开始，7 步的账号会重打一遍上游");
-  assert.ok(kv.store.has("v1:acct:demo:SEATD1"), "停用把账号记录删了");
-  assert.ok(kv.store.has("v1:schedidx:demo"), "停用把调度索引删了：lastAt 归零会让所有账号挤成同一批");
-  assert.deepEqual(Object.keys(JSON.parse(kv.store.get("v1:step:demo:SEATD1")).done), ["a"],
+  assert.ok(kv.store.has("v1:step:fix:SEATD1"), "停用把步骤进度删了：重开后要从零开始，7 步的账号会重打一遍上游");
+  assert.ok(kv.store.has("v1:acct:fix:SEATD1"), "停用把账号记录删了");
+  assert.ok(kv.store.has("v1:schedidx:fix"), "停用把调度索引删了：lastAt 归零会让所有账号挤成同一批");
+  assert.deepEqual(Object.keys(JSON.parse(kv.store.get("v1:step:fix:SEATD1")).done), ["a"],
     "停用期间进度键被改动了：重开后会重做已完成的步骤");
-  assert.equal(kv.countKeys("v1:step:demo:", mark), 0, "停用期间碰了步骤进度键");
-  assert.equal(kv.countKeys("v1:acct:demo:", mark), 0, "停用期间碰了账号记录");
-  assert.equal(kv.countKeys("v1:schedidx:demo", mark), 0, "停用期间碰了调度索引");
+  assert.equal(kv.countKeys("v1:step:fix:", mark), 0, "停用期间碰了步骤进度键");
+  assert.equal(kv.countKeys("v1:acct:fix:", mark), 0, "停用期间碰了账号记录");
+  assert.equal(kv.countKeys("v1:schedidx:fix", mark), 0, "停用期间碰了调度索引");
 
   // 重新打开 → 接着做，且 a 不重做
-  onFlags(kv, ["demo"]);
+  onFlags(kv, ["fix"]);
   runs.length = 0;
   const back = await tickWith(kv, [tool(steps)], 45, cst(12, 5));
   const view = back.summary.plan[0].accounts[0];
@@ -2798,32 +2857,32 @@ test("[阶段5] 停用跨过 resetHour 再打开：按新逻辑日照常从头�
     { id: "a", label: "甲", cost: 3, async run() { ran.push("a"); return { status: "claimed", message: "甲", credits: 1 }; } },
     { id: "b", label: "乙", cost: 30, async run() { ran.push("b"); return { status: "claimed", message: "乙", credits: 1 }; } },
   ];
-  await tickWith(kv, [syntheticTool("demo", steps)], 22, cst(10));
+  await tickWith(kv, [syntheticTool("fix", steps)], 22, cst(10));
   assert.deepEqual(ran, ["a"], "前置：D 日只做成了 a");
 
-  offFlags(kv, ["demo"]);
+  offFlags(kv, ["fix"]);
   // 停用期间跨过 10:00 的日界（cst(10,40) 是 D+1 日 10:40，不是当天 10:40 ——
   // DAY 定在 D 日 00:00，加 10 小时 40 分仍在 D 日。这里必须真跨天，
   // 否则验的是"同一天隔 40 分钟"，而那种情况本来就该复用进度）
-  await tickWith(kv, [syntheticTool("demo", steps)], 45, cst(34, 40));
-  onFlags(kv, ["demo"]);
+  await tickWith(kv, [syntheticTool("fix", steps)], 45, cst(34, 40));
+  onFlags(kv, ["fix"]);
   ran.length = 0;
-  const next = await tickWith(kv, [syntheticTool("demo", steps)], 45, cst(35, 10));
+  const next = await tickWith(kv, [syntheticTool("fix", steps)], 45, cst(35, 10));
   // 新的一天预算充足，a 与 b 都会真跑。关键不是"只跑 a"，而是 **a 又跑了一次**：
   // 昨天做过的步骤不会被当成已完成而跳过。
   assert.ok(ran.includes("a"), `新逻辑日该从头跑（a 必须再做一次），实际 ${JSON.stringify(ran)}`);
   assert.equal(!!next.summary.plan[0].accounts[0].steps[0].reused, false, "新的一天不该复用昨天的进度");
   // 全部步骤结清后进度键会被 clearProgress 删掉（这是既有行为），所以"记在哪一天"
   // 要看调度索引里的 lastStatusDate —— 它证明这一轮归属的是新逻辑日。
-  assert.equal(schedEntryOf(kv, "demo", "SEATR1").lastStatusDate, logicalDay(0, cst(35, 10)),
+  assert.equal(schedEntryOf(kv, "fix", "SEATR1").lastStatusDate, logicalDay(0, cst(35, 10)),
     "这一轮该记在新逻辑日下，而不是把昨天的归属留着");
   // attempts 是**当天**计数（跨日归零），所以新的一天从 1 重新开始 —— 这正是
   // maxDaily 按天生效的实现方式。若哪天它变成累计值，maxDaily 就会跨日失效。
-  assert.equal(schedEntryOf(kv, "demo", "SEATR1").attempts, 1, "attempts 该按天归零，而不是累计");
-  assert.equal(schedEntryOf(kv, "demo", "SEATR1").attemptsDate, logicalDay(0, cst(35, 10)));
+  assert.equal(schedEntryOf(kv, "fix", "SEATR1").attempts, 1, "attempts 该按天归零，而不是累计");
+  assert.equal(schedEntryOf(kv, "fix", "SEATR1").attemptsDate, logicalDay(0, cst(35, 10)));
 });
 
-test("[阶段5] 停用中直接 POST 手动执行：被拒绝，且一个上游请求都不许发", async () => {
+fixtureTest("[阶段5] 停用中直接 POST 手动执行：被拒绝，且一个上游请求都不许发", async () => {
   // 判据 4。界面上「执行」按钮已经隐藏了，但隐藏不等于权限 ——
   // 直接敲 URL 不该绕过开关。断言必须落在 stub.seen 上：
   // 只断言"页面返回了拒绝"的话，把 run() 换成"先发请求再拒绝"照样绿。
@@ -2831,7 +2890,7 @@ test("[阶段5] 停用中直接 POST 手动执行：被拒绝，且一个上游�
   seedAccount(kv, "SEATX1");
   const stub = stubUpstream({ "POST /stub/claim": { payload: { ok: true } } });
   const tool = {
-    ...syntheticTool("demo", [{ id: "claim", label: "领取", cost: 3, async run(ctx) {
+    ...syntheticTool("fix", [{ id: "claim", label: "领取", cost: 3, async run(ctx) {
       await ctx.fetch("https://stub.example/stub/claim", { method: "POST", body: "{}" });
       return { status: "claimed", message: "不该走到这里", credits: 1 };
     } }]),
@@ -2839,14 +2898,14 @@ test("[阶段5] 停用中直接 POST 手动执行：被拒绝，且一个上游�
   };
   try {
     const toolId = tool.id;
-    kv.store.set("v1:tool:demo", JSON.stringify({ portal: "cn", timeoutSec: "15" }));
+    kv.store.set("v1:tool:fix", JSON.stringify({ portal: "cn", timeoutSec: "15" }));
     offFlags(kv, [toolId]);
     const view = await runAccountNow({ env: envFor(kv), budget: makeBudget(45), tool, uid: "SEATX1", trigger: "manual", now: cst(10) });
     assert.equal(view.status, "error", "停用中的工具不该被手动执行");
     assert.match(view.message, /已停用/, `回执要说清为什么：${view.message}`);
     assert.equal(stub.seen.length, 0, `被拒绝了却还是发了 ${stub.seen.length} 个上游请求：隐藏按钮不等于权限`);
     // 走路由也一样拒
-    const page = await hit("/account/demo/SEATX1/run", { method: "POST", body: form({ pwd: PASSWORD }), env: envFor(kv) });
+    const page = await hit("/account/fix/SEATX1/run", { method: "POST", body: form({ pwd: PASSWORD }), env: envFor(kv) });
     assert.match(page.text, /已停用/, "页面上要看得见拒绝的原因");
     assert.equal(stub.seen.length, 0, "直接敲 URL 绕过了开关");
 
@@ -2858,20 +2917,20 @@ test("[阶段5] 停用中直接 POST 手动执行：被拒绝，且一个上游�
   } finally { stub.restore(); }
 });
 
-test("[阶段5] 界面：停用的卡片变暗 + 显示开关状态，停用中隐藏「执行」保留「测试」", async () => {
+fixtureTest("[阶段5] 界面：停用的卡片变暗 + 显示开关状态，停用中隐藏「执行」保留「测试」", async () => {
   const kv = fakeKv();
   const env = envFor(kv);
   await createAccount(env, kv);
   // 必须先造一个"需要处理"的账号，否则红条那一条根本无从验证：
   // stuck 为 0 时红条两条分支都渲染成空，改代码它照样绿 —— 那是空断言。
-  kv.store.set("v1:schedidx:demo", JSON.stringify({
+  kv.store.set("v1:schedidx:fix", JSON.stringify({
     day: null, entries: { ABCD1234: { ...schedOf(), lastStatus: "login_required", lastStatusDate: logicalDay(0, cst(10)) } },
   }));
 
   const on = await authed("/", env);
   assert.match(on.text, /1 个账号需要处理/, "前置：开着的时候红条该亮");
 
-  offFlags(kv, ["demo"]);
+  offFlags(kv, ["fix"]);
   const home = await authed("/", env);
   assert.match(home.text, /已停用/, "卡片上要看得见这个工具停着");
   assert.match(home.text, /class="card dim"/, "停用的卡片要变暗（复用 .dim）");
@@ -2881,9 +2940,9 @@ test("[阶段5] 界面：停用的卡片变暗 + 显示开关状态，停用中�
   assert.match(home.text, /1 个账号（停用中，恢复后仍要处理）/, "停用中仍要如实显示待处理数量");
   // 进度与最后结果照常显示：用户要的是"我知道它不动，但我也知道它停在哪"
   assert.match(home.text, /今日完成/, "停用中也要显示今日进度");
-  assert.ok(home.text.includes("/tool/demo/toggle"), "卡片上要有开关");
+  assert.ok(home.text.includes("/tool/fix/toggle"), "卡片上要有开关");
 
-  const page = await authed("/tool/demo", env);
+  const page = await authed("/tool/fix", env);
   assert.ok(!page.text.includes(">执行<"), `停用中不该显示「执行」：${page.text.match(/<button[^>]*>[^<]*/g)?.join(" | ")}`);
   assert.ok(page.text.includes(">测试<"), "停用中要保留「测试」");
   assert.match(page.text, /已停用/, "工具页要说明停用语义");
@@ -2891,21 +2950,21 @@ test("[阶段5] 界面：停用的卡片变暗 + 显示开关状态，停用中�
   assert.match(page.text, /有 1 个账号处于失败或需重新登录状态/, "停用中要如实说明还有几个待处理");
 });
 
-test("[阶段5] 开关切换是 POST：成功回执跳回总览，不许 GET 改状态", async () => {
+fixtureTest("[阶段5] 开关切换是 POST：成功回执跳回总览，不许 GET 改状态", async () => {
   const kv = fakeKv();
   const env = envFor(kv);
   await createAccount(env, kv);
-  assert.equal((await authed("/tool/demo/toggle", env)).status, 404, "GET 不该改状态");
+  assert.equal((await authed("/tool/fix/toggle", env)).status, 404, "GET 不该改状态");
 
-  const off = await hit("/tool/demo/toggle", { method: "POST", body: form({ pwd: PASSWORD }), env });
+  const off = await hit("/tool/fix/toggle", { method: "POST", body: form({ pwd: PASSWORD }), env });
   assert.equal(off.status, 303);
   assert.ok(off.headers.get("location").includes("/?"), `该跳回总览，实际 ${off.headers.get("location")}`);
-  assert.deepEqual(JSON.parse(kv.store.get("v1:flags")).demo.off, true);
+  assert.deepEqual(JSON.parse(kv.store.get("v1:flags")).fix.off, true);
   const home = await hit(off.headers.get("location"), { env });
   assert.match(home.text, /已停用/, "回执要说清楚");
 
-  const on = await hit("/tool/demo/toggle", { method: "POST", body: form({ pwd: PASSWORD }), env });
-  assert.equal(JSON.parse(kv.store.get("v1:flags")).demo.off, false);
+  const on = await hit("/tool/fix/toggle", { method: "POST", body: form({ pwd: PASSWORD }), env });
+  assert.equal(JSON.parse(kv.store.get("v1:flags")).fix.off, false);
   const back = await hit(on.headers.get("location"), { env });
   assert.match(back.text, /已恢复/, "恢复也要有回执");
   assert.doesNotMatch(back.text, /class="card dim"/, "恢复后卡片不该还暗着");
@@ -2914,28 +2973,28 @@ test("[阶段5] 开关切换是 POST：成功回执跳回总览，不许 GET 改
 test("[阶段5] 不做「全部停用」总开关：停用标记只影响该工具自己", async () => {
   // 用户明确拒绝过"全部停用"。这条把它钉住：任何一个工具的 off 都不许波及其它工具。
   const kv = fakeKv();
-  const tools = ["demo", "t2", "t3"].map((id) => syntheticTool(id));
+  const tools = ["fix", "t2", "t3"].map((id) => syntheticTool(id));
   tools.forEach((t, i) => seedFor(kv, t.id, `SEAT${i}1`));
   offFlags(kv, ["t2"]);
   const { summary } = await tickWith(kv, tools, 45, cst(10));
   const skipped = summary.plan.filter((p) => p.skipped).map((p) => p.tool);
   assert.deepEqual(skipped, ["t2"], `只有 t2 该被跳过，实际 ${JSON.stringify(skipped)}`);
-  assert.equal(planOf(summary, "demo").accounts.length, 1, "demo 该照常跑");
+  assert.equal(planOf(summary, "fix").accounts.length, 1, "fix 该照常跑");
   assert.equal(planOf(summary, "t3").accounts.length, 1, "t3 该照常跑");
   // 存储形状：单键存全部工具，不是每工具一个键（那会让读一次变成 N 次 get）
   assert.deepEqual(Object.keys(JSON.parse(kv.store.get("v1:flags"))), ["t2"]);
 });
 
-test("[阶段5] /api/state 报出停用状态，说明页写清开关语义", async () => {
+fixtureTest("[阶段5] /api/state 报出停用状态，说明页写清开关语义", async () => {
   const kv = fakeKv();
   const env = envFor(kv);
   await createAccount(env, kv);
-  offFlags(kv, ["demo"]);
+  offFlags(kv, ["fix"]);
 
   const state = JSON.parse((await authed("/api/state", env)).text);
   assert.equal(state.stage, 5);
-  const demo = state.tools.find((t) => t.id === "demo");
-  assert.equal(demo.off, true, "api/state 要能看出这个工具停着，否则外部看板看不出开关状态");
+  const off = state.tools.find((t) => t.id === "fix");
+  assert.equal(off.off, true, "api/state 要能看出这个工具停着，否则外部看板看不出开关状态");
   assert.equal(state.tools.find((t) => t.id === "qoder").off, false, "没标记的默认是开启，不许因为读不到就当成停用");
 
   const help = await authed("/help", env);
@@ -2955,4 +3014,31 @@ test("[阶段5] 说明页不许出现开发进度", async () => {
   // 删掉的那块里有真内容的话要确保没跟着删掉：状态词表与工具清单必须还在
   assert.match(res.text, /状态词汇表/, "状态词表是长期有效的操作信息，不该跟着阶段表一起没掉");
   assert.match(res.text, /已注册的工具/);
+});
+
+test("[阶段5] 注册表里只有三家真实工具，夹具不许留在里面", async () => {
+  // 夹具一旦留在注册表里就会产生真实副作用：占导航一格、被 cron 每 30 分钟调度一次、
+  // 往 /runs 写假记录。演示工具不该有这些。所以它只在测试里临时注入。
+  assert.deepEqual(TOOLS.map((t) => t.id), ["qoder", "trae", "workbuddy"],
+    `注册表不该含夹具或多出别的东西：${TOOLS.map((t) => t.id).join(", ")}`);
+  assert.equal(TOOLS.includes(FIXTURE), false, "夹具被留在注册表里了");
+
+  // 反过来也要成立：夹具必须仍然覆盖内核里只有它能走到的分支，否则
+  // uidField（标识就是用户填的字段）、creds 里的 select、config 里的 select
+  // 会变成无人验证的活代码，而它们是「加第 N 个工具」契约的一半。
+  assert.equal(FIXTURE.uidField, "seatId", "夹具必须声明 uidField，否则那条路径没人走");
+  assert.ok(FIXTURE.creds.some((f) => f.type === "select"), "夹具必须有一个 select 凭据");
+  assert.ok(FIXTURE.config.some((f) => f.type === "select" && f.required), "夹具必须有一个必填的 select 配置项");
+  // 且它真的能走通路由（注入 → 请求 → 落 KV → 摘掉）
+  const kv = fakeKv(); const env = envFor(kv);
+  const inside = await withFixtureTool(async () => {
+    const res = await hit("/account/fix/new", {
+      method: "POST", env, body: form({ pwd: PASSWORD, label: "夹具号", session: SECRET_VALUE, plan: "pro", seatId: "SEAT0001" }),
+    });
+    return { status: res.status, stored: kv.store.has("v1:acct:fix:SEAT0001") };
+  });
+  assert.equal(inside.status, 303, "注入期间路由该认得夹具");
+  assert.equal(inside.stored, true, "uidField 该把用户填的字段直接当 uid 存下来");
+  assert.equal(TOOLS.includes(FIXTURE), false, "withFixtureTool 跑完必须把夹具摘掉，否则会漏给后面的测试");
+  assert.equal((await authed("/tool/fix", env)).status, 404, "摘掉之后路由不该再认得它");
 });

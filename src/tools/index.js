@@ -1,4 +1,3 @@
-import demo from "./demo/index.js";
 import qoder from "./qoder/index.js";
 import trae from "./trae/index.js";
 import workbuddy from "./workbuddy/index.js";
@@ -9,7 +8,7 @@ import workbuddy from "./workbuddy/index.js";
 // 导致口令被当成工具凭据写进 KV），也不得用 "label"（界面层的通用备注名字段）。
 //
 // 顺序由 order 决定（界面与调度都按它排），这里的书写顺序不作为依据。
-const REGISTERED = [qoder, trae, workbuddy, demo];
+const REGISTERED = [qoder, trae, workbuddy];
 
 // 启动期自检：宁可部署时直接报错，也不要等到有人打开首页才 500 且信息毫无指向
 for (const tool of REGISTERED) {
@@ -24,8 +23,10 @@ for (const tool of REGISTERED) {
   if (!Array.isArray(tool.schedule.backoff)) bad("schedule.backoff 必须是数组");
   if (!Array.isArray(tool.creds)) bad("必须声明 creds 数组");
   // 账号标识有两种来源，必须正好有一种：
-  //   uidField —— 标识就是用户填的某个字段（demo 夹具的席位号）
+  //   uidField —— 标识就是用户填的某个字段（企业版员工编号、许可证 key 这类明面标识）
   //   uidOf    —— 标识藏在凭据里，得从 JWT 解出来（三家真实形态：让人抄一遍 sub 只会抄出错别字）
+  // 三家在用的全是 uidOf，但 uidField 分支不是死代码：内核与界面都仍有专门分支处理它，
+  // 工具作者按「加新工具」那条路走时它是契约的一半。
   if (tool.uidField && tool.uidOf) bad("uidField 与 uidOf 只能声明一个");
   if (!tool.uidField && !tool.uidOf) bad("必须声明 uidField 或 uidOf");
   if (tool.uidOf && typeof tool.uidOf !== "function") bad("uidOf 必须是函数");

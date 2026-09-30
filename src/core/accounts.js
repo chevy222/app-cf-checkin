@@ -126,7 +126,7 @@ export async function getAccount(env, toolId, uid) {
 }
 
 export async function saveAccount(env, toolId, { uid, values, label, existing }) {
-  // 空 uid 会拼出以冒号结尾的畸形键（v1:acct:demo:），既读不回来也删不掉。
+  // 空 uid 会拼出以冒号结尾的畸形键（v1:acct:qoder:），既读不回来也删不掉。
   // 路由那条路径有 sanitizeUid 兜着，但工具作者直接调这里时不会有任何提示。
   const safeUid = sanitizeUid(uid);
   if (!safeUid) throw new Error("saveAccount 需要非空 uid");
