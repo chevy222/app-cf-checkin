@@ -2925,3 +2925,21 @@ test("[阶段5] 不做「全部停用」总开关：停用标记只影响该工�
   // 存储形状：单键存全部工具，不是每工具一个键（那会让读一次变成 N 次 get）
   assert.deepEqual(Object.keys(JSON.parse(kv.store.get("v1:flags"))), ["t2"]);
 });
+
+test("[阶段5] /api/state 报出停用状态，说明页写清开关语义", async () => {
+  const kv = fakeKv();
+  const env = envFor(kv);
+  await createAccount(env, kv);
+  offFlags(kv, ["demo"]);
+
+  const state = JSON.parse((await authed("/api/state", env)).text);
+  assert.equal(state.stage, 5);
+  const demo = state.tools.find((t) => t.id === "demo");
+  assert.equal(demo.off, true, "api/state 要能看出这个工具停着，否则外部看板看不出开关状态");
+  assert.equal(state.tools.find((t) => t.id === "qoder").off, false, "没标记的默认是开启，不许因为读不到就当成停用");
+
+  const help = await authed("/help", env);
+  assert.match(help.text, /没有/, "说明页要提到这件事");
+  assert.match(help.text, /全部停用/, "说明页要写明没有「全部停用」总开关，免得用户去找");
+  assert.match(help.text, /一条都不删/, "说明页要写清停用不删数据 —— 这是最该被知道的一条");
+});

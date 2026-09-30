@@ -276,12 +276,14 @@ async function configSave(ctx, tool) {
 async function apiState(env, budget) {
   const counts = {};
   for (const tool of TOOLS) counts[tool.id] = await countAccounts(env, tool.id);
+  const flags = await loadFlags(env);
   return jsonRes({
     ok: true,
-    stage: 4,
+    stage: 5,
     budget: budget ? { used: budget.used, limit: budget.limit, left: budget.left() } : null,
     tools: TOOLS.map((tool) => ({
       id: tool.id, name: tool.name, steps: tool.steps.length, accounts: counts[tool.id],
+      off: isOff(flags, tool.id),
     })),
   });
 }

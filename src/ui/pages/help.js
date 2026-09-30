@@ -7,7 +7,7 @@ const STAGES = [
   { n: 2, name: "会跑", done: true, text: "到期队列 · (账号×步骤) 预算 · 断点续跑 · 逻辑日界 · 退避阶梯" },
   { n: 3, name: "会管", done: true, text: "运行日志列表与详情 · 「测试」「立即执行」按钮 · 空状态与红条细化" },
   { n: 4, name: "接三家", done: true, text: "三家模块已接入；用真实凭据各跑通一轮待验" },
-  { n: 5, name: "收尾", done: false, text: "图标 · 中文 README · 停用旧 Worker" },
+  { n: 5, name: "收尾", done: false, text: "每工具停用开关（已完成）· 图标 · 中文 README · 停用旧 Worker" },
 ];
 
 export function renderHelp({ pwd, tools }) {
@@ -36,6 +36,16 @@ export function renderHelp({ pwd, tools }) {
       <div class="pane">${stages}</div>
       ${sectionHead("已注册的工具")}
       <div class="pane">${toolsList}</div>
+      ${sectionHead("停用某个工具")}
+      <div class="pane"><p class="sub" style="margin:0 0 10px">总览页每张工具卡片上有一个独立开关，只停一家，不影响其它。</p>
+        <p class="tiny" style="margin:0">停用后：cron 与「立即执行」都跳过它，别的工具照常；卡片变暗并显示停用时间，
+        但「今日完成 / 最后结果 / 步骤色块」照常显示，方便你看出它停在哪一步。
+        <b>账号、凭据与当天进度一条都不删</b> —— 重新打开就从停下的那一步接着做，已完成的那步不会重做
+        （重做会真的再打一次上游，WorkBuddy 的开盲盒每调一次就扣 10 点能量）。
+        停用中「执行」按钮隐藏，只保留「测试」「编辑」「删除」；直接敲 URL 也会被服务端拒绝。
+        跨过当天的额度重置时刻（各家不同）再打开，则按新的那一天从头算，这是本来的行为。
+        这里<b>没有</b>「全部停用」总开关。</p>
+      </div>
       ${sectionHead("状态词汇表")}
       <div class="pane">${statuses}
         <p class="tiny" style="margin-top:12px">形状、颜色、中文三重冗余：去掉颜色只看形状也读得懂。只有挂锁与八边形需要你动手，其余都会自己好。</p>
