@@ -1,4 +1,5 @@
 import { escapeHtml } from "../core/text.js";
+import { VERSION } from "../version.js";
 
 const CSS = `
 :root{color-scheme:light dark;
@@ -139,6 +140,10 @@ table.t tr:last-child td{border-bottom:0}
 .empty{text-align:center;padding:30px 20px}
 .empty .mark{width:44px;height:44px;border-radius:12px;background:var(--panel3);color:var(--muted);
   display:grid;place-items:center;margin:0 auto 12px}
+.ft{margin-top:28px;text-align:center;color:var(--faint);font-size:11.5px}
+.ft a{color:var(--faint);text-decoration:none}
+.ft a:hover{color:var(--accent)}
+.ft .sep{margin:0 7px}
 @media (max-width:860px){.split{grid-template-columns:1fr}}
 `;
 
@@ -200,6 +205,7 @@ export function pageShell({ title, pwd, nav = "", body }) {
     <div class="right"><span class="tiny">口令已随链接携带</span></div>
   </div>
   ${body}
+  <footer class="ft">${VERSION}<span class="sep">·</span><a href="https://github.com/chevy222/app-cf-checkin" target="_blank" rel="noopener">Powered by GitHub</a></footer>
 </div></body></html>`;
 }
 

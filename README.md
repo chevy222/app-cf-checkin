@@ -62,11 +62,14 @@ npx wrangler secret put PASSWORD
 **第 5 步 · 部署**
 
 ```bash
-npx wrangler deploy
+npm run deploy
 ```
 
 输出里的 `https://checkin.<你的子域>.workers.dev` 就是你的签到台。
 浏览器打开、输入口令，按「新增账号」页左侧的教程把三家账号加进去，当天就能开始领。
+
+这个命令会先把页面底部的版本号（`yyyy-MM-dd:NN`）递增到「今天的下一个序号」
+—— 同一天发一次 +1，第二天回到 01 —— 然后再执行部署。
 
 <details>
 <summary>单文件粘贴（备用方式）</summary>

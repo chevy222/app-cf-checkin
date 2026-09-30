@@ -16,6 +16,7 @@ import { expiresAtOf, subjectOf } from "../src/core/jwt.js";
 import { ICONS, iconImg } from "../src/ui/icons.js";
 import { TUTORIALS, renderTutorial } from "../src/ui/tutorials.js";
 import { dayOf, isDue } from "../src/core/scheduler.js";
+import { nextVersion } from "../src/version.js";
 
 const PASSWORD = "correct-horse-battery";
 const SECRET_VALUE = "eyJhbGciOiJIUzI1NiJ9.SUPERSECRETVALUE.doNotLeak";
@@ -3096,6 +3097,20 @@ test("[说明页不许出现开发进度", async () => {
   // 删掉进度表不能连带删掉真内容：状态词表与工具清单必须还在
   assert.match(res.text, /状态词汇表/, "状态词表是长期有效的操作信息，不该跟着进度表一起没掉");
   assert.match(res.text, /已注册的工具/);
+});
+
+test("页面底部有版本号与 GitHub 链接", async () => {
+  const res = await authed("/", envFor(fakeKv()));
+  // 版本号 yyyy-MM-dd:NN 由 tools/bump-version.mjs 在部署前写入，footer 全站共用
+  assert.match(res.text, /class="ft">\d{4}-\d{2}-\d{2}:\d{2}</, "版本号缺失或格式不对");
+  assert.ok(res.text.includes('href="https://github.com/chevy222/app-cf-checkin"'), "GitHub 链接缺失");
+  assert.ok(res.text.includes("Powered by GitHub"));
+});
+
+test("版本号递增：当天 +1，跨天回 01", () => {
+  assert.equal(nextVersion("2026-10-01:01", "2026-10-01"), "2026-10-01:02");
+  assert.equal(nextVersion("2026-10-01:09", "2026-10-01"), "2026-10-01:10");
+  assert.equal(nextVersion("2026-09-30:07", "2026-10-01"), "2026-10-01:01");
 });
 
 test("[注册表里只有三家真实工具，夹具不许留在里面", async () => {
