@@ -22,11 +22,11 @@ const SECRET_VALUE = "eyJhbGciOiJIUzI1NiJ9.SUPERSECRETVALUE.doNotLeak";
 // ── 夹具工具 ──
 //
 // 它**不在注册表里**，只在需要它的测试里临时注入（withFixtureTool）。
-// 为什么这样而不是像从前那样放一个 FIX 进注册表：
+// 为什么这样而不是像从前那样放一个进注册表：
 //   · 注册表是生产事实。放进去的工具会占导航一格、被 cron 每 30 分钟调度一次、
 //     往 /runs 写假记录 —— 演示夹具不该产生这些副作用。
-//   · 但内核有几条分支只有它能走到：三家全是 uidOf，而 uidField（标识就是用户
-//     填的某个字段）没有真实工具在用；creds 里的 select / config 里的 select 同理。
+//   · 但内核有几条分支只有它能走到：creds 里的 select 与 config 里的 select
+//     三家真实工具一个都没有（它们全是 textarea / text / datetime）。
 //     把这些分支删掉等于让「加第 N 个工具」少掉契约的一半。
 // 所以：夹具不注册，但必须真跑。
 const FIXTURE = {
@@ -53,7 +53,10 @@ const FIXTURE = {
     // 30 在默认 45 的轮次里连单账号都做不完，这个夹具就观察不到"两步都做成"了。
     { id: "survey", label: "顺手做份问卷", cost: 20, dependsOn: ["claim"], async run() { return { status: "claimed", message: "问卷已提交 +20", credits: 20 }; } },
   ],
-  uidField: "seatId",
+  // 三家真实工具都是 uidOf，夹具也统一用 uidOf（uidField 已删）。
+  // 它取 seatId 当标识 —— 与从前 uidField: "seatId" 的效果完全一样，
+  // 区别是现在这条路径和其它工具走的是同一段代码，而不是一条独立分支。
+  uidOf: (ctx) => String(ctx.values.seatId || "").trim(),
   async validate() { return { status: "ok", message: "会话票据格式有效（夹具不联网，不做真实校验）" }; },
 };
 
@@ -715,16 +718,30 @@ test("[P0-1] 平台未配置时连请求体都不读", async () => {
   assert.equal(request.bodyUsed, false, "未配置 PASSWORD 时不该消耗请求体");
 });
 
-fixtureTest("[P1-2] 编辑时改 uid 字段被拒，键与记录不脱钩", async () => {
+fixtureTest("[P1-2] 编辑时换掉凭据导致 uid 变了：被拒，键与记录不脱钩", async () => {
+  // uid 现在只有一个来源（uidOf），而这个夹具的 uidOf 取的正是 seatId ——
+  // 所以"改 seatId"就等于"改 uid"，内核必须认出这是换身份而不是改备注。
+  // 拒绝的依据不是"字段被保护"，而是算出来的 uid 与本页 uid 不是同一个。
   const kv = fakeKv(); const env = envFor(kv);
   await createAccount(env, kv);
   const res = await hit("/account/fix/ABCD1234/edit", {
     method: "POST", env, body: form({ pwd: PASSWORD, label: "甲", session: "", plan: "pro", seatId: "WXYZ9999" }),
   });
   assert.equal(res.status, 409);
-  assert.deepEqual([...kv.store.keys()], ["v1:acct:fix:ABCD1234"]);
-  assert.equal(JSON.parse(kv.store.get("v1:acct:fix:ABCD1234")).cred.seatId, "ABCD1234");
-  assert.ok(res.text.includes("不可修改"));
+  assert.deepEqual([...kv.store.keys()], ["v1:acct:fix:ABCD1234"], "被拒的编辑不许留下半个账号或新键");
+  assert.equal(JSON.parse(kv.store.get("v1:acct:fix:ABCD1234")).cred.seatId, "ABCD1234", "凭据不该被改掉");
+  assert.match(res.text, /不是同一个|不可修改/, `要说清为什么被拒：${res.text.match(/<div class="err">[^<]*/)?.[0] ?? "没看到错误文案"}`);
+  // 反过来：凭据原样重交、只改备注名，必须放行。
+  // 这条比"没动凭据就不重算"更值得断言 —— 必填非敏感字段（这里的 seatId 与 plan）
+  // 编辑时不能留空，所以每次编辑都必然重算一遍 uidOf；它算出同一个 uid 就该顺利通过。
+  // （真正"没动凭据就不重算"的那条路径由三家真实工具的 secret 字段走，
+  //   敏感字段留空 = 保持原值，credTouched 为假，压根不调 uidOf。）
+  const ok = await hit("/account/fix/ABCD1234/edit", {
+    method: "POST", env, body: form({ pwd: PASSWORD, label: "改个名", session: "", code: "", plan: "pro", seatId: "ABCD1234" }),
+  });
+  assert.equal(ok.status, 303, `凭据原样重交不该被挡：${ok.text.slice(0, 300)}`);
+  assert.equal(JSON.parse(kv.store.get("v1:acct:fix:ABCD1234")).label, "改个名");
+  assert.equal(JSON.parse(kv.store.get("v1:acct:fix:ABCD1234")).cred.session, SECRET_VALUE, "敏感字段不该被清空");
 });
 
 test("[P1-3] 9–12 位短凭据整串隐藏", () => {
@@ -861,7 +878,7 @@ function syntheticTool(id, steps) {
     id, name: id, order: 1, summary: "", config: [],
     creds: [{ key: "seatId", label: "席位", required: true }],
     schedule: { resetHour: 0, notBeforeHour: 0, minIntervalSec: 1800, maxDaily: 10, backoff: [5, 15] },
-    hosts: [], uidField: "seatId",
+    hosts: [], uidOf: (ctx) => String(ctx.values.seatId || "").trim(),
     steps: steps || [{ id: "claim", label: "领取", cost: 4, async run() { return { status: "claimed", message: "ok", credits: 1 }; } }],
   };
 }
@@ -2730,7 +2747,7 @@ test("[审核P0-2c] 收尾最坏 7 笔没预约住时，宁可整步顺延也不
     id: "rot", name: "轮换夹具", order: 1, summary: "", config: [],
     creds: [{ key: "seatId", label: "席位", required: true }, { key: "session", label: "会话", secret: true }],
     schedule: { resetHour: 0, notBeforeHour: 0, minIntervalSec: 1800, maxDaily: 10, backoff: [] },
-    hosts: [], uidField: "seatId",
+    hosts: [], uidOf: (ctx) => String(ctx.values.seatId || "").trim(),
     steps: [{
       id: "big", label: "大步骤", cost: 32,
       async run(ctx) {
@@ -3057,9 +3074,9 @@ test("[阶段5] 注册表里只有三家真实工具，夹具不许留在里面"
   assert.equal(TOOLS.includes(FIXTURE), false, "夹具被留在注册表里了");
 
   // 反过来也要成立：夹具必须仍然覆盖内核里只有它能走到的分支，否则
-  // uidField（标识就是用户填的字段）、creds 里的 select、config 里的 select
-  // 会变成无人验证的活代码，而它们是「加第 N 个工具」契约的一半。
-  assert.equal(FIXTURE.uidField, "seatId", "夹具必须声明 uidField，否则那条路径没人走");
+  // creds 里的 select 与 config 里的 select 会变成无人验证的活代码，
+  // 而它们是「加第 N 个工具」契约的一半。
+  assert.equal(typeof FIXTURE.uidOf, "function", "夹具必须声明 uidOf");
   assert.ok(FIXTURE.creds.some((f) => f.type === "select"), "夹具必须有一个 select 凭据");
   assert.ok(FIXTURE.config.some((f) => f.type === "select" && f.required), "夹具必须有一个必填的 select 配置项");
   // 且它真的能走通路由（注入 → 请求 → 落 KV → 摘掉）
@@ -3071,9 +3088,39 @@ test("[阶段5] 注册表里只有三家真实工具，夹具不许留在里面"
     return { status: res.status, stored: kv.store.has("v1:acct:fix:SEAT0001") };
   });
   assert.equal(inside.status, 303, "注入期间路由该认得夹具");
-  assert.equal(inside.stored, true, "uidField 该把用户填的字段直接当 uid 存下来");
+  assert.equal(inside.stored, true, "uidOf 该把凭据算出的标识当 uid 存下来");
   assert.equal(TOOLS.includes(FIXTURE), false, "withFixtureTool 跑完必须把夹具摘掉，否则会漏给后面的测试");
   assert.equal((await authed("/tool/fix", env)).status, 404, "摘掉之后路由不该再认得它");
+});
+
+test("[阶段5] uidField 已彻底删除：契约里只剩 uidOf 一个来源", async () => {
+  // uidField 不是一种能力，是 uidOf 的语法糖（uidField: "x" ≡ uidOf: c => c.values.x）。
+  // 留着它等于在契约里多放一个"必须和 uidOf 保持行为一致"的分支，而没有任何机制
+  // 能保证这一点。三家在用的都是 uidOf，没有任何工具的身份是表单上的明面字段。
+  const { readFileSync } = await import("node:fs");
+  const files = [
+    "src/core/router.js", "src/core/accounts.js", "src/ui/pages/tool.js",
+    "src/tools/index.js", "src/ui/forms.js", "src/core/scheduler.js", "src/core/runner.js",
+  ];
+  for (const file of files) {
+    const text = readFileSync(file, "utf8");
+    // 只看代码：注释里提到 uidField 是解释为什么删的，属于这个项目最有价值的知识
+    const code = text.split("\n").filter((line) => !line.trim().startsWith("//")).join("\n");
+    assert.ok(!code.includes("uidField"), `${file} 的代码里还有 uidField`);
+  }
+  // 注册表自检现在只认 uidOf
+  assert.deepEqual(TOOLS.map((t) => typeof t.uidOf), ["function", "function", "function"],
+    "三家工具都必须声明 uidOf");
+  // 少声明 uidOf 要在**模块加载时**就报错（部署时直接失败，而不是第一次建号才炸）。
+  // 断言自检里那条判定确实在，别让它被改松。
+  const entry = readFileSync("src/tools/index.js", "utf8");
+  assert.match(entry, /if \(!tool\.uidOf\) bad\(/, "自检必须有一条「缺 uidOf 就报错」的判定");
+  assert.ok(!/uidField/.test(entry.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")),
+    "注册表自检里不该再有 uidField");
+  // 表单文案只有一种形态了
+  const form = readFileSync("src/ui/pages/tool.js", "utf8");
+  assert.match(form, /保存时从凭据里自动解出，不用另外填/);
+  assert.doesNotMatch(form, /自动得出/, "uidField 那句文案该随之消失");
 });
 
 test("[阶段5] 图标内联在 data URI 里，且必须是 PNG", async () => {

@@ -120,9 +120,8 @@ export function renderAccountForm({ pwd, tool, fields, values, existing, errors,
   // 这句话必须从工具的声明里生成。之前它写死了 demo 夹具的字段名「席位号」，
   // 于是接上真工具后 Qoder 的表单也在教用户去找一个根本不存在的输入框 ——
   // 界面写死具体工具的名字，就是"加工具不改内核"这条承诺的反例。
-  const uidSourceLabel = tool.uidOf
-    ? "保存时从凭据里自动解出，不用另外填"
-    : `保存时由「${(tool.creds.find((f) => f.key === tool.uidField) || {}).label || tool.uidField}」自动得出`;
+  // 现在 uidOf 是唯一来源（uidField 已删），所以这句话不再有第二种形态。
+  const uidSourceLabel = "保存时从凭据里自动解出，不用另外填";
   const uidRow = uid
     ? `<div class="kv"><span class="k">uid</span><span class="v">${escapeHtml(uid)}</span></div>`
     : `<div class="kv"><span class="k">uid</span><span class="v dim">${escapeHtml(uidSourceLabel)}</span></div>`;

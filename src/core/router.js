@@ -100,18 +100,25 @@ async function accountNewPage(ctx, tool) {
   return accountForm(ctx, tool, {});
 }
 
-// 账号标识从哪来，两种来源都要过同一道 sanitizeUid：
-//   uidField —— 用户填的某个字段就是标识（员工编号、许可证 key 这类明面标识）
-//   uidOf    —— 标识藏在凭据里（三家的真实形态：qoder 是 JWT 的 sub，
-//                trae 得打一次 GetUserInfo）。让人再抄一遍 sub 只会抄出错别字，
-//                而抄错的 sub 会另起一个 acct 键 —— 旧 qoder 用会轮换的 refresh_token
-//                兜底算 uid，续一次期就把自己的账号记录孤立掉了。
-// 两者的差别只在"从哪来"，往后（存键、调度、进度、锁）完全共用同一条路。
+// 账号标识从哪来：只有一个来源 —— 工具自己给的 uidOf 函数。
+// 内核不认识任何具体站点，所以它没法凭空知道"这个工具的账号叫什么"；
+// 让每个工具自己回答，是唯一能做到"加工具零改动"的方式。
+//
+// 曾经还有第二种声明 uidField（"标识就是用户填的某个字段"），现已删除：
+// 它不是一种能力，而是 uidOf 的语法糖 —— uidField: "seatId" 等价于
+// uidOf: (ctx) => ctx.values.seatId，而 uidOf 什么都能做。留着它等于在契约里
+// 多放一个"必须和 uidOf 保持行为一致"的分支，而没有任何机制能保证这一点。
+// 三家在用的都是 uidOf（Qoder/WorkBuddy 解 JWT 的 sub，Trae 问一次 GetUserInfo），
+// 没有任何一个工具的身份是表单上的明面字段。
+//
+// 为什么不让用户自己抄一遍 uid：抄错就是另一个键名，账号记录会原地孤立
+// 且不报错（旧 qoder 用会轮换的 refresh_token 兜底算 uid，续一次期就换了个键）。
+// 宁可多花一次子请求（Trae 打一次 GetUserInfo），也不让人手抄。
+//
 // uidOf 可以只返回 uid，也可以返回 {uid, cred}：后者允许它把解出来的派生字段
 // （比如令牌的到期时间）一并存进去。不这么做的话新账号没有 expiresAt，
 // 第一次运行就得白换一次票。
 async function resolveUid(ctx, tool, values) {
-  if (!tool.uidOf) return { uid: sanitizeUid(values[tool.uidField]), cred: null };
   const config = await getJson(requireKv(ctx.env), toolKey(tool.id), {});
   const fetched = trackedFetch(ctx.budget, tool.hosts);
   try {
@@ -138,7 +145,9 @@ async function accountEditPage(ctx, tool, uid) {
 async function accountCreate(ctx, tool) {
   const fields = accountFields(tool);
   const { values, errors } = coerceFields(fields, ctx.form);
-  const uidKey = tool.uidField || (tool.creds.find((field) => field.required && !field.readonly) || {}).key;
+  // 算不出 uid 时把错误挂在哪个字段上：uid 是从凭据解出来的，所以挂在
+  // "第一个必填的凭据字段"上 —— 对三家来说都是那个令牌字段，语义正确。
+  const uidKey = (tool.creds.find((field) => field.required && !field.readonly) || {}).key;
 
   // 先验字段再算 uid：uidOf 可能要打一次上游（Trae），格式都不对的提交不该花那份预算
   if (Object.keys(errors).length) {
@@ -187,24 +196,21 @@ async function accountUpdate(ctx, tool, uid) {
   const fields = accountFields(tool);
   const { values, errors } = coerceFields(fields, ctx.form, { editing: true });
 
-  // uid 是 KV 键名的一部分，建立后不可改。两种来源要分开说：
-  //   uidField —— 用户自己填的字段被改了，直接说"不可修改"
-  //   uidOf    —— 用户把别的号的票据粘进了这个账号：不是"改标识"，是拿别人的凭据
-  //                顶着旧 uid 跑，于是界面显示的名字与真实身份再也不一致
+  // uid 是 KV 键名的一部分，建立后不可改。而 uid 是从凭据解出来的，所以用户能
+  // "改"它的唯一途径就是换一张票据 —— 那不是改标识，是拿别人的凭据顶着旧 uid 跑，
+  // 于是界面显示的名字与真实身份再也不一致，系统还不会告诉你。
   //
   // 只在"这次真的动了凭据"时才重新算 uid：敏感字段留空本来就是"保持原值"，
   // 而算 uid 可能要打上游（Trae 是 GetUserInfo）。不加这个条件，
   // 票据一过期，用户连改个备注名都会被"取不出账号标识"挡住。
   const credKeys = new Set((tool.creds || []).map((field) => field.key));
   const credTouched = Object.keys(values).some((key) => credKeys.has(key));
-  const derived = tool.uidOf && !credTouched ? { uid, cred: null } : await resolveUid(ctx, tool, { ...account.cred, ...values });
-  const uidKeyName = tool.uidField || (tool.creds.find((field) => field.required && !field.readonly) || {}).key;
+  const derived = !credTouched ? { uid, cred: null } : await resolveUid(ctx, tool, { ...account.cred, ...values });
+  const uidKeyName = (tool.creds.find((field) => field.required && !field.readonly) || {}).key;
   if (derived.error) {
     errors[uidKeyName] = `校验账号标识失败：${derived.error}`;
   } else if (derived.uid && derived.uid !== uid) {
-    errors[uidKeyName] = tool.uidOf
-      ? `这张凭据属于账号 ${derived.uid}，与本页要编辑的 ${uid} 不是同一个。要录另一个号请用「新增账号」`
-      : "账号标识（uid）建立后不可修改，请删除后重新添加";
+    errors[uidKeyName] = `这张凭据属于账号 ${derived.uid}，与本页要编辑的 ${uid} 不是同一个。要录另一个号请用「新增账号」`;
   }
 
   if (Object.keys(errors).length) {

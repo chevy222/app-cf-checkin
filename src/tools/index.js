@@ -22,14 +22,17 @@ for (const tool of REGISTERED) {
   if (tool.steps.some((s) => typeof s.run !== "function")) bad("每个步骤必须实现 run()");
   if (!Array.isArray(tool.schedule.backoff)) bad("schedule.backoff 必须是数组");
   if (!Array.isArray(tool.creds)) bad("必须声明 creds 数组");
-  // 账号标识有两种来源，必须正好有一种：
-  //   uidField —— 标识就是用户填的某个字段（企业版员工编号、许可证 key 这类明面标识）
-  //   uidOf    —— 标识藏在凭据里，得从 JWT 解出来（三家真实形态：让人抄一遍 sub 只会抄出错别字）
-  // 三家在用的全是 uidOf，但 uidField 分支不是死代码：内核与界面都仍有专门分支处理它，
-  // 工具作者按「加新工具」那条路走时它是契约的一半。
-  if (tool.uidField && tool.uidOf) bad("uidField 与 uidOf 只能声明一个");
-  if (!tool.uidField && !tool.uidOf) bad("必须声明 uidField 或 uidOf");
-  if (tool.uidOf && typeof tool.uidOf !== "function") bad("uidOf 必须是函数");
+  // 账号标识只有一个来源：uidOf —— 一个"拿到表单值、算出账号身份"的函数。
+  // 内核不认识任何具体站点，没法凭空知道"这个工具的账号叫什么"，所以只能由工具回答。
+  // 三家在用的都是 uidOf：Qoder 与 WorkBuddy 解 JWT 的 sub（0 次子请求），
+  // Trae 问一次 GetUserInfo（1 次子请求）。
+  //
+  // 曾经还有一个 uidField（"标识就是用户填的某个字段"），已删：它等价于
+  // uidOf: (ctx) => ctx.values.<字段>，是语法糖而不是能力，留着只是多一个
+  // 要和 uidOf 保持行为一致的分支。将来工具的身份若真是明面上一个编号
+  // （员工编号、许可证 key），写一行 uidOf 即可。
+  if (!tool.uidOf) bad("必须声明 uidOf（函数：拿到表单值，返回账号标识）");
+  if (typeof tool.uidOf !== "function") bad("uidOf 必须是函数");
   if (!tool.schedule) bad("必须声明 schedule");
   if ([...tool.config || [], ...tool.creds].some((f) => f.key === "pwd" || f.key === "label")) {
     bad("字段 key 不得使用保留字 pwd / label");

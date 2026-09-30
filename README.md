@@ -246,20 +246,18 @@ export default {
     { key: "expiresAt", label: "令牌到期时间", type: "datetime", readonly: true },
   ],
 
-  // 账号标识从哪来 —— 两种来源正好选一种：
-  //   uidOf    标识藏在凭据里，平台解出来（qoder 是 JWT 的 sub，trae 要打一次 API）。
-  //            **优先用这个**：让人抄一遍 sub 只会抄出错别字，而抄错的 sub 会另起一个
-  //            acct 键 —— 旧 qoder 用会轮换的 refresh_token 兜底算 uid，
-  //            续一次期就把自己的账号记录孤立掉了。
-  //            ⚠️ uidOf 拿到的 ctx 与步骤的 ctx **不是同一个**：
-  //            它收到 { values, config, tool, env, budget, fetch }，
-  //            凭据在 ctx.values 里（还没有 account，因为账号还没建出来）。
-  //            返回字符串或 { uid, cred } 都行，后者可顺手把 expiresAt 之类的
-  //            派生字段带进新账号，省得第一次运行白换一次票。
+  // 账号标识从哪来 —— 工具自己回答，内核不认识任何具体站点，没法凭空知道
+  // "这个工具的账号叫什么"。三家在用的都是这个：
+  //   Qoder / WorkBuddy  解 JWT 的 sub（0 次子请求）
+  //   Trae               问一次 GetUserInfo（1 次子请求）
+  // 为什么不让人自己抄一遍 uid：抄错就是另一个键名，账号记录会原地孤立且不报错
+  //（旧 qoder 用会轮换的 refresh_token 兜底算 uid，续一次期就换了个键）。
+  // ⚠️ uidOf 拿到的 ctx 与步骤的 ctx **不是同一个**：
+  //   它收到 { values, config, tool, env, budget, fetch }，
+  //   凭据在 ctx.values 里（还没有 account，因为账号还没建出来）。
+  //   返回字符串或 { uid, cred } 都行，后者可顺手把 expiresAt 之类的
+  //   派生字段带进新账号，省得第一次运行白换一次票。
     uidOf: (ctx) => ({ uid: subjectOf(unwrap(ctx.values.accessToken)) }),
-
-  // 另一种是 uidField：标识就是用户填的某个字段（员工编号、许可证 key 这类明面标识）。
-  // uidField: "seatId",
 
   schedule: {
     resetHour: 0,          // 逻辑日界：几点算"新的一天"。各家不同，别自己算
@@ -339,8 +337,8 @@ const REGISTERED = [qoder, trae, workbuddy, example];
 
 注册表的启动期自检会挡住这些低级错误：缺 `id`/`name`、`steps` 为空数组、
 某步没有 `id`、某步 `cost` 不是正数、某步没实现 `run()`、`creds` 不是数组、
-`schedule.backoff` 不是数组、没声明 `schedule`、`uidField` 与 `uidOf` 同时声明或都不声明、
-`uidOf` 不是函数、字段 key 用了保留字 `pwd` / `label`。
+`schedule.backoff` 不是数组、没声明 `schedule`、没声明 `uidOf`、`uidOf` 不是函数、
+字段 key 用了保留字 `pwd` / `label`。
 
 > 自检**不检查** `icon` —— 那是可选字段。加新工具不必急着配图，没图就不渲染 `<img>`。
 
