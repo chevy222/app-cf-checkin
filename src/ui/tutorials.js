@@ -163,7 +163,8 @@ if ($sess -and $sess.token) {
       step("取出 Aha 设备号（8–16 位数字）",
         "打开一个 PowerShell（Windows）或终端（macOS），整段复制回车。三个候选路径对应"
         + " SOLO 国内版 / Trae 国内版 / Trae 国际版，哪个存在就打印哪一行。",
-        `$paths = @(
+        `& {
+$paths = @(
   "$env:APPDATA\\TRAE SOLO CN\\User\\globalStorage\\storage.json",
   "$env:APPDATA\\Trae CN\\User\\globalStorage\\storage.json",
   "$env:APPDATA\\Trae\\User\\globalStorage\\storage.json"
@@ -174,6 +175,7 @@ foreach ($p in $paths) {
       ForEach-Object { $_.Matches } |
       ForEach-Object { "找到设备号: " + $_.Groups[1].Value }
   }
+}
 }`),
       step("打开登录链接",
         "复制下面这行到 PowerShell 回车，它会直接用默认浏览器打开 Trae 登录页。"
@@ -249,7 +251,8 @@ if (-not $rt) { Write-Host "（回调里没有 refreshToken —— 请确认整�
       step("用验证码换 Token",
         "把手机号和 `123456` 换成实际收到的验证码（有效期约 5 分钟）。"
         + "执行后输出两行值，复制保存好 —— 下一步要填。",
-        `$r = Invoke-RestMethod -Uri "https://www.workbuddy.cn/v2/plugin/login/token" \`
+        `& {
+$r = Invoke-RestMethod -Uri "https://www.workbuddy.cn/v2/plugin/login/token" \`
   -Method Post -ContentType "application/json" \`
   -Body '{"login_method":"phone","phone":"13800000000","sms_code":"123456"}'
 
@@ -265,7 +268,8 @@ Write-Host "====== 填到「新增账号」======" -ForegroundColor Cyan
 Write-Host "Access Token : $at"
 Write-Host "Refresh Token: $rt"
 Write-Host "uid 校验      : $($j.sub)"
-Write-Host "=================================" -ForegroundColor Cyan`),
+Write-Host "=================================" -ForegroundColor Cyan
+}`),
       step("填到表单",
         "两个令牌填进表单，**`uid` 不用填** —— 平台会从令牌的 `sub` 自己解出来"
         + "（上面那行 `uid 校验` 就是让你对得上号）。令牌到期时间也自动。"),

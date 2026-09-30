@@ -282,6 +282,7 @@ if ($sess -and $sess.token) {
 Trae 国内版 / Trae 国际版，哪个存在就打印哪一行：
 
 ```powershell
+& {
 $paths = @(
   "$env:APPDATA\TRAE SOLO CN\User\globalStorage\storage.json",
   "$env:APPDATA\Trae CN\User\globalStorage\storage.json",
@@ -293,6 +294,7 @@ foreach ($p in $paths) {
       ForEach-Object { $_.Matches } |
       ForEach-Object { "找到设备号: " + $_.Groups[1].Value }
   }
+}
 }
 ```
 
@@ -373,6 +375,7 @@ Invoke-RestMethod -Uri "https://www.workbuddy.cn/v2/plugin/login/send-sms" `
 （有效期约 5 分钟）：
 
 ```powershell
+& {
 $r = Invoke-RestMethod -Uri "https://www.workbuddy.cn/v2/plugin/login/token" `
   -Method Post -ContentType "application/json" `
   -Body '{"login_method":"phone","phone":"13800000000","sms_code":"123456"}'
@@ -390,6 +393,7 @@ Write-Host "Access Token : $at"
 Write-Host "Refresh Token: $rt"
 Write-Host "uid 校验      : $($j.sub)"
 Write-Host "=================================" -ForegroundColor Cyan
+}
 ```
 
 **第 3 步**：两个令牌填进表单。**`uid` 不用填** —— 平台会从令牌的 `sub` 自己解出来
