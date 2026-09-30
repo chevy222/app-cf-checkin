@@ -5,9 +5,6 @@
 **给使用者**：部署与日常操作看本文档就够。
 **给开发者**：架构、契约、加新工具的完整模版、预算与 KV 设计都在 [`设计方案.md`](设计方案.md)。
 
-- 176 条测试全绿（`npm run check`，约 0.3 秒，不需要网络）
-- 运行时依赖 **零**（`package.json` 没有 `dependencies` 字段）
-
 ---
 
 ## 目录
@@ -23,15 +20,50 @@
 
 ## 部署
 
-部署前先在 Cloudflare 面板设一个 Secret `PASSWORD` —— 那是访问界面的口令。
-**不要把它写进任何文件，也不要贴给任何人。**
+准备两样东西：一个 Cloudflare 账号（免费版就够），电脑上装好
+[Node.js](https://nodejs.org)（LTS 版本即可）。然后把代码下载或克隆到本地，
+下面的命令都在代码目录里执行。
+
+**第 1 步 · 装依赖**
 
 ```bash
 npm install
+```
+
+**第 2 步 · 登录 Cloudflare**
+
+```bash
+npx wrangler login
+```
+
+会弹出浏览器让你授权，点 Allow 即可。
+
+**第 3 步 · 建一个自己的 KV 存储，填进配置**
+
+```bash
+npx wrangler kv namespace create CHECKIN_KV
+```
+
+命令输出里有一行 `id = "…"`，用它**替换掉 `wrangler.toml` 里 `kv_namespaces`
+段现有的那个 id** —— 那是原作者自己的命名空间，你的账号用不了，不换部署必失败。
+
+**第 4 步 · 设访问口令**
+
+```bash
+npx wrangler secret put PASSWORD
+```
+
+回车后输入你想设的口令再回车。这是打开界面的钥匙，别用弱口令，
+也**不要把它写进任何文件或贴给任何人**。
+
+**第 5 步 · 部署**
+
+```bash
 npx wrangler deploy
 ```
 
-这样就结束了。cron 已在 `wrangler.toml` 里配好，KV 绑定也在里面。
+输出里的 `https://checkin.<你的子域>.workers.dev` 就是你的签到台。
+浏览器打开、输入口令，按「新增账号」页左侧的教程把三家账号加进去，当天就能开始领。
 
 <details>
 <summary>单文件粘贴（备用方式）</summary>
@@ -41,8 +73,8 @@ npx wrangler deploy --dry-run --outdir=dist
 ```
 
 `dist/` 里会得到一个 `index.js`。在 Cloudflare 控制台的 Workers 编辑器里新建一个
-Worker，把内容整个替换成它，再手动绑定 KV 命名空间（`CHECKIN_KV`）与 cron（`*/30 * * * *`），
-并设 Secret `PASSWORD`。
+Worker，把内容整个替换成它；再在面板上**创建一个 KV 命名空间**并绑定为 `CHECKIN_KV`，
+配好 cron（`*/30 * * * *`），并在「设置 → 变量和机密」里设 Secret `PASSWORD`。
 
 </details>
 

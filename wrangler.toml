@@ -6,6 +6,7 @@ keep_vars = true
 
 [[kv_namespaces]]
 binding = "CHECKIN_KV"
+# 部署前换成你自己执行 npx wrangler kv namespace create CHECKIN_KV 得到的 id
 id = "6086bf91972b4af9aea320135148dc0f"
 
 [triggers]
