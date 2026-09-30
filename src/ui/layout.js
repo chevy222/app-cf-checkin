@@ -46,9 +46,13 @@ h2{margin:0;font-size:17px;font-weight:650;letter-spacing:-.2px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
   box-shadow:var(--shadow);overflow:hidden}
 .card .hd{display:flex;align-items:center;gap:10px;padding:16px 16px 0}
+.card .hd .id{display:flex;align-items:center;gap:9px;min-width:0}
 .card .hd .t{font-weight:650;font-size:14.5px}
 .card .hd .d{color:var(--faint);font-size:12px}
 .card .hd a{margin-left:auto;color:var(--accent);text-decoration:none;font-size:12.5px}
+/* 图标是内联 data URI（见 icons.js 的理由：必须在口令闸后）。64×64 缩到 22px，
+   交给浏览器双线性插值；只做圆角与去白边，不加滤镜 —— 样式 B 里图标是配角。 */
+.ico{width:22px;height:22px;border-radius:5px;flex:none;display:block}
 .card .bd{padding:14px 16px 18px}
 .pane{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
   padding:16px 18px;box-shadow:var(--shadow)}

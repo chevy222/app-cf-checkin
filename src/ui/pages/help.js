@@ -1,6 +1,7 @@
 import { escapeHtml } from "../../core/text.js";
 import { link, navHtml, pageShell, STATUS } from "../layout.js";
 import { glyph, sectionHead } from "../components.js";
+import { iconImg } from "../icons.js";
 
 // 这里原本有一块「阶段 1..5 / 已完成 / 待做」。已删：它是开发进度，不是操作信息 ——
 // 使用者要的是"怎么用、怎么加工具、失败了怎么办"，而"阶段 4 已完成"对谁都没有用。
@@ -13,7 +14,7 @@ export function renderHelp({ pwd, tools }) {
     </div>`).join("");
 
   const toolsList = tools.map((tool) => `<div class="kv">
-      <span class="k">${escapeHtml(tool.name)}</span>
+      <span class="k">${iconImg(tool, 18)}${escapeHtml(tool.name)}</span>
       <span class="v">${escapeHtml(tool.id)} · ${tool.steps.length} 步 · 约 ${tool.steps.reduce((s, x) => s + x.cost, 0)} 子请求</span>
     </div>`).join("");
 

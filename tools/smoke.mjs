@@ -13,6 +13,7 @@ import { logicalDay } from "../src/core/time.js";
 import * as wbApi from "../src/tools/workbuddy/api.js";
 import { idemKey } from "../src/tools/workbuddy/api.js";
 import { expiresAtOf, subjectOf } from "../src/core/jwt.js";
+import { ICONS, iconImg } from "../src/ui/icons.js";
 import { dayOf } from "../src/core/scheduler.js";
 
 const PASSWORD = "correct-horse-battery";
@@ -3073,4 +3074,47 @@ test("[阶段5] 注册表里只有三家真实工具，夹具不许留在里面"
   assert.equal(inside.stored, true, "uidField 该把用户填的字段直接当 uid 存下来");
   assert.equal(TOOLS.includes(FIXTURE), false, "withFixtureTool 跑完必须把夹具摘掉，否则会漏给后面的测试");
   assert.equal((await authed("/tool/fix", env)).status, 404, "摘掉之后路由不该再认得它");
+});
+
+test("[阶段5] 图标内联在 data URI 里，且必须是 PNG", async () => {
+  // 图标走内联而不是 public/ + Static Assets：public/ 下的文件由 Cloudflare
+  // 直接伺服、绕过 Worker，也就绕过了 ?pwd= 那道闸。内联让图标和其它界面一样在闸后。
+  // 这条断言守的是那个决定 —— 哪天有人改成外链，图标就变成无口令可拿的资源了。
+  for (const [id, uri] of Object.entries(ICONS)) {
+    assert.ok(uri.startsWith("data:image/png;base64,"), `${id} 必须是内联的 PNG data URI`);
+    const b64 = uri.slice("data:image/png;base64,".length);
+    // PNG 头 8 字节签名 + 4 长度 + 4 类型"IHDR" = 16，宽高在其后 8 字节 → 前 24 字节。
+    // 注意 base64 是 4 字符出 3 字节：要拿满 24 字节得切 32 个字符（切 24 字符只有 18 字节）。
+    const head = Buffer.from(b64.slice(0, 32), "base64");
+    assert.equal(head.length, 24, `base64 头部不够长：${head.length} 字节`);
+    assert.deepEqual([...head.slice(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+      `${id} 的 PNG 签名不对，说明 base64 被截断或串了`);
+    assert.equal(head.readUInt32BE(16), 64, `${id} 宽度该是 64`);
+    assert.equal(head.readUInt32BE(20), 64, `${id} 高度该是 64`);
+  }
+
+  // 三家都要有图标，且体积不许爆炸 —— 图标是**每个页面**都要付的，
+  // 256×256 的原图会让每页胖 50 KB（qoder 那张 base64 实测就有 50 KB）。
+  for (const tool of TOOLS) {
+    assert.ok(ICONS[tool.id], `${tool.name} 没有图标`);
+    assert.ok(ICONS[tool.id].length < 8000, `${tool.name} 的图标 base64 有 ${ICONS[tool.id].length} 字符，太大了`);
+  }
+  const total = Object.values(ICONS).reduce((s, x) => s + x.length, 0);
+  assert.ok(total < 20000, `三个图标合计 ${total} 字符，超出预算`);
+
+  // 没登记图标的工具回落到空串而不是破图（图标是可选字段，加新工具不必急着配图）
+  assert.equal(iconImg({ id: "nope" }), "");
+
+  // 真的渲染出来了：首页卡片与工具页都要有 <img>
+  const kv = fakeKv(); const env = envFor(kv);
+  await createAccount(env, kv);
+  const home = await authed("/", env);
+  for (const tool of TOOLS) {
+    assert.ok(home.text.includes(ICONS[tool.id]), `${tool.name} 的图标没渲染到首页`);
+  }
+  assert.match(home.text, /<img class="ico" src="data:image\/png;base64,/, "首页该有图标的 img 标签");
+  const help = await authed("/help", env);
+  assert.ok(help.text.includes('class="ico"'), "说明页的工具清单也该带图标");
+  const page = await authed("/tool/qoder", env);
+  assert.ok(page.text.includes('class="ico"'), "工具页该带图标");
 });

@@ -2,6 +2,7 @@ import { escapeHtml } from "../../core/text.js";
 import { fmtCST } from "../../core/time.js";
 import { link, navHtml, pageShell } from "../layout.js";
 import { alertBox, badge, button, chip, emptyState, sectionHead } from "../components.js";
+import { iconImg } from "../icons.js";
 import { isOff } from "../../core/flags.js";
 
 const SETTLED = new Set(["claimed", "already", "inactive", "ok"]);
@@ -44,7 +45,7 @@ export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, b
     return `<div class="card${off ? " dim" : ""}">
       ${redBar}
       <div class="hd">
-        <div><div class="t">${escapeHtml(tool.name)}</div><div class="d">${escapeHtml(tool.summary || "")}</div></div>
+        <div class="id">${iconImg(tool)}<div><div class="t">${escapeHtml(tool.name)}</div><div class="d">${escapeHtml(tool.summary || "")}</div></div></div>
         ${off ? chip(`已停用 · 关于 ${fmtCST(offAt)}`, true) : ""}
         <a href="${escapeHtml(link(`/tool/${tool.id}`, pwd))}">管理 ›</a>
       </div>

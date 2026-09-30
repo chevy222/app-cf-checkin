@@ -4,6 +4,7 @@ import { isOff } from "../../core/flags.js";
 import { TOOLS } from "../../tools/index.js";
 import { link, navHtml, pageShell } from "../layout.js";
 import { alertBox, badge, button, emptyState, sectionHead } from "../components.js";
+import { iconImg } from "../icons.js";
 import { renderForm } from "../forms.js";
 
 function nonSecretSummary(tool, account) {
@@ -101,7 +102,10 @@ export function renderTool({ pwd, tool, accounts, total, sched = {}, flash, flag
     body: `${flash ? alertBox(flash.kind, escapeHtml(flash.text)) : ""}
       ${off ? alertBox("warn", `<b>${escapeHtml(tool.name)} 已停用。</b>不参与调度（cron 与手动执行都跳过），账号、凭据与当天进度全部原样保留；重新打开后从停下的那一步接着做。${stuckAll.length ? `当前有 ${stuckAll.length} 个账号处于失败或需重新登录状态，恢复后仍要处理。` : ""}`) : ""}
       ${needsAttention.length ? `<div class="card">${alertBox("bad", `<b>${needsAttention.length} 个账号需要你处理：</b>${escapeHtml(needsAttention.map((a) => a.label || a.uid).join("、"))} —— 自动重试治不好这一类，要么重新录入凭据，要么删掉重建。`)}</div>` : ""}
-      ${sectionHead(tool.name, tool.summary || "", button(addHref, "+ 新增账号", "pri") + " " + button(configHref, "工具配置"))}
+      <div class="card"><div class="hd"><div class="id">${iconImg(tool, 26)}<div><div class="t">${escapeHtml(tool.name)}</div><div class="d">${escapeHtml(tool.summary || "")}</div></div></div>
+        <span class="spacer"></span>${button(addHref, "+ 新增账号", "pri")} ${button(configHref, "工具配置")}</div>
+        <div class="bd" style="padding-top:0"><p class="tiny" style="margin:0">字段来自该工具的声明，界面不认具体工具。改动下一轮起生效。</p></div>
+      </div>
       ${table}
       ${hidden > 0 ? `<div style="margin-top:12px">${alertBox("warn", `共 ${total} 个账号，这里只列出前 ${accounts.length} 个。这一页要逐个读记录才能显示字段值，而一次调用只有 50 个子请求，所以列表是有上界的；要管更多请先把账号删到有意义的规模。`)}</div>` : ""}
       ${accounts.length ? `<div style="margin-top:12px">${button(addHref, "+ 新增账号")}</div>` : ""}
