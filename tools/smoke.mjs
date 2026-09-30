@@ -322,7 +322,9 @@ fixtureTest("scheduled 会真的跑一轮并输出结构化汇总", async () => 
   const original = console.log;
   console.log = (...args) => logs.push(args.join(" "));
   try {
-    await worker.scheduled({ cron: "*/30 * * * *", scheduledTime: Date.now() }, env);
+    // 计划时刻用固定值而非墙钟：夹具有 notBeforeHour=8 的闸，
+    // 用 Date.now() 的话，北京时间 8 点前跑这条测试就会被闸挡掉（ran=0）
+    await worker.scheduled({ cron: "*/30 * * * *", scheduledTime: cst(12) * 1000 }, env);
   } finally {
     console.log = original;
   }
