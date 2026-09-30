@@ -201,7 +201,7 @@ $p = [System.Diagnostics.Process]::Start($psi)
 $p.StandardInput.Close() | Out-Null
 $out = $p.StandardOutput.ReadToEnd()
 $p.WaitForExit(40000) | Out-Null
-$ri = ($out -split "\`r?\`n" | Where-Object { $_.Trim() } | Select-Object -Last 1) | ConvertFrom-Json
+$ri = ($out -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 1) | ConvertFrom-Json
 
 # 2. 版本号
 $cosyVersion = ""
