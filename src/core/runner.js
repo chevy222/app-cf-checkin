@@ -1,0 +1,440 @@
+import { truncate } from "./text.js";
+import { getJson, heartbeatKey, listUids, lockKey, putJson, requireKv, toolKey } from "./store.js";
+import { applyCredPatch, getAccount, loadSchedIndex, commitSchedEntries, schedOf } from "./accounts.js";
+import { trackedFetch } from "./budget.js";
+import { clearProgress, configComplete, dayOf, isDue, loadProgress, missingConfigFields, saveProgress } from "./scheduler.js";
+import { secretValuesOf, scrubSecrets, writeRunLog, writeTickLog } from "./logs.js";
+import { nowSec } from "./time.js";
+
+const LOCK_TTL = 90;
+const SETTLED = new Set(["claimed", "already", "inactive", "ok"]);
+const SUCCESS = new Set(["claimed"]);
+// 上游"还没把奖励下发出来"的重试间隔。不走 minIntervalSec，也不许被 resumable 豁免：
+// pending 没有任何"活干到一半"的含义，把它归进可接续是对的（否则当天再也不重试），
+// 但可接续的豁免是给"接着做完"用的，于是 pending 顺带免掉了全部节流，
+// 从活动下发窗口一路每 30 分钟打一次上游 —— 一个账号一天 28 次纯查询。
+// 在风控视角下"无害的重复查询"和"刷接口"是同一件事，所以给它一个单独且更宽的闸。
+const PENDING_RETRY_SEC = 3600;
+// 没领到东西、下一轮该接着做的状态。
+// pending 也在这一列：它是"上游还没把活动下发出来"（Qoder 每天 10 点前后就是这状态），
+// 属于正常等待，不是故障。把它当 error 会让红条在健康的日子里亮起来，
+// 而把它当 already 会让当天再也不重试 —— 两个方向都不对，只有"可接续"是对的。
+const CONTINUABLE = new Set(["deferred", "skipped", "pending"]);
+
+// 每工具每轮的固定 KV 开销：读配置 + 列账号 + 读调度索引 + 读一份新鲜索引并写回 + 心跳
+// 导出是为了测试能按"刚好不够付一个账号"来构造预算，而不是记住一个魔法数字
+export const TOOL_FRAME = 6;
+// 每账号每轮的固定 KV 开销：取锁 2 + 读进度 + 读凭据 + 收尾写或删进度 + 写运行日志
+export const ACCOUNT_FRAME = 6;
+// 本轮汇总日志：一次调用一份，不摊到每个工具头上（旧写法把它算进 TOOL_FRAME，
+// 四个工具就多_reserve 三次 —— 方向是安全的，但预约数字本身就不准了）
+export const ROUND_FRAME = 1;
+
+// 一步做完之后还可能要写的笔数（最坏路径，逐笔数出来的，不是估的）：
+//   2  凭据轮换当场写回（读新鲜记录 + 写）—— 只有续期了才有，但续期恰恰发生在最贵的那几轮
+//   1  存/删步骤进度
+//   1  写运行日志
+//   2  调度索引合并写回（读新鲜 + 写）
+//   1  心跳
+// = 7。本轮汇总日志另有 ROUND_FRAME 的显式闸门，不在这里重复。
+// 这 7 笔没有任何 fits() 挡在前面 —— 它们是 safe()/catch 包着的直写，
+// 而 fits(ACCOUNT_FRAME) 只是"开跑前确认还剩 6 笔"、并不占位，
+// 步骤把这 6 笔吃掉之后，收尾写入就只能越过自限的 45 去撞平台的 50。
+// 撞硬顶的代价不是"少写一条日志"，是整次调用抛异常、把本轮已经跑完的账号的收尾写入一起作废。
+// 所以允许一步开跑之前，必须连这 7 笔一起装得下。偏保守（其中几笔多数轮次根本不会发生），
+// 但预算账本宁可贵不可便宜 —— 估低一次的后果查不出是谁多花的。
+const TAIL_RESERVE = 7;
+
+// 总体状态由步骤结果推导，工具不参与。
+// rate_limited 必须显式列出，否则会掉进 already —— 界面把"被频控"报成"今天已领过"，
+// 而且 retryAt 因状态不匹配根本不会写，退避阶梯整个失效。
+export function aggregate(results) {
+  const statuses = results.map((r) => r.status);
+  // 整轮一步都没真做（全部复用上一轮的进度）时报"成功领取"是假信号：
+  // 那些凭据与积分是上一轮挣的，这次上游一个请求都没收到。"今日已领"才是实话。
+  if (results.length > 0 && results.every((r) => r.reused)) return "already";
+  if (statuses.includes("login_required")) return "login_required";
+  if (statuses.includes("rate_limited")) return "rate_limited";
+
+  const settled = results.filter((r) => SETTLED.has(r.status));
+  const errors = results.filter((r) => r.status === "error");
+  const unfinished = results.filter((r) => CONTINUABLE.has(r.status));
+
+  // 步骤自己就能报 partial（一轮没做完、还剩一些），整体必须如实是 partial：
+  // 报 claimed 会当天上闩、剩下的再也不领；报 error 又像是全失败。
+  if (statuses.includes("partial")) return "partial";
+  if (statuses.includes("pending") && settled.length === 0 && errors.length === 0) return "pending";
+
+  if (unfinished.length === 0) {
+    if (errors.length) return settled.length ? "partial" : "error";
+    if (results.some((r) => SUCCESS.has(r.status))) return "claimed";
+    // 全部步骤都"今天已结"时还要分出「活动未开」与「今日已领」：两者都该上闩，
+    // 但界面上是完全不同的两件事 —— 一个是今天不用管，一个是今天已经拿到。
+    // 少了这一条，inactive 会被压成 already，首页那 11 个状态就白分了。
+    if (statuses.includes("inactive")) return "inactive";
+    // 未识别的状态一律按失败处理：宁可多跑一次，不可少跑一次。
+    return results.every((r) => SETTLED.has(r.status)) ? "already" : "error";
+  }
+  return errors.length ? "partial" : unfinished.every((r) => r.status === "pending") ? "pending" : "deferred";
+}
+
+function backoffSec(ladder, strikes) {
+  if (!ladder || ladder.length === 0) return 0;
+  return ladder[Math.min(strikes - 1, ladder.length - 1)] * 60;
+}
+
+function summarize(results) {
+  const parts = results.filter((r) => !r.reused && r.message).map((r) => `${r.label}：${r.message}`);
+  return parts.length ? parts.join("；") : "无可执行步骤";
+}
+
+async function runOneAccount({ env, budget, tool, uid, config, day, now, trigger }) {
+  const kv = requireKv(env);
+  const bare = (status, message) => ({ uid, status, message, steps: [], sched: null });
+
+  // 锁、进度、凭据三次读放在同一个 try 里：KV 真不可用时只跳过这个账号。
+  // 旧写法只在取锁处 catch，而紧随其后的进度读会以同样方式再抛，既没降级成功还把整轮炸掉。
+  let account;
+  let progress;
+  try {
+    const key = lockKey(tool.id, uid);
+    if (await kv.get(key)) return { ...bare("skipped", "已有运行在途"), quiet: true };
+    await kv.put(key, String(now), { expirationTtl: LOCK_TTL });
+    progress = await loadProgress(env, tool, uid, day);
+    account = await getAccount(env, tool.id, uid);
+  } catch (error) {
+    return bare("deferred", `KV 暂不可用：${truncate(String((error && error.message) || error), 80)}`);
+  }
+
+  // 损坏或已被删除的记录：不合成假账号、不写任何状态。
+  // 旧版会把 listAccounts 造出的占位记录当真账号跑一遍，再把 broken 标记固化进存储。
+  // broken 标记是给观测层用的：这条记录必须在运行日志里露头，否则用户只能靠猜发现它坏了。
+  if (!account) return { ...bare("error", "记录无法解析，请在界面删除后重新添加"), broken: true };
+
+  // 凭据脱敏放在这里，而不是放在写日志的那一步：同一个 message 有四个出口
+  // （运行日志、进度键、手动执行的响应 HTML、scheduled 的 console.log 与 /api/tick 返回值），
+  // 只在落盘那一个出口洗，另外三个照样把票据原样带出去。
+  let secrets = secretValuesOf(tool, account);
+  const stale = [];                 // 被轮换掉的旧串：上游可能把它回显进 message，得继续洗
+  const persistedCred = {};         // 本轮已经落盘过的凭据字段，防止同一步的返回值被反复写回
+  const ctx = { account, config, tool, env, kv, budget, now, day, trigger, fetch: trackedFetch(budget, tool.hosts) };
+  const results = [];
+  let stopped = false;
+
+  for (const step of tool.steps) {
+    if (progress.done[step.id]) {
+      results.push({ id: step.id, label: step.label, ...progress.done[step.id], reused: true, over: 0 });
+      continue;
+    }
+    if (stopped) {
+      results.push({ id: step.id, label: step.label, status: "skipped", message: "前置步骤未通过，未发起请求", over: 0 });
+      continue;
+    }
+    const unmet = (step.dependsOn || []).filter((dep) => !SETTLED.has((progress.done[dep] || {}).status));
+    if (unmet.length) {
+      results.push({ id: step.id, label: step.label, status: "skipped", message: `依赖未满足：${unmet.join(", ")}`, over: 0 });
+      continue;
+    }
+    // 装不下就整步顺延：半途被掐断比不跑更糟，因为上游可能已部分生效。
+    // 判据要连收尾写入的 TAIL_RESERVE 一起算，理由见那处注释 —— 只算 step.cost
+    // 等于允许最后几笔无处可付。
+    if (!budget.fits(step.cost + TAIL_RESERVE)) {
+      // 不可达只有一种：单步成本超过整个上限，任何一轮都装不下。
+      // 判据不能加余量 —— 那会把"本轮装不下、下轮装得下"的正常顺延误报成配置错误。
+      const unreachable = step.cost > budget.limit;
+      results.push({
+        id: step.id, label: step.label, status: "deferred", over: 0, unreachable,
+        message: unreachable
+          ? `步骤成本 ${step.cost} 接近单轮上限 ${budget.limit}，永远排不进，请调小 cost 或拆分步骤`
+          : `预算不足（余 ${budget.left()}，需 ${step.cost}），留到下一轮`,
+      });
+      stopped = true;
+      continue;
+    }
+
+    const before = budget.used;
+    // 旧串必须在步骤开跑之前拍下来。续期发生在步骤内部，而三家 api.js 都会就地改写
+    // ctx.account.cred（好让紧接着的下一步用新串）—— 等于内核事后拿到的 previous 已经是新值。
+    // 那时再去 outcome.cred 里对比，被换掉的旧串就不在集合里了，而上游最爱回显的
+    // 恰恰是"你刚才带来的那把票"，于是旧票据会明文进运行日志（KV 存 30 天、详情页可点看）。
+    const secretsBefore = secretValuesOf(tool, account);
+    let outcome;
+    try {
+      outcome = await step.run(ctx);
+    } catch (error) {
+      outcome = { status: "error", message: String((error && error.message) || error) };
+    }
+    // 凭据轮换：三家的续期接口都会换出一次性的新串。步骤把新值放在 outcome.cred 里交回来，
+    // 内核先并进内存（下一步要用），再**当场**落盘 —— 攒到本轮收尾才写的话，
+    // 中间任何一次掐死都会把新旧两张串同时烧掉。
+    let rotated = null;
+    if (outcome && outcome.cred && typeof outcome.cred === "object") {
+      const patched = Object.entries(outcome.cred).filter(([, value]) => typeof value === "string" && value !== "");
+      if (patched.length) {
+        for (const [field, value] of patched) account.cred[field] = value;
+        rotated = Object.fromEntries(patched);
+      }
+    }
+    // 两种轮换都收：就地改写的、只回传 outcome.cred 的。丢掉的值永久留在本轮的脱敏集合里
+    const secretsNow = secretValuesOf(tool, account);
+    for (const value of secretsBefore) if (!secretsNow.includes(value)) stale.push(value);
+    secrets = secretsNow.concat(stale);
+    // cost 只是估算。实际超出估算要显式记下来，否则"估偏低"会被静默吸收，
+    // 直到某轮第 51 次请求把整轮炸掉 —— 那时已经查不出是谁多花的。
+    const over = Math.max(0, budget.used - before - step.cost);
+
+    const record = {
+      status: outcome && outcome.status ? outcome.status : "error",
+      // 工具不许把响应体原样塞进 message；内核在这里截断并洗掉凭据，
+      // 免得一次上游 401 就把票据原文带进进度键、响应页与平台日志
+      message: truncate(scrubSecrets((outcome && outcome.message) || "步骤未返回结果", secrets), 200),
+      credits: outcome && Number.isFinite(outcome.credits) ? outcome.credits : 0,
+    };
+    if (rotated) {
+      // 同一个新串可能被后续每一步重复带回来（WorkBuddy 就是这样：续期发生在第一步，
+      // 而每一步都把 ctx.rotated 附上）。不去重的话 7 个步骤会写 7 次同样的 KV，
+      // 一次续期白烧 12 个子请求 —— 预约的 ACCOUNT_FRAME 根本不是这个量级
+      const fresh = Object.fromEntries(Object.entries(rotated).filter(([field, value]) => persistedCred[field] !== value));
+      if (Object.keys(fresh).length) {
+        let saved = false;
+        try {
+          saved = !!(await applyCredPatch(env, tool, uid, fresh));
+        } catch { /* 下面按写回失败处理 */ }
+        if (saved) Object.assign(persistedCred, fresh);
+        // 写不回去 = 下一轮手里的旧串可能已被上游作废。这句话必须出现在日志里，
+        // 否则用户看到的是"某天开始就一直 login_required"，查不到是从哪一轮断的
+        record.message = `${record.message}${saved ? "（已换新凭据）" : "（新凭据写回失败，旧串可能已作废，可能要重新录入）"}`;
+      }
+    }
+    results.push({ id: step.id, label: step.label, ...record, over });
+
+    // 只有真正做完的步骤才进进度表。rate_limited / error / deferred 都是瞬时的，
+    // 记成"已完成"会让下一轮直接复用、永远不再重试。
+    if (SETTLED.has(record.status)) {
+      progress.done[step.id] = record;
+      progress.order.push(step.id);
+    }
+    if (record.status === "login_required") stopped = true;
+  }
+
+  const status = aggregate(results);
+  const allDone = results.length > 0 && results.every((r) => SETTLED.has(r.status));
+
+  // 进度只在「本轮要停下的那一刻」写一次，不是每步都写：每步都写会让一个账号多花
+  // 7 个子请求，把省下来的预算吃回去。代价是这一轮被意外掐死时进度是旧的，
+  // 下一轮重复跑几步 —— 靠"每步必须可安全重入"兜住，方向是宁可重复、不可跳过。
+  // 进度写入由账号帧的预约兜着（见 runTick 里的 reserve(ACCOUNT_FRAME)），
+  // 这里不再自己问账本 —— 调度索引是系统的记忆，写不进去会把"谁做过什么"整轮抹掉，
+  // 排在后面的账号就再也没机会被排上来。
+  try {
+    if (allDone) await clearProgress(env, tool, uid);
+    else await saveProgress(env, tool, uid, progress);
+  } catch { /* 进度写失败最多让下一轮多做几步幂等请求，不该让本轮报错 */ }
+
+  return {
+    uid,
+    account,
+    label: account.label,
+    status,
+    message: summarize(results),
+    // 积分只算本轮真做的那些步：复用来的积分再报一次，日志里就是凭空翻倍
+    credits: results.reduce((sum, r) => sum + (r.reused ? 0 : (r.credits || 0)), 0),
+    steps: results.map((r) => ({ id: r.id, status: r.status, message: r.message, reused: !!r.reused, over: r.over || 0, unreachable: !!r.unreachable })),
+    sched: {
+      didWork: results.some((r) => !r.reused && !CONTINUABLE.has(r.status) && r.status !== "partial"),
+      allDone,
+      status,
+      // partial 也算"有活没干完"：本轮只领了一部分，下一轮要立刻接着领，
+      // 不该被 minIntervalSec 再挡 30 分钟
+      resumable: !allDone && status !== "login_required"
+        && results.some((r) => (CONTINUABLE.has(r.status) || r.status === "partial") && !r.reused),
+    },
+  };
+}
+
+// 只写调度索引，绝不写 acct 记录 —— 那会用本轮开头的旧快照覆盖用户刚提交的凭据
+function commitSched(index, tool, uid, result, day, now) {
+  if (!result.sched) return;
+  const cur = schedOf(index.entries[uid]);
+  const s = result.sched;
+  const strikes = s.status === "rate_limited" ? cur.rateStrikes + 1 : 0;
+  index.entries[uid] = {
+    ...cur,
+    lastStatus: s.status,
+    lastStatusDate: day,
+    lastAt: s.didWork ? now : cur.lastAt,
+    attempts: s.didWork ? (cur.attemptsDate === day ? cur.attempts : 0) + 1 : cur.attempts,
+    attemptsDate: s.didWork ? day : cur.attemptsDate,
+    rateStrikes: strikes,
+    retryAt: s.status === "rate_limited" ? now + backoffSec(tool.schedule.backoff, strikes)
+      : s.status === "pending" ? now + PENDING_RETRY_SEC : 0,
+    resumable: s.resumable,
+    // 紧凑的步骤摘要顺手存进索引：工具页渲染色块时已经读过这条索引了，
+    // 若改为从运行日志逐账号取，就是 N 次 get —— 阶段 2 刚为同样的坑改过结构
+    lastSteps: (result.steps || []).map((r) => `${r.id}:${r.status}${r.reused ? ":r" : ""}`),
+  };
+}
+
+const publicResult = (r) => ({
+  uid: r.uid, label: r.label, status: r.status,
+  message: r.message, credits: r.credits || 0, steps: r.steps || [],
+});
+
+async function safe(fn) {
+  try { await fn(); } catch { /* 观测与索引写入失败不该让本轮报错 */ }
+}
+
+// 坏记录也得在运行日志里露头，否则它在这套观测里彻底隐形：它进不了调度索引（没有可解析的
+// 记录可写），红条又是从调度索引算的，于是用户只能靠猜到工具页上去翻那一行小字。
+// 空 cred 的壳子就够了 —— 这条消息是内核写的，本来不含凭据。
+async function logOutcome(env, { now, tool, result, view, budget, trigger }) {
+  if (!result.account && !result.broken) return;
+  await safe(() => writeRunLog(env, {
+    now, tool,
+    account: result.account || { cred: {} },
+    result: { ...view, label: view.label || view.uid },
+    budget, trigger,
+  }));
+}
+
+// 只提交这次真正改过的 uid（合并写回的理由见 accounts.js）
+function picked(index, uids) {
+  const out = {};
+  for (const uid of uids) if (index.entries[uid]) out[uid] = index.entries[uid];
+  return out;
+}
+
+export async function runTick({ env, budget, tools, trigger = "cron", now = nowSec() }) {
+  const plan = [];
+  let ran = 0;
+
+  for (const tool of tools) {
+    if (!budget.fits(TOOL_FRAME)) {
+      plan.push({ tool: tool.id, skipped: "预算已用尽", accounts: [] });
+      continue;
+    }
+    const kv = requireKv(env);
+    const config = await getJson(kv, toolKey(tool.id), {});
+    if (!configComplete(tool, config)) {
+      plan.push({ tool: tool.id, skipped: "配置未完成", accounts: [] });
+      continue;
+    }
+
+    const uids = await listUids(kv, tool.id);
+    const index = await loadSchedIndex(env, tool.id);
+    const day = dayOf(tool, now);
+    // 到期判定全部走内存里的调度索引：每工具固定 1 次 list + 1 次 get，与账号数无关。
+    // 旧写法先 listAccounts（1 list + N get）再判定，48 个账号就贴着 50 的硬顶。
+    // 到期队列按"最久没被服务"排序，不是按 uid 字典序。
+    // 字典序配上全局预算闸 = 排在末尾的账号永远饿死：WorkBuddy 一个账号就要 36 次，
+    // 上限 45 只装得下 1 个，而前两个每轮都以 partial 收（resumable 豁免节流，立刻再来），
+    // 于是它们每轮把额度吃干、第三个永远排在闸外 —— 它连一条调度索引都拿不到，
+    // 表现是红条不亮、首页进度不计入、/runs 里查无此人，用户只能逐个点进工具页才发现。
+    // 按 lastAt 升序：被挤出门外的账号下一轮就是队首；从没跑过的账号 lastAt=0，第一跳就跑。
+    const due = uids
+      .filter((uid) => isDue(tool, index.entries[uid], day, now))
+      .sort((a, b) => (schedOf(index.entries[a]).lastAt || 0) - (schedOf(index.entries[b]).lastAt || 0));
+    if (due.length === 0) {
+      plan.push({ tool: tool.id, skipped: "无到期账号", accounts: [] });
+      continue;
+    }
+
+    const results = [];
+    const touched = [];
+    for (const uid of due) {
+      // 账号闸也要把收尾的 TAIL_RESERVE 一起算。只算 ACCOUNT_FRAME 会放进来一个
+      // "付得起 6 笔、但那 6 笔要在步骤之后才写"的账号：实测第三个账号取锁、读进度、
+      // 读凭据、写进度、写日志六笔全花了，上游却一个请求都没打（每步都装不下），
+      // 而 used 正是被它那 6 笔推到 45 之外，工具级收尾（合并写回 + 心跳）无处可付。
+      // 宁可在这里就地顺延：账号级顺延一分钱都不花。
+      if (!budget.fits(ACCOUNT_FRAME + TAIL_RESERVE)) {
+        results.push({ uid, status: "deferred", message: "本轮预算已用尽，留到下一轮", steps: [] });
+        continue;
+      }
+      const result = await runOneAccount({ env, budget, tool, uid, config, day, now, trigger });
+      const view = publicResult(result);
+      results.push(view);
+      commitSched(index, tool, uid, result, day, now);
+      if (result.sched) touched.push(uid);
+      await logOutcome(env, { now, tool, result, view, budget, trigger });
+      if (!result.quiet) ran += 1;
+    }
+
+    await safe(() => commitSchedEntries(env, tool.id, picked(index, touched)));
+    // 心跳在账号循环之后写：它该记录"真的跑了什么"，而不是"打算跑什么"
+    await safe(() => putJson(kv, heartbeatKey(tool.id), { at: now, trigger, due: due.length, ran: results.length }));
+
+    plan.push({ tool: tool.id, accounts: results });
+  }
+
+  const summary = { now, trigger, ran, budget: { used: budget.used, limit: budget.limit, left: budget.left(), over: budget.over }, plan };
+  // 账本空了就少一条汇总日志，不能为了写它把整次调用推到 50 以上 ——
+  // 那时候连累的是已经跑完的账号的收尾写入
+  if (budget.fits(ROUND_FRAME)) await safe(() => writeTickLog(env, { now, trigger, plan, budget, ran }));
+  return summary;
+}
+
+// 「立即执行」：跳过到期判定的时间闸（人既然点了就是要现在跑），但预算、锁、进度复用照旧。
+// 不跳预算是必须的 —— 手动连点不该把整次调用撞穿 50 的硬顶。
+//
+// 唯一不跳的是"工具配置没填"：那不是节流，是前置条件。缺项时这家站点根本没有可用的接入点
+// 与超时值，cron 会整个跳过这个工具，手动却照跑就等于拿残缺的配置去打上游。
+export async function runAccountNow({ env, budget, tool, uid, trigger = "manual", now = nowSec() }) {
+  const kv = requireKv(env);
+  const config = await getJson(kv, toolKey(tool.id), {});
+  const missing = missingConfigFields(tool, config);
+  if (missing.length) {
+    return {
+      uid, label: uid, status: "error", credits: 0, steps: [],
+      message: `工具配置未完成，已拒绝执行（缺：${missing.join("、")}）。cron 同样会跳过这个工具，请先到「工具配置」补齐。`,
+    };
+  }
+  const day = dayOf(tool, now);
+  const index = await loadSchedIndex(env, tool.id);
+  const result = await runOneAccount({ env, budget, tool, uid, config, day, now, trigger });
+  commitSched(index, tool, uid, result, day, now);
+  await safe(() => commitSchedEntries(env, tool.id, result.sched ? { [uid]: index.entries[uid] } : {}));
+  const view = publicResult(result);
+  await logOutcome(env, { now, tool, result, view, budget, trigger });
+  return view;
+}
+
+// 「测试」：只验凭据能不能用，不领取、不写状态、不写运行日志。
+// 工具没实现 validate 就不该有这个按钮 —— 由注册表在渲染前判断。
+//
+// 但有一件事必须写：validate 里如果发生了续期（Trae 的 ensureToken 就会），
+// 旧的 refresh_token 已经被这次调用消耗掉了。不写回的话，"点一下测试"
+// 就会把一个好账号点成 login_required —— 这是最容易自己踩死自己的按钮。
+// 这里不做"模块记得返回 cred"的约定，而是直接对比调用前后的凭据差异：
+// 忘了也会被自动兜住。
+export async function validateAccount({ env, budget, tool, uid, now = nowSec() }) {
+  if (typeof tool.validate !== "function") return { status: "error", message: "该工具未提供连接测试" };
+  const kv = requireKv(env);
+  const config = await getJson(kv, toolKey(tool.id), {});
+  const account = await getAccount(env, tool.id, uid);
+  if (!account) return { status: "error", message: "记录无法解析，请在界面删除后重新添加" };
+  const before = Object.entries(account.cred).filter(([key]) => key !== "label");
+  const snapshot = Object.fromEntries(before);
+  const ctx = { account, config, tool, env, kv, budget, now, day: dayOf(tool, now), trigger: "validate", fetch: trackedFetch(budget, tool.hosts) };
+  let outcome;
+  try {
+    outcome = await tool.validate(ctx);
+  } catch (error) {
+    outcome = { status: "error", message: String((error && error.message) || error) };
+  }
+
+  // 把测试期间换出来的新凭据落盘（只合并声明过的字段，理由见 accounts.js）
+  const changed = Object.fromEntries(
+    Object.entries(account.cred).filter(([key, value]) => snapshot[key] !== undefined && snapshot[key] !== value),
+  );
+  let persisted = false;
+  if (Object.keys(changed).length) persisted = !!(await applyCredPatch(env, tool, uid, changed).catch(() => null));
+
+  const secrets = secretValuesOf(tool, account).concat(Object.values(changed));
+  return {
+    status: outcome && outcome.status ? outcome.status : "error",
+    // 测试结果直接显示在页面上，而 validate 拿得到账号凭据本身 —— 同一道清洗，同一个理由
+    message: truncate(scrubSecrets((outcome && outcome.message) || "未返回结果", secrets), 200)
+      + (Object.keys(changed).length ? (persisted ? "（本次测试顺带续了期，新凭据已写回）" : "（本次测试换出的新凭据**没能写回**，旧串已用过，请尽快重新录入）") : ""),
+  };
+}

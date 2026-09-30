@@ -1,0 +1,14 @@
+name = "checkin"
+main = "src/index.js"
+compatibility_date = "2026-09-08"
+# 面板上手工设的变量（PASSWORD 之外若还有）在 wrangler deploy 时不被抹掉
+keep_vars = true
+
+[[kv_namespaces]]
+binding = "CHECKIN_KV"
+id = "6086bf91972b4af9aea320135148dc0f"
+
+[triggers]
+# 一条就够：每轮醒来自己算「谁到期」，加第 N 个工具不再消耗 cron 槽。
+# 免费版上限是每账号 5 条 cron，不是每 Worker。
+crons = ["*/30 * * * *"]

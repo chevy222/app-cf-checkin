@@ -1,0 +1,11 @@
+{
+  "name": "checkin-app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npx wrangler dev",
+    "deploy": "npx wrangler deploy",
+    "bundle": "npx wrangler deploy --dry-run --outdir=dist",
+    "check": "node tools/smoke.mjs"
+  }
+}
