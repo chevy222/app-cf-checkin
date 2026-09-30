@@ -314,6 +314,7 @@ Start-Process "https://api.trae.cn/ide/v1/auth/authorize?login_version=1&auth_fr
 **第 4 步 · 解析出令牌**。把下面第一行的引号内换成你刚复制的那条完整 URL，整段回车：
 
 ```powershell
+& {
 $cb = "粘贴你复制的整条 127.0.0.1 开头的 URL"
 
 # 与服务端同一套解析：只做一次 %XX 解码，不做 '+' → 空格转换
@@ -347,6 +348,7 @@ Write-Host "Refresh Token: $rt"
 Write-Host "Aha 设备号   : 填第 1 步拿到的那个"
 Write-Host "=================================" -ForegroundColor Cyan
 if (-not $rt) { Write-Host "（回调里没有 refreshToken —— 请确认整条 URL 都复制了）" -ForegroundColor Yellow }
+}
 ```
 
 **第 5 步**：把 `Access Token` 与 `Refresh Token` 填到「新增账号」，设备号填第 1 步那个。
