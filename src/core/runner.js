@@ -117,9 +117,10 @@ async function runOneAccount({ env, budget, tool, uid, config, day, now, trigger
   // broken 标记是给观测层用的：这条记录必须在运行日志里露头，否则用户只能靠猜发现它坏了。
   if (!account) return { ...bare("error", "记录无法解析，请在界面删除后重新添加"), broken: true };
 
-  // 凭据脱敏放在这里，而不是放在写日志的那一步：同一个 message 有四个出口
-  // （运行日志、进度键、手动执行的响应 HTML、scheduled 的 console.log 与 /api/tick 返回值），
-  // 只在落盘那一个出口洗，另外三个照样把票据原样带出去。
+  // 凭据脱敏放在这里，而不是放在写日志的那一步：同一个 message 有五个出口
+  // （进度键、运行日志正文、运行日志 metadata、手动执行的响应 HTML、
+  //  scheduled 的 console.log 与 /api/tick 返回值），
+  // 只在落盘那一个出口洗，另外四个照样把票据原样带出去。
   let secrets = secretValuesOf(tool, account);
   const stale = [];                 // 被轮换掉的旧串：上游可能把它回显进 message，得继续洗
   const persistedCred = {};         // 本轮已经落盘过的凭据字段，防止同一步的返回值被反复写回
