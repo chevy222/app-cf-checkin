@@ -60,7 +60,12 @@ const timeoutMs = (config) => {
 // 上游在不同接口上混着用，所以取值必须走同一个 dig。
 export function dig(node, key, depth = 0) {
   if (!node || typeof node !== "object" || depth > 4) return null;
-  if (Object.prototype.hasOwnProperty.call(node, key)) return node[key];
+  // 命中了但值是 null/undefined 时**继续往包装层里钻**，不立刻返回。
+  // 旧实现明确写了这个判断，它不是可有可无的整洁癖：上游在不同接口版本里
+  // 会把同一个字段在顶层置 null、真正的值放进 data/result 里。命中即返回会让
+  // {state:null, data:{state:"arrived"}} 读出 null，travel 于是走不进"到站领奖"分支，
+  // 一次能白拿的到站礼物就无声无息地过期了。
+  if (Object.prototype.hasOwnProperty.call(node, key) && node[key] !== null && node[key] !== undefined) return node[key];
   for (const wrap of ["data", "result", "resp", "response"]) {
     if (node[wrap] && typeof node[wrap] === "object") {
       const found = dig(node[wrap], key, depth + 1);
@@ -74,6 +79,23 @@ export function num(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 };
+
+// 积分取值：依次探测多个位置，取第一个非 0 的数字。这是旧实现 firstNum 的原样搬回，
+// 它的存在理由写在旧代码注释里 —— **上游在不同接口版本把积分挂在不同字段上**。
+// 收窄成单路径的后果不是报错，是静默报 +0：能量扣了、界面显示成功、积分对不上。
+//
+// 判据必须是 `if (n)` 而不是 `if (n !== null)`：0 是合法的"这项没给"，
+// 遇到 0 要继续试下一项。`??` 链在这里也做不到这件事 —— ?? 只挡 null/undefined，0 会直接短路。
+export function firstCredit(body, item) {
+  for (const [obj, key] of [
+    [body, "credit_amount"], [body, "credit_granted"], [body, "reward_credit"],
+    [item, "credit"], [item && item.instance, "credit"], [item && item.template, "credit"],
+  ]) {
+    const n = num(dig(obj, key));
+    if (n) return n;
+  }
+  return 0;
+}
 
 // code 归一：没给才是 null，给了就按数字比。
 // 两处不能写 `body.code || 0`（空 body 会被当成 0 = 成功），

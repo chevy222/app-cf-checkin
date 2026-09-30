@@ -10,6 +10,7 @@ import { ACCOUNT_FRAME, ROUND_FRAME, TOOL_FRAME, aggregate, runAccountNow, runTi
 import { makeBudget, trackedFetch, trackedKv } from "../src/core/budget.js";
 import { listRunLog, readRunLog, writeRunLog } from "../src/core/logs.js";
 import { logicalDay } from "../src/core/time.js";
+import * as wbApi from "../src/tools/workbuddy/api.js";
 import { idemKey } from "../src/tools/workbuddy/api.js";
 import { expiresAtOf, subjectOf } from "../src/core/jwt.js";
 import { dayOf } from "../src/core/scheduler.js";
@@ -2034,22 +2035,38 @@ test("[阶段4·trae] uid 来自 GetUserInfo；取不到就拒存并说清原因
   } finally { bad.restore(); }
 });
 
-test("[阶段4·trae] Aha 设备号在录入时就要求 16 位数字", async () => {
+test("[阶段4·trae] Aha 设备号在录入时就要求 8–16 位数字", async () => {
   // 旧实现运行时才校验 \d{8,16}，8 位值静默通过后每天撞 9074：
-  // 一个立刻能说明白的错被变成了每周都难查一次的怪病
+  // 一个立刻能说明白的错被变成了每周都难查一次的怪病。
+  // 但也不能反过来收紧到 16 位 —— 手上现成的 8–15 位账号会被挡在录入之外，
+  // 症状只是表单红字，与上游毫无关系，容易被误判成"平台坏了"。
   const kv = fakeKv();
   kv.store.set("v1:tool:trae", JSON.stringify({ clientId: "cid", appVersion: "0.1.43" }));
-  const stub = stubUpstream({ "POST /cloudide/api/v3/trae/GetUserInfo": { payload: { Result: { UserID: 55 } } } });
+  let seq = 55;
+  const stub = stubUpstream({ "POST /cloudide/api/v3/trae/GetUserInfo": () => ({ payload: { Result: { UserID: (seq += 1) } } }) });
   try {
-    for (const bad of ["12345678", "123456789012345678", "abcdef1234567890"]) {
+    for (const bad of ["1234567", "12345678901234567", "abcdef1234567890", "12345678a"]) {
       const res = await hit("/account/trae/new", {
         method: "POST", env: envFor(kv),
         body: form({ pwd: PASSWORD, label: "设备号不对", accessToken: mkJwt({ exp: cst(60) }), refreshToken: "rt", ahaDeviceId: bad }),
       });
       assert.equal(res.status, 400, `${bad} 居然过了校验`);
-      assert.match(res.text, /16 位/);
+      assert.match(res.text, /8–16 位/);
     }
-    assert.deepEqual([...kv.store.keys()].filter((k) => k.startsWith("v1:acct:trae")), []);
+    // 边界两侧都必须真的能录进去，否则"放宽"只是把校验删了
+    for (const good of ["12345678", "1234567890123456"]) {
+      const uid = seq + 1;
+      const res = await hit("/account/trae/new", {
+        method: "POST", env: envFor(kv),
+        body: form({ pwd: PASSWORD, label: `设备号${good.length}位`, accessToken: mkJwt({ exp: cst(60) }), refreshToken: "rt", ahaDeviceId: good }),
+      });
+      assert.equal(res.status, 303, `${good}（${good.length} 位）被误拒了：${res.text.slice(0, 200)}`);
+      assert.equal(JSON.parse(kv.store.get(`v1:acct:trae:${uid}`)).cred.ahaDeviceId, good);
+      seq = uid;
+    }
+    // 被拒的那些一个都不许留下账号：uid 是靠花子请求解出来的，
+    // 校验必须发生在建号之前，否则拒掉的输入会留下半个账号
+    assert.equal([...kv.store.keys()].filter((k) => k.startsWith("v1:acct:trae:")).length, 2);
   } finally { stub.restore(); }
 });
 
@@ -2238,6 +2255,87 @@ test("[阶段4·workbuddy] 连签兑换：409/403 是正常无事，天数不够
       assert.equal(wbView(s2).steps[6].status, "inactive");
       assert.equal(stub2.seen.filter((r) => r.path.endsWith("/redeem")).length, 0);
     } finally { stub2.restore(); }
+  } finally { stub.restore(); }
+});
+
+test("[阶段4·workbuddy] 积分挂在 6 个位置都要能取到：上游换版本就静默报 +0", async () => {
+  // 旧实现逐个探测（worker.js:660 的 firstNum，注释写着「不同接口版本把积分挂在不同字段上」）。
+  // 收窄成单路径的后果不是报错 —— 能量真扣了、状态是 claimed、界面显示成功，只有积分数对不上。
+  const cases = [
+    [{ code: 0, credit_amount: 7, results: [{ instance: { credit: 5 }, template: { credit: 3 } }] }, 7, "data 层 credit_amount"],
+    [{ code: 0, credit_granted: 7, results: [{ instance: { credit: 5 } }] }, 7, "data 层 credit_granted"],
+    [{ code: 0, reward_credit: 7, results: [{ instance: { credit: 5 } }] }, 7, "data 层 reward_credit"],
+    [{ code: 0, results: [{ credit: 5 }] }, 5, "item 层 credit"],
+    [{ code: 0, results: [{ instance: { credit: 5 } }] }, 5, "item.instance 层"],
+    [{ code: 0, results: [{ template: { credit: 5 } }] }, 5, "item.template 层"],
+    // 0 是合法的"这项没给"，必须继续往下探，不能停在 0 上
+    [{ code: 0, credit_amount: 0, results: [{ instance: { credit: 5 } }] }, 5, "上一层给 0 时要继续探"],
+  ];
+  for (const [payload, expected, why] of cases) {
+    const kv = fakeKv();
+    seedWorkbuddy(kv);
+    const stub = stubUpstream(wbIdleRoutes({
+      "GET /v2/activity/growth/buddy/quota": { payload: { affordable: 1 } },
+      "POST /v2/activity/growth/buddy/open": { payload },
+    }));
+    try {
+      const { summary } = await wbTick(kv);
+      assert.equal(wbView(summary).credits, expected, `${why}：能量已扣但积分记 ${wbView(summary).credits} 而不是 ${expected}`);
+    } finally { stub.restore(); }
+  }
+});
+
+test("[阶段4·workbuddy] 抽奖/兑换给 0 的那层要跳过，不能被 ?? 短路吃掉后面的真值", async () => {
+  // ?? 只挡 null/undefined。上游把"本项没给"写成 0 是常见形态，
+  // `credit ?? reward_credit` 于是停在 0 上，12 分变成 0 分 —— 看着一切正常。
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  const stub = stubUpstream(wbIdleRoutes({
+    "GET /v2/activity/growth/lottery/chances": { payload: { balance: 1 } },
+    "POST /v2/activity/growth/lottery/draw": { payload: { code: 0, credit: 0, reward_credit: 12 } },
+  }));
+  try {
+    const { summary } = await wbTick(kv);
+    assert.match(wbView(summary).steps[2].message, /\+12/, `抽奖记 ${wbView(summary).steps[2].message}`);
+  } finally { stub.restore(); }
+
+  const kv2 = fakeKv();
+  seedWorkbuddy(kv2);
+  const stub2 = stubUpstream(wbIdleRoutes({
+    "GET /v2/activity/growth/streak": { payload: { streak: { days: 8 } } },
+    "POST /v2/activity/growth/redeem": { payload: { code: 0, credit_granted: 0, credit_amount: 20 } },
+  }));
+  try {
+    const { summary: s2 } = await wbTick(kv2);
+    assert.match(wbView(s2).steps[6].message, /7d \+20/, `兑换记 ${wbView(s2).steps[6].message}`);
+  } finally { stub2.restore(); }
+});
+
+test("[阶段4·workbuddy] 顶层字段是 null 时要能穿透到包装层取到真值", async () => {
+  // 旧实现（worker.js:480）在命中即返回前明确跳过 null/undefined。
+  // 少了这个判断：{state:null, data:{state:"arrived"}} 读出 null，
+  // travel 于是走不进"到站领奖"分支，一次能白拿的到站礼物无声过期，
+  // 而界面上看不出任何异常 —— 这正是最难发现的一类偏差。
+  assert.equal(wbApi.dig({ state: null, data: { state: "arrived" } }, "state"), "arrived");
+  assert.equal(wbApi.dig({ active: null, data: { active: true } }, "active"), true);
+  // 顶层给 0 不该被跳过：dig 的职责是"取到那个值"，把 0 当成"没给"是 firstCredit 的活。
+  // 混进 dig 会毁掉 active:false / today_checked_in:false 这类判据 —— 那两个 0/false 是有意义的。
+  assert.equal(wbApi.dig({ credit: 0, data: { credit: 9 } }, "credit"), 0, "dig 遇到 0 就返回，跳过 0 会毁掉 active:false 的判据");
+  // 包装层里没有才是真的没有
+  assert.equal(wbApi.dig({ state: null, data: { other: 1 } }, "state"), null);
+
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  const stub = stubUpstream(wbIdleRoutes({
+    "GET /v2/activity/growth/buddy/travel/status": { payload: { state: null, data: { state: "arrived", record_id: "rec-n" } } },
+    "POST /v2/activity/growth/buddy/travel/claim": { payload: { reward_credit: 8 } },
+  }));
+  try {
+    const { summary } = await wbTick(kv);
+    const travel = wbView(summary).steps[1];
+    assert.equal(travel.status, "claimed", `顶层 null 让到站礼物没领到（实际 ${travel.status}：${travel.message}）`);
+    assert.match(travel.message, /\+8/);
+    assert.equal(stub.seen.filter((r) => r.path.endsWith("/buddy/travel/claim")).length, 1, "到站了却没发领取请求");
   } finally { stub.restore(); }
 });
 

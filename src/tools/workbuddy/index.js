@@ -104,10 +104,17 @@ export default {
           const claimed = await api.claimTravel(ctx, recordId);
           const reward = api.num(api.dig(claimed.payload, "reward_credit"));
           if (claimed.status < 400 && reward !== null) {
+            // 领到就 return，**不**在同一趟里接着派新行程 —— 这是有意的。
+            // 旧实现（worker.js:590）是 `travel = "idle"` 后一路走到 config+depart，
+            // 代价是该步最坏从 3 次请求涨到 4 次，cost:4 顶到 5。恢复它要先改 cost，
+            // 否则账本算低，正是 §P0-2 那类缺陷。
+            // 不恢复的代价只有"派发最多晚一轮 cron（*/30，即 ≤30 分钟）"：
+            // 领奖后 travel 变 idle，下一轮读到 idle 会正常派出。行程周期以小时计，
+            // 少掉的那一趟并不存在 —— 一天能派几趟由行程时长和 daily_limit 决定，与派发时刻无关。
+            // 注意"领失败也不派"是**必须保留**的：旧代码那句注释说得很清楚，
+            // 一失败就当 idle 会立刻派下一趟，把这次已到站的礼物顶掉，等于白丢。
             return { status: "claimed", message: `到站礼物 +${reward}`, credits: reward, cred: ctx.rotated };
           }
-          // 领失败就停在这里，绝不派新行程：旧实现一改成 idle 就立刻派下一趟，
-          // 结果这一趟的到站礼物把上次没领到的那份盖掉，等于白丢
           return { status: "error", message: `到站礼物领取失败（HTTP ${claimed.status}），本次不派新行程`, credits: 0, cred: ctx.rotated };
         }
         if (state === "traveling") return { status: "ok", message: "旅行途中，等到站", credits: 0, cred: ctx.rotated };
@@ -140,7 +147,7 @@ export default {
         for (let i = 0; i < want; i += 1) {
           const drawn = await api.drawOnce(ctx, i);
           if (drawn.status >= 400) break;
-          const granted = api.dig(drawn.payload, "credit") ?? api.dig(drawn.payload, "reward_credit") ?? api.dig(drawn.payload, "credit_amount");
+          const granted = api.firstCredit(drawn.payload, null);
           credits += api.num(granted) || 0;
           drew += 1;
         }
@@ -174,7 +181,9 @@ export default {
           const result = await api.openBlindbox(ctx);
           if (result.status >= 400 || api.codeOf(result.payload) !== 0) break;
           const items = api.dig(result.payload, "results") || [];
-          credits += items.map((item) => api.num(item.credit) || 0).reduce((a, b) => a + b, 0);
+          // firstCredit 不是冗余：上游把积分挂在 data 层、item 层、instance 层、
+          // template 层都可能，只读 item.credit 时能量已经扣了、积分却报 0
+          credits += items.map((item) => api.firstCredit(result.payload, item)).reduce((a, b) => a + b, 0);
           opened += 1;
         }
         if (opened === 0) return { status: "error", message: `有 ${affordable} 个额度但第一发就没成（响应异常）`, credits: 0, cred: ctx.rotated };
@@ -266,7 +275,7 @@ export default {
           // 409 = 这一档已经换过，403 = 天数不够 —— 两种都是"正常无事"，不是失败
           if (result.status === 409 || result.status === 403) { notes.push(`${row.tier} 已换或不够`); continue; }
           if (result.status >= 400 || api.codeOf(result.payload) !== 0) { notes.push(`${row.tier} 失败`); continue; }
-          const granted = api.num(api.dig(result.payload, "credit_granted")) || 0;
+          const granted = api.firstCredit(result.payload, null);
           credits += granted;
           redeemed += 1;
           notes.push(`${row.tier} +${granted}`);
