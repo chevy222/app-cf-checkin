@@ -1,15 +1,28 @@
 name = "checkin"
 main = "src/index.js"
-compatibility_date = "2026-09-08"
+compatibility_date = "2026-09-30"
 # 面板上手工设的变量（PASSWORD 之外若还有）在 wrangler deploy 时不被抹掉
 keep_vars = true
+# 与面板设置保持一致：wrangler.toml 是部署时的唯一事实源，
+# 这里不写的面板配置（自定义域、开关）会被每次部署抹掉
+routes = [
+  { pattern = "checkin.chevy.dpdns.org", custom_domain = true }
+]
+workers_dev = false
+preview_urls = false
 
 [[kv_namespaces]]
 binding = "CHECKIN_KV"
-# 部署前换成你自己执行 npx wrangler kv namespace create CHECKIN_KV 得到的 id
-id = "6086bf91972b4af9aea320135148dc0f"
+# 换成你自己在面板上创建的 KV 命名空间 id（存储和数据库 → KV）
+id = "cd89af6cf1ca4d17a778820b3dbd062c"
 
 [triggers]
 # 一条就够：每轮醒来自己算「谁到期」，加第 N 个工具不再消耗 cron 槽。
 # 免费版上限是每账号 5 条 cron，不是每 Worker。
 crons = ["*/30 * * * *"]
+
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
