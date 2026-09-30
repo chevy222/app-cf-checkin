@@ -8,7 +8,7 @@ import { listUids } from "../src/core/store.js";
 import { commitSchedEntries, loadSchedIndex } from "../src/core/accounts.js";
 import { ACCOUNT_FRAME, FLAGS_FRAME, ROUND_FRAME, TOOL_FRAME, aggregate, runAccountNow, runTick } from "../src/core/runner.js";
 import { makeBudget, trackedFetch, trackedKv } from "../src/core/budget.js";
-import { listRunLog, readRunLog, writeRunLog } from "../src/core/logs.js";
+import { listRunLog, readRunLog, scrubSecrets, writeRunLog } from "../src/core/logs.js";
 import { logicalDay } from "../src/core/time.js";
 import * as wbApi from "../src/tools/workbuddy/api.js";
 import { idemKey } from "../src/tools/workbuddy/api.js";
@@ -1186,6 +1186,38 @@ test("[阶段3审核] 非敏感的枚举值不能被当秘密洗：plan=pro 要�
   // 旧的按长度反向替换会把枚举值 pro 从 "process" 这类正常文案里挖掉；
   // 现在只洗声明了 secret 的字段，枚举值不参与，所以这句必须完整
   assert.ok(kv.store.get(key).includes("套餐 pro 的进程进度"), "枚举值被当成凭据反向替换了");
+});
+
+test("[阶段5] 熵门槛：被误标 secret 的短枚举值不洗，5 位短信码照洗", async () => {
+  // 这条修的是 §6.4 那个"给第 5 个工具埋的坑"：`secret` 由字段声明说了算，
+  // 而工具作者会误把枚举值标成 secret（套餐档位、模式开关）。
+  // 没有门槛时值 "pro" 会让 message 里每次出现 pro 都变成 8 个黑点。
+  //
+  // 反方向同样重要：WorkBuddy 的短信验证码是 5 位纯数字，按"长度门槛"过滤会整类漏掉。
+  // 早先的版本正是靠长度过滤，5 位码整个漏出去过。所以门槛必须看"有没有信息量"，
+  // 不能只看长度。
+  const short = scrubSecrets("套餐 pro 已升级，status=ok，HTTP 401，重试 1 次", ["pro", "ok", "1", "free"]);
+  assert.equal(short, "套餐 pro 已升级，status=ok，HTTP 401，重试 1 次",
+    "短枚举值不该被洗成黑点：诊断文案被毁掉比泄漏一个枚举值严重得多");
+
+  // 5 位纯数字：长度够、含数字，两条低熵判据都不命中 → 必须照洗
+  const pin = scrubSecrets("验证码 44321 提交失败", ["44321"]);
+  assert.ok(!pin.includes("44321"), `5 位短信码必须洗掉：${pin}`);
+  assert.match(pin, /提交失败/, "洗掉之后其余文案要留着");
+
+  // 短但含数字的组合（长度 4，含数字）也照洗 —— 它不是自然语言里的枚举词
+  assert.ok(!scrubSecrets("工单 A1b2 已处理", ["A1b2"]).includes("A1b2"), "含数字的短码不该放过");
+
+  // 真凭据永远照洗，无论形态
+  for (const real of ["eyJhbGciOiJIUzI1NiJ9.SUPERSECRETVALUE.doNotLeak", "rt-wb-old-XXXXXXXX", "0123456789abcdef"]) {
+    assert.ok(!scrubSecrets(`上游回显 ${real} 结束`, [real]).includes(real), `真凭据必须洗掉：${real}`);
+  }
+  // 长纯字母也不是枚举（"abcdefgh" 这种），仍要洗
+  assert.ok(!scrubSecrets("上游回了 abcdefgh 结束", ["abcdefgh"]).includes("abcdefgh"),
+    "长纯字母仍具信息量，不该被当枚举放过");
+
+  // URL 编码 / base64 形态也要过门槛：低熵值即使变形也一并放过
+  assert.equal(scrubSecrets("free", ["free"]), "free");
 });
 
 test("[阶段3审核] 含长 base64 路径的合法回调 URL 不该被兜底正则整段吃掉", async () => {

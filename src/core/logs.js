@@ -64,10 +64,30 @@ const formsOf = (value) => {
   return [...forms].filter((form) => form.length > 0);
 };
 
+// 熵门槛：不是"长度够就洗"，而是"没信息量的值不洗"。
+//
+// 为什么要门槛：`secret` 是**字段声明**说了算的，而工具作者会误把枚举值标成 secret
+// （套餐档位、模式开关这类）。不设门槛时，值 "pro" 会让 message 里每一次出现
+// "pro" 都变成 8 个黑点 —— 诊断文案被洗烂，而那个值本身根本不是秘密。
+//
+// 判据是"短且像英文单词"，不是"纯字母"：8 位纯字母的密码（abcdefgh）是有信息量的，
+// 放过它就等于开一个真实的泄漏口。所以门槛只吃**短**的那些：
+//   · 长度 < 4    —— "1" 出现在 "HTTP 401" 里、"ok" 出现在 "status=ok" 里。
+//                   洗它等于毁掉诊断信息。真实凭据没有 3 个字符的。
+//   · 长度 <= 6 且全是字母 —— 这个长度段的纯字母几乎只有模式名与档位名：
+//                   pro / free / team / basic / trial / admin。
+//                   7 位往上（abcdefgh）就可能是密码了，重新变成要洗。
+// 短信验证码那种「短但含数字」的形态（WorkBuddy 是 5 位）必须照洗：
+// 它含数字，不命中第二条；长度够，也不命中第一条。这正是"按长度设门槛"会漏掉的那一类 ——
+// 早先的版本靠长度过滤，5 位码整个漏出去过。
+const isLowEntropy = (value) => value.length < 4 || (value.length <= 6 && /^[A-Za-z]+$/.test(value));
+
 export function scrubSecrets(text, secretValues) {
   let out = String(text ?? "");
   for (const value of secretValues) {
-    for (const form of formsOf(String(value))) {
+    const secret = String(value);
+    if (isLowEntropy(secret)) continue;
+    for (const form of formsOf(secret)) {
       if (out.includes(form)) out = out.split(form).join(maskSecret(value));
     }
   }
