@@ -384,9 +384,12 @@ export async function runTick({ env, budget, tools, trigger = "cron", now = nowS
   }
 
   const summary = { now, trigger, ran, budget: { used: budget.used, limit: budget.limit, left: budget.left(), over: budget.over }, plan };
-  // 账本空了就少一条汇总日志，不能为了写它把整次调用推到 50 以上 ——
+  // 全轮空转（一个账号都没开跑）不写汇总日志：cron 每 30 分钟一轮，全 skipped 的轮
+  // 一天能刷 48 条「未开始」，把真正有事的记录淹掉。「cron 还活着」由心跳承担，
+  // 坏记录无论何时都写自己的运行日志并计入 ran，不会被这条判据静默。
+  // 账本空了也少一条汇总日志 —— 不能为了写它把整次调用推到 50 以上，
   // 那时候连累的是已经跑完的账号的收尾写入
-  if (budget.fits(ROUND_FRAME)) await safe(() => writeTickLog(env, { now, trigger, plan, budget, ran }));
+  if (ran > 0 && budget.fits(ROUND_FRAME)) await safe(() => writeTickLog(env, { now, trigger, plan, budget, ran }));
   return summary;
 }
 

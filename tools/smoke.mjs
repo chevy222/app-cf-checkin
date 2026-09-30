@@ -1120,6 +1120,18 @@ test("[跑完一轮会留下账号日志与本轮汇总日志", async () => {
   assert.ok(runs[0].includes("LOGA1"));
 });
 
+test("[全空转的轮不留汇总日志", async () => {
+  const kv = fakeKv();
+  // 配置齐全但一个账号都没有 → 整轮 skipped（「无到期账号」），什么都没跑
+  seedConfig(kv);
+  const { summary } = await tickWith(kv, [leakyTool(okStep())]);
+  const ticks = [...kv.store.keys()].filter((k) => k.startsWith("v1:tick:"));
+  assert.equal(ticks.length, 0, `空轮不该写汇总日志，实际 ${ticks.join(", ")}`);
+  assert.equal(summary.ran, 0);
+  // 空轮也不该有别的残留：调度索引、进度、心跳都不动 —— 无事发生就零写入
+  assert.equal(logKeys(kv).length, 0);
+});
+
 test("[两类日志都带 30 天 TTL", async () => {
   const kv = fakeKv();
   seedFull(kv, "LOGA2");
