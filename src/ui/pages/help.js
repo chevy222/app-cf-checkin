@@ -2,20 +2,11 @@ import { escapeHtml } from "../../core/text.js";
 import { link, navHtml, pageShell, STATUS } from "../layout.js";
 import { glyph, sectionHead } from "../components.js";
 
-const STAGES = [
-  { n: 1, name: "骨架", done: true, text: "密码闸 · 路由 · 安全头 · KV 读写 · 注册表 · schema 驱动的表单与账号增删改查" },
-  { n: 2, name: "会跑", done: true, text: "到期队列 · (账号×步骤) 预算 · 断点续跑 · 逻辑日界 · 退避阶梯" },
-  { n: 3, name: "会管", done: true, text: "运行日志列表与详情 · 「测试」「立即执行」按钮 · 空状态与红条细化" },
-  { n: 4, name: "接三家", done: true, text: "三家模块已接入；用真实凭据各跑通一轮待验" },
-  { n: 5, name: "收尾", done: false, text: "每工具停用开关（已完成）· 图标 · 中文 README · 停用旧 Worker" },
-];
-
+// 这里原本有一块「阶段 1..5 / 已完成 / 待做」。已删：它是开发进度，不是操作信息 ——
+// 使用者要的是"怎么用、怎么加工具、失败了怎么办"，而"阶段 4 已完成"对谁都没有用。
+// 更实际的问题是它会过期：阶段 5 收尾后没有任何机制会改这一行，"待做：图标 · README"会变成永久的谎言。
+// 阶段信息在交接文档 §1.1 与设计方案 §9 里有正规留存，代码里这份只是会漂移的副本。
 export function renderHelp({ pwd, tools }) {
-  const stages = STAGES.map((stage) => `<div class="kv">
-      <span class="k">阶段 ${stage.n} · ${escapeHtml(stage.name)}</span>
-      <span class="v">${stage.done ? "已完成" : "待做"} — ${escapeHtml(stage.text)}</span>
-    </div>`).join("");
-
   const statuses = Object.entries(STATUS).map(([key, info]) => `<div class="kv">
       <span class="k"><span class="badge b-${key === "rate_limited" ? "rate" : key === "login_required" ? "login" : key === "deferred" ? "defer" : key === "already" ? "already" : key === "inactive" || key === "skipped" ? "skipped" : key === "partial" || key === "pending" ? "partial" : key === "error" ? "error" : "ok"}">${glyph(info.glyph)}${escapeHtml(info.label)}</span></span>
       <span class="v dim">${escapeHtml(key)}</span>
@@ -32,8 +23,6 @@ export function renderHelp({ pwd, tools }) {
     body: sectionHead("这是什么")
       + `<div class="pane"><p class="sub" style="margin:0">一个可扩展的签到平台：内核不认识任何具体站点，
         每个工具是一个自包含模块，只声明字段、步骤与调度策略。加第 N 个工具不需要改内核、不需要写界面代码。</p></div>
-      ${sectionHead("阶段进度")}
-      <div class="pane">${stages}</div>
       ${sectionHead("已注册的工具")}
       <div class="pane">${toolsList}</div>
       ${sectionHead("停用某个工具")}
