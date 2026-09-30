@@ -5,6 +5,7 @@ import { TOOLS } from "../../tools/index.js";
 import { link, navHtml, pageShell } from "../layout.js";
 import { alertBox, badge, button, emptyState, sectionHead } from "../components.js";
 import { iconImg } from "../icons.js";
+import { renderTutorial } from "../tutorials.js";
 import { renderForm } from "../forms.js";
 
 function nonSecretSummary(tool, account) {
@@ -117,10 +118,8 @@ export function renderTool({ pwd, tool, accounts, total, sched = {}, flash, flag
 export function renderAccountForm({ pwd, tool, fields, values, existing, errors, uid, title, flash }) {
   const cancelHref = link(`/tool/${tool.id}`, pwd);
   const action = link(uid ? `/account/${tool.id}/${encodeURIComponent(uid)}/edit` : `/account/${tool.id}/new`, pwd);
-  // 这句话必须从工具的声明里生成。之前它写死了 demo 夹具的字段名「席位号」，
-  // 于是接上真工具后 Qoder 的表单也在教用户去找一个根本不存在的输入框 ——
-  // 界面写死具体工具的名字，就是"加工具不改内核"这条承诺的反例。
-  // 现在 uidOf 是唯一来源（uidField 已删），所以这句话不再有第二种形态。
+  // 这句话必须从工具的声明里生成，不能写死任何具体工具的字段名 ——
+  // 界面写死具体工具的东西，就是"加工具不改内核"这条承诺的反例。
   const uidSourceLabel = "保存时从凭据里自动解出，不用另外填";
   const uidRow = uid
     ? `<div class="kv"><span class="k">uid</span><span class="v">${escapeHtml(uid)}</span></div>`
@@ -131,6 +130,7 @@ export function renderAccountForm({ pwd, tool, fields, values, existing, errors,
     nav: navHtml(pwd, `tool:${tool.id}`, TOOLS),
     body: `${flash ? alertBox(flash.kind, escapeHtml(flash.text)) : ""}
       ${sectionHead(title, `字段来自 ${escapeHtml(tool.name)} 的声明，界面不认具体工具`)}
+      ${renderTutorial(tool)}
       <div class="split">
         <div class="pane">
           ${uidRow}
@@ -159,10 +159,11 @@ export function renderToolConfig({ pwd, tool, values, errors, flash }) {
       ${filled < tool.config.length
         ? alertBox("warn", `工具配置未完成：已填 ${filled} / ${tool.config.length} 项。缺项时这个工具会被调度器跳过。`)
         : ""}
+      ${renderTutorial(tool)}
       <div class="split">
         <div class="pane">
           <p class="sub" style="margin:0 0 10px">这一层是<b>工具级</b>的，对该工具下所有账号生效；账号级凭据在「管理」页逐个填。</p>
-          <p class="tiny">改动下一轮生效（阶段 2 起）。</p>
+          <p class="tiny">改动下一轮生效。</p>
         </div>
         <div class="pane">
           ${renderForm(tool.config, { values, existing: values, errors, action: link(`/tool/${tool.id}/settings`, pwd), cancelHref: link(`/tool/${tool.id}`, pwd), pwd, submitLabel: "保存配置" })}

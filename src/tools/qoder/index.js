@@ -25,7 +25,7 @@ export default {
   summary: "每天领取 IDE 活动额度（campaigns → claim）",
 
   // 工具级：对这家站点的所有账号生效。设备身份是"一台机器"的身份，不属于任何单个账号，
-  // 所以它是 config 而不是 creds —— 三个账号共用一份，这也是旧 Worker 的实际形态。
+  // 所以它是 config 而不是 creds —— 一台机器上的多个账号共用一份。
   config: [
     {
       key: "clientType",
@@ -84,8 +84,8 @@ export default {
 
   schedule: {
     // 这家的"今天"跟着它自己的活动窗口走：上游按 UTC+8 每天 10:00 前后重新下发活动，
-    // 所以逻辑日也在 10:00 翻。旧实现让计数器按北京零点翻、把"10 点后才跑"交给
-    // cron 表达式表达，同一个事实写在了两个地方。
+    // 所以逻辑日也在 10:00 翻。不要让计数器按北京零点翻、再把"10 点后才跑"交给
+    // cron 表达式表达 —— 同一个事实写在两个地方，迟早对不上。
     resetHour: 10,
     notBeforeHour: 10,     // 10 点之前去打只是白烧子请求
     minIntervalSec: 1800,
@@ -97,8 +97,7 @@ export default {
 
   // 最坏情况：读列表 1 + 认证失败时（续期 1 + 重读 1）+ 领 N 个 = 3 + N。
   // cost 是"这一步最坏要花多少"，不是"通常花多少" —— 低估会让预算判定给出假通行证。
-  // 这里原来写的是 2 + N，和上面那句注释自己数出来的 3 + N 差一笔：
-  // 实测走一遍 401 → 续期 → 重试 → 领 3 个，内核算出 over=1。
+  // 走一遍 401 → 续期 → 重试 → 领 3 个，内核算出 over=1，所以是 3 + N 而不是 2 + N。
   steps: [
     {
       id: "claim",
@@ -110,8 +109,8 @@ export default {
         if (list.error) return { status: "error", message: list.error, credits: 0, cred: list.rotated };
 
         // 上游对三种完全不同的情况都回 HTTP 200 + 空列表：活动真结束了、这个号不在资格范围内、
-        // 设备身份（Cosy 头）过期。旧实现统一报成绿色"今日已领取"，于是设备身份过期
-        // 能坏上几周都不被发现。这里报 inactive，并把三种可能一次说清。
+        // 设备身份（Cosy 头）过期。所以空列表不能报成"今日已领取" —— 那会让设备身份过期
+        // 坏上几周都不被发现。这里报 inactive，并把三种可能一次说清。
         if (list.benefits === 0) {
           return {
             status: "inactive",

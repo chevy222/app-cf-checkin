@@ -3,11 +3,11 @@ import { expiresAtOf, subjectOf } from "../../core/jwt.js";
 // WorkBuddy 请求层。
 //
 // 与另外两家没有任何共用代码（硬规则一），并且**只允许一个出口域名**：
-// 个人版没有企业头，也没有 per-account endpoint —— 旧的 X-Enterprise-Id / X-Tenant-Id /
-// X-Domain 与 endpoint 覆盖整个删掉，登录用的 www.workbuddy.cn 只出现在线下脚本里。
+// 个人版没有企业头，也没有 per-account endpoint —— 不要加 X-Enterprise-Id / X-Tenant-Id /
+// X-Domain 与 endpoint 覆盖。登录用的 www.workbuddy.cn 只出现在线下脚本里。
 //
 // 这一家的签到"今天算不算过了"完全由服务端判定（today_checked_in / 10001 / 空 body），
-// 旧实现压根不自己算日子。所以这里的逻辑日只用于内核的上闩与幂等键。
+// 所以这里的逻辑日只用于内核的上闩与幂等键。
 const HOST = "copilot.tencent.com";
 const STATUS = "/v2/billing/meter/checkin-activity-status";
 const CHECKIN = "/v2/billing/meter/daily-checkin";
@@ -61,10 +61,9 @@ const timeoutMs = (config) => {
 export function dig(node, key, depth = 0) {
   if (!node || typeof node !== "object" || depth > 4) return null;
   // 命中了但值是 null/undefined 时**继续往包装层里钻**，不立刻返回。
-  // 旧实现明确写了这个判断，它不是可有可无的整洁癖：上游在不同接口版本里
-  // 会把同一个字段在顶层置 null、真正的值放进 data/result 里。命中即返回会让
-  // {state:null, data:{state:"arrived"}} 读出 null，travel 于是走不进"到站领奖"分支，
-  // 一次能白拿的到站礼物就无声无息地过期了。
+  // 这不是可有可无的整洁癖：上游在不同接口版本里会把同一个字段在顶层置 null、
+  // 真正的值放进 data/result 里。命中即返回会让 {state:null, data:{state:"arrived"}}
+  // 读出 null，travel 于是走不进"到站领奖"分支，一次能白拿的到站礼物就无声无息地过期了。
   if (Object.prototype.hasOwnProperty.call(node, key) && node[key] !== null && node[key] !== undefined) return node[key];
   for (const wrap of ["data", "result", "resp", "response"]) {
     if (node[wrap] && typeof node[wrap] === "object") {
@@ -80,8 +79,8 @@ export function num(value) {
   return Number.isFinite(n) ? n : null;
 };
 
-// 积分取值：依次探测多个位置，取第一个非 0 的数字。这是旧实现 firstNum 的原样搬回，
-// 它的存在理由写在旧代码注释里 —— **上游在不同接口版本把积分挂在不同字段上**。
+// 积分取值：依次探测多个位置，取第一个非 0 的数字。存在理由是
+// **上游在不同接口版本把积分挂在不同字段上**。
 // 收窄成单路径的后果不是报错，是静默报 +0：能量扣了、界面显示成功、积分对不上。
 //
 // 判据必须是 `if (n)` 而不是 `if (n !== null)`：0 是合法的"这项没给"，
@@ -99,11 +98,11 @@ export function firstCredit(body, item) {
 
 // code 归一：没给才是 null，给了就按数字比。
 // 两处不能写 `body.code || 0`（空 body 会被当成 0 = 成功），
-// 也不能写 `body.code === 0` 之外再加字符串宽松比较（旧实现的盲盒循环就是靠严格 0 才没把错误当成功）。
+// 也不能在 `=== 0` 之外再加字符串宽松比较（那会把错误响应读成成功）。
 export const codeOf = (body) => (body && body.code !== undefined && body.code !== null ? num(body.code) : null);
 
 // 一次真实请求。method 与 body 的形状严格照上游要求：
-// 签到两个接口是"POST 但没有请求体"，而 Content-Type 仍然要带 —— 旧实现就是这样才通的。
+// 签到两个接口是"POST 但没有请求体"，而 Content-Type 仍然要带 —— 少这个头上游不认。
 async function call(ctx, path, { method = "POST", body, auth = true, extraHeaders } = {}) {
   const cred = ctx.account.cred;
   const headers = { Accept: "application/json", "Content-Type": "application/json", "User-Agent": "WorkBuddy" };
@@ -161,9 +160,8 @@ async function refresh(ctx) {
   return { rotated };
 }
 
-// 每次动手之前先确认这把票还能用。判据只看 exp：旧实现还有个"距上次续期超 10 天"
-// 的触发条件，那是为"凭据可能来自环境变量、看不到 KV 里的续期记录"准备的；
-// 现在凭据真相只有一处，留着只会每天多烧一次一次性票据。
+// 每次动手之前先确认这把票还能用。判据只看 exp —— 不要加"距上次续期超 N 天"这类
+// 触发条件：凭据真相只有一处，多一个条件就多一次白烧的续期。
 export async function ensureAuth(ctx) {
   const expiresAt = num(ctx.account.cred.expiresAt) || 0;
   const ahead = num(ctx.config.refreshAheadSec) || 7 * 86400;
@@ -190,9 +188,10 @@ export const readTravelStatus = (ctx) => call(ctx, TRAVEL_STATUS, { method: "GET
 export const readTravelConfig = (ctx) => call(ctx, TRAVEL_CONFIG, { method: "GET", body: undefined });
 
 // 幂等键：这一家的 lottery/draw 与 redeem 都收 client_token 作防重放。
-// 旧实现每次现取随机值 —— 于是"一轮被掐死、下一轮重跑"会**再花掉一次抽奖机会**，
-// 而机会只会减少不会回来。改成按 (账号, 逻辑日, 序号) 派生：同一轮重放发的是同一个键，
-// 上游自己就把重复请求判成重放。这是把它的防重放字段拿来当我们的幂等键用。
+// 必须确定性派生，不能现取随机值 —— 否则"一轮被掐死、下一轮重跑"会**再花掉一次
+// 抽奖机会**，而机会只会减少不会回来。按 (账号, 逻辑日, 序号) 派生后，
+// 同一轮重放发的是同一个键，上游自己就把重复请求判成重放。
+// 这是把它的防重放字段拿来当我们的幂等键用。
 export function idemKey(scope, uid, day, ...parts) {
   const dayTag = String(day).replace(/-/g, "");
   const who = String(uid).replace(/[^0-9a-zA-Z]/g, "").slice(-10);
@@ -216,7 +215,7 @@ export const acceptTask = (ctx, taskCode) => call(ctx, TASK_ACCEPT, { body: { ta
 export const redeemTier = (ctx, tier) => call(ctx, REDEEM, { body: { tier, client_token: idemKey("redeem", ctx.account.uid, ctx.day, tier) } });
 
 // 签到的判定方言，分两段。顺序不能变：401/403 必须排在"空 body 算已领"之前，
-// 否则登录失效会被读成"今天已经签过了"并返回成功码 —— 这是旧代码专门注明的一处。
+// 否则登录失效会被读成"今天已经签过了"并返回成功码。
 // 拆成两个函数而不是在一个函数里重复判一遍"要不要领"：两处条件一定会漂移。
 export function judgeStatus(result) {
   if (isAuthFail(result)) return { verdict: "login_required", message: `签到状态被拒（HTTP ${result.status}）` };
@@ -251,8 +250,9 @@ export function judgeClaim(result) {
   };
 }
 
-// 录入时解 uid：个人版的 uid 就是 access token 的 sub（旧实现还允许手填，
-// 一旦填的和票对不上，X-User-Id 与 Authorization 不同源，表现是稳定的 403）
+// 录入时解 uid：个人版的 uid 就是 access token 的 sub。
+// 不要让用户手填 —— 填的和票对不上时，X-User-Id 与 Authorization 不同源，
+// 表现是稳定的 403。
 export function uidFromToken(values) {
   const text = unwrapToken(values.accessToken);
   if (!text) throw new Error("先把 Access Token 粘进来");

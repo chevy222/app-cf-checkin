@@ -88,8 +88,8 @@ function claimHeaders(ctx, token) {
 // 因为旧 refresh_token 已经被这次调用消耗掉了。
 //
 // expiresAt 缺失或为 0 时**先试着从 JWT 里读 exp**，读不到才去换票。这个顺序不能反：
-// 一上来就换票会把一次本来没必要的花费变常态 —— 旧实现正是这样，
-// 结果"每天续一次、每天把刚存的新串再换一遍"，白烧还容易被风控盯上。
+// 一上来就换票会把一次本来没必要的花费变常态，结果是"每天续一次、
+// 每天把刚存的新串再换一遍"，白烧还容易被风控盯上。
 export async function ensureToken(ctx, { force = false } = {}) {
   const cred = ctx.account.cred;
   if (!cred.expiresAt) {
@@ -151,7 +151,7 @@ export async function readUsage(ctx, token) {
   return { limit, used, remaining: limit - used, packs: packs.length };
 }
 
-// 业务码方言 → 内核状态。这一小段是 Trae 全部"方言"的所在，注释里都是旧代码踩过的。
+// 业务码方言 → 内核状态。这一小段是 Trae 全部"方言"的所在，顺序不能乱（见下）。
 export function translateClaim({ code, msg, credits }) {
   const low = msg.toLowerCase();
   if (code === 9074 || code === 429 || msg.includes("频繁") || msg.includes("太多") || low.includes("too frequent")) {
@@ -170,7 +170,7 @@ export function translateClaim({ code, msg, credits }) {
 }
 
 // Trae 的 UserID 不在 JWT 里，只能问 GetUserInfo —— 而它的鉴权头和签到侧**完全不同**
-// （x-cloudide-token，不是 Cloud-IDE-JWT），这是旧代码里最容易写错的一处。
+// （x-cloudide-token，不是 Cloud-IDE-JWT），这里最容易写错。
 // 顺手把 access token 的 exp 一起交回去存着：没有它，第一次运行会以为"票快到期"
 // 而白换一次票，而且此后每天都换一次。
 export async function uidFromToken(ctx) {

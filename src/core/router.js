@@ -103,13 +103,7 @@ async function accountNewPage(ctx, tool) {
 // 账号标识从哪来：只有一个来源 —— 工具自己给的 uidOf 函数。
 // 内核不认识任何具体站点，所以它没法凭空知道"这个工具的账号叫什么"；
 // 让每个工具自己回答，是唯一能做到"加工具零改动"的方式。
-//
-// 曾经还有第二种声明 uidField（"标识就是用户填的某个字段"），现已删除：
-// 它不是一种能力，而是 uidOf 的语法糖 —— uidField: "seatId" 等价于
-// uidOf: (ctx) => ctx.values.seatId，而 uidOf 什么都能做。留着它等于在契约里
-// 多放一个"必须和 uidOf 保持行为一致"的分支，而没有任何机制能保证这一点。
-// 三家在用的都是 uidOf（Qoder/WorkBuddy 解 JWT 的 sub，Trae 问一次 GetUserInfo），
-// 没有任何一个工具的身份是表单上的明面字段。
+// 三家在用的都是 uidOf（Qoder/WorkBuddy 解 JWT 的 sub，Trae 问一次 GetUserInfo）。
 //
 // 为什么不让用户自己抄一遍 uid：抄错就是另一个键名，账号记录会原地孤立
 // 且不报错（旧 qoder 用会轮换的 refresh_token 兜底算 uid，续一次期就换了个键）。
@@ -295,8 +289,8 @@ async function apiState(env, budget) {
   });
 }
 
-// 手动跑一轮并返回结构化结果。这是阶段 2 的验收窗口：
-// 顺延、断点续跑、退避这些行为不靠读日志猜，直接看这一份 JSON。
+// 手动跑一轮并返回结构化结果：顺延、断点续跑、退避这些行为不靠读日志猜，
+// 直接看这一份 JSON。
 async function apiTick(ctx) {
   const summary = await runTick({ env: ctx.env, budget: ctx.budget, tools: TOOLS, trigger: "manual" });
   return jsonRes({ ok: true, ...summary });
@@ -358,7 +352,8 @@ export async function dispatch(request, url, env, pwd, form, budget) {
     }
 
     // 处理器实参的形状只有一种约定：工具路由 = (ctx, 已解析的 tool, tool 之后的捕获组…)；
-    // 非工具路由 = (ctx, 捕获组…)。之前统一写成 params[1]，把 /runs/<key> 的键名吞掉了
+    // 非工具路由 = (ctx, 捕获组…)。
+    // 不要把两种路由统一写成 params[1] —— 那会把 /runs/<key> 的键名吞掉
     // （第一个捕获组被 tool 槽位吃掉），详情页于是永远渲染成"记录不存在"。
     if (NO_TOOL_ROUTES.has(pattern)) return handler(ctx, ...params);
     return params.length ? await handler(ctx, ctx.tool, ...params.slice(1)) : await handler(ctx);

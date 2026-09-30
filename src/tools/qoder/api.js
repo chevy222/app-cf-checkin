@@ -4,9 +4,8 @@ import { truncate } from "../../core/text.js";
 // Qoder 请求层。这一层的存在理由：内核只认 {status, message, credits} 一种方言，
 // 而 Qoder 的方言是「HTTP 200 + data.status 字符串 + 活动列表可能整页为空」。
 //
-// 出口只有一个域名（openapi.qoder.com.cn）。旧代码在 commit cc465f7 之前就删掉了国际端点，
-// 却仍留着「401/403/404 就换下一个 base 重试」的循环 —— 单 host 下那段循环不再换 base，
-// 只是把真实的登录失效伪装成"这个 base 不对"，最后报成一条看不出所以然的错误。这里不带走。
+// 出口只有一个域名（openapi.qoder.com.cn）。不要加"401 就换下一个 base 重试"的循环：
+// 单 host 下它不换 base，只是把真实的登录失效伪装成"这个域名不对"。
 const HOST = "openapi.qoder.com.cn";
 const BASE = `https://${HOST}`;
 const CAMPAIGNS = "/sash/api/v1/me/campaigns";
@@ -14,8 +13,8 @@ const REFRESH = "/api/v1/deviceToken/refresh";
 const USER_AGENT = "Qoder/claim";
 
 // 设备身份头：这是"一台机器"的身份，不是"一个账号"的，所以它是工具级配置而不是凭据。
-// 少发或过期时上游不报错，只是 campaigns 返回空列表 —— 旧代码把空列表报成绿色"已领取"，
-// 于是设备身份失效这种真故障看起来像一切正常。这里必须把它单独认出来。
+// 少发或过期时上游不报错，只是 campaigns 返回空列表 —— 所以空列表必须单独认出来，
+// 不能报成"今日已领取"，那种报法让设备身份失效看起来像一切正常。
 function deviceHeaders(config) {
   const headers = { "Cosy-ClientType": String(config.clientType || "10") };
   const map = {
@@ -34,8 +33,7 @@ function deviceHeaders(config) {
 // 每一次真实请求都只经 ctx.fetch：那里记账、并且按白名单拒发别的域名
 async function call(ctx, { path, method = "GET", body, token }) {
   const headers = { Accept: "application/json", "User-Agent": USER_AGENT, ...deviceHeaders(ctx.config) };
-  // GET 不带 Content-Type（旧代码用 if (body) 控制，这里保持同样形状）；
-  // 刷新接口不挂 Authorization —— 它的凭据在请求体里
+  // GET 不带 Content-Type；刷新接口不挂 Authorization —— 它的凭据在请求体里
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (token) headers.Authorization = `Bearer ${token}`;
 
@@ -97,8 +95,8 @@ export async function readCampaigns(ctx) {
 
   const benefits = payload.campaigns.filter((c) => c && c.actionType === "CLAIM_BENEFIT");
   const claimable = benefits.filter((c) => c.claimStatus === "CLAIMABLE");
-  // startAt/endAt 缺失当"无界"处理。旧代码写 (c.endAt || 0)，把没给结束时间的活动
-  // 当成"1970 年就结束了"，于是真领到的活动被报成未下发。
+  // startAt/endAt 缺失当"无界"处理。不要写成 (c.endAt || 0) ——
+  // 那把没给结束时间的活动当成"1970 年就结束了"，真领到的活动会被报成未下发。
   const now = ctx.now;
   const within = (c) => (c.startAt ? Number(c.startAt) : 0) <= now && (c.endAt ? now < Number(c.endAt) : true);
   const claimedToday = benefits.filter((c) => c.claimStatus === "CLAIMED" && within(c));
@@ -126,15 +124,14 @@ export async function claimOne(ctx, campaign) {
   if (!data || typeof data !== "object" || data.status !== "CLAIMED") {
     return { status: "error", message: `领取响应不是 CLAIMED：${truncate(JSON.stringify(data ?? result.payload), 100)}`, rotated: rotated || null };
   }
-  // 金额：只信 benefit.amount 是数字这一种形态；0 是合法值，不能用 || 兜底
-  // （旧写法 `(data.benefit.amount) || (c.benefit.amount) || 0` 把真 0 当成缺失，
-  //   于是"这次领了 0 额度"被报成列表里的数字，日志里的加成就凭空多出来）
+  // 金额：只信 benefit.amount 是数字这一种形态；0 是合法值，不能用 || 兜底 ——
+  // 那会把真 0 当成缺失，于是"这次领了 0 额度"被报成列表里的数字，日志里的加成就凭空多出来
   const raw = data.benefit && data.benefit.amount;
   const credits = Number.isFinite(Number(raw)) ? Number(raw) : 0;
   return {
     status: "claimed",
-    // replayed 是上游在告诉我们"这次是幂等重放"。旧代码算出来就丢掉，
-    // 于是重跑一轮被记成"新领到了额度"。这里如实分开报。
+    // replayed 是上游在告诉我们"这次是幂等重放"。必须如实上报并与"新领到"分开，
+    // 否则重跑一轮会被记成"新领到了额度"
     replayed: Boolean(data.replayed),
     credits,
     rotated: rotated || null,

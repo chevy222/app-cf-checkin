@@ -3,9 +3,11 @@
 一个 Cloudflare Worker，每天自动替领 Qoder / Trae / WorkBuddy 三家的免费额度。
 **加第 4 个工具只需要新增一个 `src/tools/<id>/` 目录 + 在注册表里加一行，内核与界面零改动。**
 
-- 167 条测试全绿（`npm run check`，约 0.3 秒，不需要网络）
+- 175 条测试全绿（`npm run check`，约 0.3 秒，不需要网络）
 - 运行时依赖 **零**（`package.json` 没有 `dependencies` 字段）
-- 三个旧脚本（`qoder-cf-checkin/`、`trae-cf-checkin/`、`workbuddy-cf-checkin/`）是只读参考，不是活跃开发对象
+- 本仓库是三家的**唯一**实现。三个旧脚本（`qoder-cf-checkin` / `trae-cf-checkin` /
+  `workbuddy-cf-checkin`）是它的前身，各自独立成仓，不在本仓库内 ——
+  读设计文档 §3 里的 Git 地址可取回
 
 ---
 
@@ -18,7 +20,7 @@
 - [免费版配额与自限 45](#免费版配额与自限-45)
 - [KV 键全表](#kv-键全表)
 - [常见问题](#常见问题)
-- [与设计文档的差异](#与设计文档的差异)
+- [与旧设计的差异](#与旧设计的差异)
 
 ---
 
@@ -29,7 +31,6 @@
 **方式一 · wrangler 部署（主路径）**
 
 ```bash
-cd checkin-app
 npm install                      # 装 wrangler（devDependencies）
 npx wrangler deploy
 ```
@@ -40,7 +41,6 @@ npx wrangler deploy
 **方式二 · 单文件粘贴（备用）**
 
 ```bash
-cd checkin-app
 npm install
 npx wrangler deploy --dry-run --outdir=dist
 ```
@@ -59,7 +59,6 @@ npx wrangler deploy --dry-run --outdir=dist
 ### 本地跑
 
 ```bash
-cd checkin-app
 printf 'PASSWORD=换成你自己的\n' > .dev.vars    # 这个文件已在 .gitignore 里
 npm run dev
 ```
@@ -119,25 +118,33 @@ npm run dev
 
 ## 凭据怎么取
 
-三个工具的凭据都在**浏览器本地**取值，平台不参与 —— 这一点是安全设计的核心。
+三个工具的凭据都在**本机客户端上**取值，平台不参与 —— 这一点是安全设计的核心。
+
+**界面里就有完整教程**：点「新增账号」或「工具配置」，左侧会显示分步的 PowerShell 脚本，
+整段复制到 PowerShell 回车即可，不需要 F12 抓包。下面只列字段对照，脚本在界面里。
+
+| 工具 | 令牌从哪来 | 设备标识从哪来 |
+|---|---|---|
+| Qoder | 脚本用 DPAPI 解密客户端的 `auth.v1.dat` | 脚本跑客户端自带的 `runtime-info.exe` |
+| Trae | 登录回调 URL 里的 `userJwt`（脚本解析出令牌与 refreshToken） | 客户端 `storage.json` 里的 `iCubeAuthInfo://icube-dc:<8–16 位数字>` |
+| WorkBuddy | 官方短信登录接口换明文 Token | 无（uid 平台从令牌的 `sub` 解） |
 
 ### Qoder
 
 | 字段 | 怎么取 |
 |---|---|
-| `accessToken` / `refreshToken` | 登录 qoder.com → 浏览器 DevTools → Network → 任意一个 `/sash/api/v1/` 请求的 `Authorization` 与 `X-Refresh-Token` 头 |
+| `accessToken` / `refreshToken` | 界面教程第 2 步的输出（`TOKEN:` / `REFRESH:` 两行） |
 | `ahaDeviceId`（不适用） | — |
 
-配置项里的 `machineToken` / `machineCode` / `machineId` 也从同一批请求头上取，
-**`Cosy-ClientType` 必须是 10**，缺了接口直接返回空列表。
-另有 4 个可选项：`machineType` / `machineOS` / `machineHostname` / `version`。
+工具配置里的 8 个 `COSY_*` 值由界面教程第 2 步一并打印（**`COSY_CLIENT_TYPE` 必须是 10**，
+缺了活动列表接口直接返回空）。**令牌到期时间不用填** —— 平台从令牌的 `exp` 自己解。
 
 ### Trae
 
 | 字段 | 怎么取 |
 |---|---|
-| `accessToken` / `refreshToken` | 登录 trae.com → DevTools → `cloudide/api/v3/trae/GetUserInfo` 请求头里的 `x-cloudide-token` |
-| `ahaDeviceId` | 同一批请求里的 `x-device-id`，**8–16 位数字** |
+| `accessToken` / `refreshToken` | 界面教程第 4 步的输出（`Access Token` / `Refresh Token` 两行） |
+| `ahaDeviceId` | 界面教程第 1 步从 `storage.json` 里抠出的 **8–16 位数字** |
 
 工具级配置：`clientId` 与 `appVersion` **必填**（从客户端里抄），
 另有 `timeoutMs` / `refreshAheadSec` 两项可选。
@@ -151,8 +158,7 @@ npm run dev
 
 | 字段 | 怎么取 |
 |---|---|
-| `accessToken` | 登录 WorkBuddy → DevTools → `copilot.tencent.com` 请求的 `Authorization: Bearer ...` |
-| `refreshToken` | 同一批请求的 `X-Refresh-Token` 头 |
+| `accessToken` / `refreshToken` | 界面教程第 2 步的输出 |
 | `expiresAt` | **不用填**，平台从令牌的 `exp` 自动解出来并显示 |
 
 **换票走线下 PowerShell 脚本，界面不发短信验证码**（这是有意的决定）。
@@ -175,7 +181,7 @@ npm run dev
 先跑一次自检确认前提：
 
 ```bash
-npm run check          # 167 条测试，含"内核与界面里没有按工具 id 分支"的约定
+npm run check          # 175 条测试，含"内核与界面里没有按工具 id 分支"的约定
 ```
 
 ### 1. 建目录 `src/tools/<id>/`
@@ -342,17 +348,26 @@ const REGISTERED = [qoder, trae, workbuddy, example];
 
 > 自检**不检查** `icon` —— 那是可选字段。加新工具不必急着配图，没图就不渲染 `<img>`。
 
-### 6. 配图标（可选）
+### 6. 写参数获取教程（推荐）
 
-把 256×256 的 `.ico` 丢进 `checkin/`（与 `checkin-app/` 同级，三个源文件现在就在那儿），
-然后解出 PNG 并内联进 `src/ui/icons.js`
+`src/ui/tutorials.js` 的 `TUTORIALS` 里加一个键，用户的「新增账号」与「工具配置」页
+左侧就会显示分步的 PowerShell 脚本。**只改这一个文件，界面代码零改动**；
+不加也能跑，只是用户得自己摸索怎么取凭据。
+
+内容就是一段段可复制的脚本（`steps[]` 的 `code`）加字段对照表（`fields[]`）。
+**脚本必须是真能跑的** —— 取不出值的教程比没有教程更坏，人会以为是自己弄错了。
+所以写完请在真机上复制粘贴跑一遍，别只靠读。
+
+### 7. 配图标（可选）
+
+把你的 `.ico` 解成 64×64 PNG，内联成 data URI 写进 `src/ui/icons.js`
 （`public/` + Static Assets 已被否决：那些文件由 Cloudflare 直接伺服、**绕过 Worker**，
-也就绕过了 `?pwd=` 那道闸）。`src/ui/icons.js` 的注释里写了重跑方式。
+也就绕过了 `?pwd=` 那道闸）。`src/ui/icons.js` 的注释里写了重跑方式与为什么是 64 而不是 256。
 
-### 7. 验证
+### 8. 验证
 
 ```bash
-npm run check        # 现有 167 条必须全绿 —— 你没碰内核就不该有影响
+npm run check        # 现有 175 条必须全绿 —— 你没碰内核就不该有影响
 ```
 
 加完把 `npx wrangler deploy --dry-run --outdir=dist` 也跑一遍，确认能打包
@@ -474,13 +489,14 @@ Trae 的换票就在 `validate()` 里。界面会如实提示"新凭据已写回
 
 ---
 
-## 与设计文档的差异
+## 与旧设计的差异
 
-`设计方案 v2.md` 是开工前写的，实现过程中有若干处主动改掉了。
-**照那份文档实现会写错**，差异清单在 [`项目交接文档.md`](项目交接文档.md) §1.4，
+`设计方案.md` §3 逐条列了**旧三个 Worker 里被改掉的逻辑与原因**（接口事实继承，
+判定与容错改掉）。接手前先扫一眼那张表，别照旧代码实现。
+
 最要紧的三条：
 
-| 设计文档写的 | 代码实际 | 为什么改 |
+| 旧代码的做法 | 本项目 | 为什么改 |
 |---|---|---|
 | 调度字段冗余进 `v1:acct:` 记录 | 独立键 `v1:schedidx:<tool>` | 冗余进 acct 意味着每轮要 `1 list + N get` 才能算出谁到期，账号多了直接撞 50 硬顶 |
 | `v1:run:<UTCms>:<id>:<uid>` | `v1:run:<tool>:<反转毫秒>:<uid>` | 时间戳在键首 → 按工具筛要全表扫；工具段前置 → 一次带前缀的 list |

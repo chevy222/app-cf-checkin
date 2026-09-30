@@ -8,7 +8,7 @@ import { TOOLS } from "./tools/index.js";
 import { nowSec } from "./core/time.js";
 
 // 一次调用一本账：页面渲染和调度消费同一个预算对象。
-// 审核阶段 1 时确认了 HTTP 请求同样只有 50 子请求额度，所以不能只给定时任务记账。
+// HTTP 请求同样只有 50 子请求额度，所以不能只给定时任务记账。
 function withLedger(env) {
   const budget = makeBudget(budgetFrom(env));
   const kv = env && env.CHECKIN_KV;
@@ -42,7 +42,7 @@ export default {
     const { budget, env: scoped } = withLedger(env);
     const cron = String((controller && controller.cron) || "");
     // 用平台给的计划时刻而不是 Date.now()：一来它才是这次触发真正对应的时间点，
-    // 二来让测试可以注入时间。之前读真实墙钟导致整套测试在 CST 00:00–07:59 之间必红。
+    // 二来让测试可以注入时间。
     const now = Math.floor(Number(controller && controller.scheduledTime) / 1000) || nowSec();
     console.log("[checkin] cron 已触发 " + cron);
     try {

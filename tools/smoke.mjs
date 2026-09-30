@@ -14,6 +14,7 @@ import * as wbApi from "../src/tools/workbuddy/api.js";
 import { idemKey } from "../src/tools/workbuddy/api.js";
 import { expiresAtOf, subjectOf } from "../src/core/jwt.js";
 import { ICONS, iconImg } from "../src/ui/icons.js";
+import { TUTORIALS, renderTutorial } from "../src/ui/tutorials.js";
 import { dayOf } from "../src/core/scheduler.js";
 
 const PASSWORD = "correct-horse-battery";
@@ -115,7 +116,7 @@ function fakeKv({ pageSize = 1000, hardCap = Infinity } = {}) {
       keys.push(key);
       store.set(key, String(value));
       // metadata 必须照存：日志列表页整页靠它渲染，shim 丢掉它的话
-      // "摘要进 metadata ⇒ 列表零 get"这条设计在测试里就是没跑过（阶段 3 审核实测踩过）
+      // "摘要进 metadata ⇒ 列表零 get"这条设计必须由本测试真的走一遍，否则等于没跑
       if (options && options.metadata !== undefined) metas.set(key, options.metadata); else metas.delete(key);
       const ttl = options && Number.isFinite(options.expirationTtl) ? options.expirationTtl : null;
       if (ttl) expiry.set(key, clockMs + ttl * 1000); else expiry.delete(key);
@@ -333,7 +334,7 @@ fixtureTest("scheduled 会真的跑一轮并输出结构化汇总", async () => 
   assert.equal(planOf(summary).accounts[0].status, "claimed");
 });
 
-// ═══════════ 阶段 2：到期队列 · 预算 · 断点续跑 · 逻辑日界 · 退避 ═══════════
+// ═══════════ 到期队列 · 预算 · 断点续跑 · 逻辑日界 · 退避 ═══════════
 
 // 夹具工具的 portal 是必填工具级配置，不补齐的话调度会正确地跳过整个工具
 function seedConfig(kv) {
@@ -380,7 +381,7 @@ function tick(env, { now = cst(10), limit = 45, tools = [FIX] } = {}) {
   } };
 }
 // 按工具 id 取那一摊，不假设 plan 的顺序
-// 夹具工具按 id 取，不按注册表位置取：注册表会随阶段 4 加真工具，位置一变整批测试就集体报错
+// 夹具工具按 id 取，不按注册表位置取：注册表会随加工具而变，位置一变整批测试就集体报错
 // 夹具的默认实例：只给不经过 HTTP 路由的测试用（它们自己把 tools 数组传给 runTick，
 // 不查注册表）。要走路由的测试必须用 withFixtureTool 把 FIXTURE 注入注册表。
 const FIX = FIXTURE;
@@ -871,7 +872,7 @@ test("分页 list 能取全（真实 KV 每 1000 键分页，shim 默认不分�
   assert.equal(kv.calls.filter((c) => c === "list").length, 3, "应恰好翻 3 页");
 });
 
-// ═══════════ 阶段 2 审核结论的回归断言 ═══════════
+// ═══════════ 预算与调度的回归断言 ═══════════
 
 function syntheticTool(id, steps) {
   return {
@@ -988,7 +989,7 @@ test("[P1-7] 有步骤没打上游时就标记可接续", async () => {
 test("[P1-8] 未识别状态不会被当成「今天已结」而上闩", async () => {
   const kv = fakeKv();
   seedAccount(kv, "SEATF2");
-  // 用真·不认识的状态：阶段 2 的原始缺陷就是把这类值聚合成 already，于是当天再也不重试
+  // 用真·不认识的状态：这类值一旦被聚合成 already，当天就再也不重试
   const tools = [syntheticTool("fix", [{ id: "a", label: "甲", cost: 4, async run() { return { status: "mystery", message: "上游给了个没见过的值" }; } }])];
   const now = cst(10);
   const first = await tickWith(kv, tools, 45, now);
@@ -1045,7 +1046,7 @@ fixtureTest("[测试保真度] scheduled 用计划时刻而非墙钟，凌晨触
   }
 });
 
-// ═══════════ 阶段 3：运行日志 · 手动执行 · 测试按钮（含阶段 3 审核结论的回归断言）═══════════
+// ═══════════ 运行日志 · 手动执行 · 测试按钮 ═══════════
 
 // 泄漏夹具：把整份凭据塞进 message。三家真实站点的 401 响应体里带 token 是常规情况，
 // 而内核 catch 的就是这种 error message，所以这不是编出来的极端形态。
@@ -1078,7 +1079,7 @@ const logKeys = (kv) => [...kv.store.keys()].filter((k) => k.startsWith("v1:run:
 // 日志的可见面 = 正文 + metadata（列表页只读 metadata，正文没写全也不代表干净）
 const everyLogText = (kv) => logKeys(kv).map((k) => `${k}\n${kv.store.get(k)}\n${JSON.stringify(kv.metas.get(k) || {})}`).join("\n");
 
-test("[阶段3] 跑完一轮会留下账号日志与本轮汇总日志", async () => {
+test("[跑完一轮会留下账号日志与本轮汇总日志", async () => {
   const kv = fakeKv();
   seedFull(kv, "LOGA1");
   await tickWith(kv, [leakyTool(okStep())]);
@@ -1089,7 +1090,7 @@ test("[阶段3] 跑完一轮会留下账号日志与本轮汇总日志", async (
   assert.ok(runs[0].includes("LOGA1"));
 });
 
-test("[阶段3] 两类日志都带 30 天 TTL", async () => {
+test("[两类日志都带 30 天 TTL", async () => {
   const kv = fakeKv();
   seedFull(kv, "LOGA2");
   const ttls = [];
@@ -1106,7 +1107,7 @@ test("[阶段3] 两类日志都带 30 天 TTL", async () => {
   assert.ok(ttls.every((t) => t === 30 * 86400), `TTL 应为 30 天，实际 ${ttls.join(", ")}`);
 });
 
-fixtureTest("[阶段3] 列表页零次 get，且摘要文本确实来自 metadata", async () => {
+fixtureTest("[列表页零次 get，且摘要文本确实来自 metadata", async () => {
   const kv = fakeKv();
   seedFull(kv, "LOGB1");
   await tickWith(kv, [leakyTool(okStep("唯一摘要标记-7F3A", 7))]);
@@ -1120,7 +1121,7 @@ fixtureTest("[阶段3] 列表页零次 get，且摘要文本确实来自 metadat
   assert.ok(res.text.includes("+7"));
 });
 
-test("[阶段3] 详情页展示步骤与预算", async () => {
+test("[详情页展示步骤与预算", async () => {
   const kv = fakeKv();
   seedFull(kv, "LOGB2");
   await tickWith(kv, [leakyTool(okStep())]);
@@ -1132,7 +1133,7 @@ test("[阶段3] 详情页展示步骤与预算", async () => {
   assert.ok(res.text.includes("子请求"), "应显示预算");
 });
 
-test("[阶段3] 键名不合法或指向别的命名空间时返回未找到页，不是 500", async () => {
+test("[键名不合法或指向别的命名空间时返回未找到页，不是 500", async () => {
   const kv = fakeKv();
   seedFull(kv, "LOGC0");
   const env = envFor(kv);
@@ -1147,7 +1148,7 @@ test("[阶段3] 键名不合法或指向别的命名空间时返回未找到页�
   }
 });
 
-test("[阶段3] 凭据不进日志：原文、5 位短码、URL 编码与 base64 形态、label 全覆盖", async () => {
+test("[凭据不进日志：原文、5 位短码、URL 编码与 base64 形态、label 全覆盖", async () => {
   const kv = fakeKv();
   seedFull(kv, "LOGC1");
   await tickWith(kv, [leakyTool([leakStep()])]);
@@ -1158,7 +1159,7 @@ test("[阶段3] 凭据不进日志：原文、5 位短码、URL 编码与 base64
   assert.ok(blob.includes("••••"), "被洗掉的位置要留下打码符，否则分不清是没泄漏还是压根没写入");
 });
 
-fixtureTest("[阶段3审核] 凭据的四个出口：响应 HTML、/api/tick、cron 的 console.log、落盘日志", async () => {
+fixtureTest("[凭据的四个出口：响应 HTML、/api/tick、cron 的 console.log、落盘日志", async () => {
   const savedSteps = FIX.steps;
   FIX.steps = [leakStep()];
   const kv = fakeKv();
@@ -1193,7 +1194,7 @@ fixtureTest("[阶段3审核] 凭据的四个出口：响应 HTML、/api/tick、c
   }
 });
 
-test("[阶段3审核] 非敏感的枚举值不能被当秘密洗：plan=pro 要原样留在摘要里", async () => {
+test("[非敏感的枚举值不能被当秘密洗：plan=pro 要原样留在摘要里", async () => {
   const kv = fakeKv();
   seedFull(kv, "ENUM1");
   await tickWith(kv, [leakyTool([{
@@ -1206,7 +1207,7 @@ test("[阶段3审核] 非敏感的枚举值不能被当秘密洗：plan=pro 要�
   assert.ok(kv.store.get(key).includes("套餐 pro 的进程进度"), "枚举值被当成凭据反向替换了");
 });
 
-test("[阶段5] 熵门槛：被误标 secret 的短枚举值不洗，5 位短信码照洗", async () => {
+test("[熵门槛：被误标 secret 的短枚举值不洗，5 位短信码照洗", async () => {
   // 这条修的是 §6.4 那个"给第 5 个工具埋的坑"：`secret` 由字段声明说了算，
   // 而工具作者会误把枚举值标成 secret（套餐档位、模式开关）。
   // 没有门槛时值 "pro" 会让 message 里每次出现 pro 都变成 8 个黑点。
@@ -1238,7 +1239,7 @@ test("[阶段5] 熵门槛：被误标 secret 的短枚举值不洗，5 位短信
   assert.equal(scrubSecrets("free", ["free"]), "free");
 });
 
-test("[阶段3审核] 含长 base64 路径的合法回调 URL 不该被兜底正则整段吃掉", async () => {
+test("[含长 base64 路径的合法回调 URL 不该被兜底正则整段吃掉", async () => {
   const kv = fakeKv();
   seedFull(kv, "URL1");
   const url = "https://api.oem.com/callback/abcdefghijklmnopqrstuvwxyz0123456789/status";
@@ -1252,7 +1253,7 @@ test("[阶段3审核] 含长 base64 路径的合法回调 URL 不该被兜底正
   assert.ok(blob.includes("/status"), "回调地址尾段被洗掉了");
 });
 
-test("[阶段3审核] 一步没做的轮次报「今日已领」，且不重复计积分", async () => {
+test("[一步没做的轮次报「今日已领」，且不重复计积分", async () => {
   assert.equal(aggregate([{ status: "claimed", reused: true }, { status: "ok", reused: true }]), "already",
     "全部复用进度的一轮不该报成功领取 —— 上游一个请求都没收到");
   const kv = fakeKv();
@@ -1267,7 +1268,7 @@ test("[阶段3审核] 一步没做的轮次报「今日已领」，且不重复�
   assert.equal(view.credits, 0, "复用来的积分不该再算一遍");
 });
 
-fixtureTest("[阶段3] 「执行」跳过到期判定立刻跑，但仍受预算约束", async () => {
+fixtureTest("[「执行」跳过到期判定立刻跑，但仍受预算约束", async () => {
   const kv = fakeKv();
   seedFull(kv, "MANUAL1");
   const tool = leakyTool(okStep());
@@ -1281,7 +1282,7 @@ fixtureTest("[阶段3] 「执行」跳过到期判定立刻跑，但仍受预算
   assert.ok(kv.count > 0, "手动执行应当真的动了 KV");
 });
 
-fixtureTest("[阶段3审核] 工具配置未完成时「执行」被拒绝，不拿残缺配置打上游", async () => {
+fixtureTest("[工具配置未完成时「执行」被拒绝，不拿残缺配置打上游", async () => {
   const kv = fakeKv();
   seedFull(kv, "CFG1");
   kv.store.delete("v1:tool:fix");          // 配置整个没填
@@ -1299,7 +1300,7 @@ fixtureTest("[阶段3审核] 工具配置未完成时「执行」被拒绝，不
   assert.ok(page.text.includes("工具配置未完成"), "页面上要看得出的原因");
 });
 
-fixtureTest("[阶段3] 「测试」按钮只在工具实现了 validate 时出现", async () => {
+fixtureTest("[「测试」按钮只在工具实现了 validate 时出现", async () => {
   const kv = fakeKv();
   const env = envFor(kv);
   seedFull(kv, "VALA1");
@@ -1316,7 +1317,7 @@ fixtureTest("[阶段3] 「测试」按钮只在工具实现了 validate 时出�
   }
 });
 
-fixtureTest("[阶段3] 手动测试不写状态、不写日志、不新建索引", async () => {
+fixtureTest("[手动测试不写状态、不写日志、不新建索引", async () => {
   const kv = fakeKv();
   seedFull(kv, "VALB1");
   const res = await hit("/account/fix/VALB1/validate", { method: "POST", body: form({ pwd: PASSWORD }), env: envFor(kv) });
@@ -1326,7 +1327,7 @@ fixtureTest("[阶段3] 手动测试不写状态、不写日志、不新建索引
   assert.ok(!kv.store.has("v1:schedidx:fix"), "测试连调度索引都不该新建");
 });
 
-test("[阶段3审核] 测试的响应 HTML 也不含凭据原文", async () => {
+test("[测试的响应 HTML 也不含凭据原文", async () => {
   const savedValidate = FIX.validate;
   FIX.validate = async (ctx) => ({ status: "error", message: `票据 ${JSON.stringify(ctx.account.cred)} 被拒` });
   const kv = fakeKv();
@@ -1340,7 +1341,7 @@ test("[阶段3审核] 测试的响应 HTML 也不含凭据原文", async () => {
   }
 });
 
-fixtureTest("[阶段3] 需要处理的账号会在工具页顶部出现红条，损坏记录也算", async () => {
+fixtureTest("[需要处理的账号会在工具页顶部出现红条，损坏记录也算", async () => {
   const kv = fakeKv();
   seedFull(kv, "STUCK1");
   kv.store.set("v1:acct:fix:BRK9", "{not json");
@@ -1352,7 +1353,7 @@ fixtureTest("[阶段3] 需要处理的账号会在工具页顶部出现红条，
   assert.ok(/需要你处理[\s\S]{0,200}BRK9/.test(page.text), "红条漏了损坏记录");
 });
 
-fixtureTest("[阶段3审核] 损坏记录要在 /runs 里露头", async () => {
+fixtureTest("[损坏记录要在 /runs 里露头", async () => {
   const kv = fakeKv();
   seedFull(kv, "BRKOK");
   kv.store.set("v1:acct:fix:BRKX", "{not json");
@@ -1361,12 +1362,12 @@ fixtureTest("[阶段3审核] 损坏记录要在 /runs 里露头", async () => {
   assert.ok(runs.some((r) => r.key.includes("BRKX")), "损坏记录没写账号日志，它在观测层是隐形的");
   const page = await authed("/runs", envFor(kv));
   assert.ok(page.text.includes("BRKX"), "日志列表页搜不到损坏记录");
-  // 但不许因此把假状态固化进索引（阶段 2 的 P0-3）
+  // 但不许因此把假状态固化进索引
   const idx = JSON.parse(kv.store.get("v1:schedidx:fix") || '{"entries":{}}');
   assert.equal(idx.entries.BRKX, undefined, "坏记录不该被写进调度索引");
 });
 
-fixtureTest("[阶段3审核] 工具页成本有上界：60 个账号不撞 50 硬顶，并如实说明截断", async () => {
+fixtureTest("[工具页成本有上界：60 个账号不撞 50 硬顶，并如实说明截断", async () => {
   const kv = fakeKv();
   kv.store.set("v1:tool:fix", JSON.stringify({ portal: "cn", timeoutSec: "15" }));
   for (let i = 0; i < 60; i += 1) {
@@ -1381,7 +1382,7 @@ fixtureTest("[阶段3审核] 工具页成本有上界：60 个账号不撞 50 �
   assert.match(res.text, /共 60 个账号/, "总数要说实话，好让人知道少了多少");
 });
 
-test("[阶段3审核] 索引写回只覆盖自己改过的那几位", async () => {
+test("[索引写回只覆盖自己改过的那几位", async () => {
   const kv = fakeKv();
   const env = envFor(kv);
   seedFull(kv, "PARA1");
@@ -1399,7 +1400,7 @@ test("[阶段3审核] 索引写回只覆盖自己改过的那几位", async () =
   assert.equal(entries.PARA2.lastStatus, "claimed");
 });
 
-fixtureTest("[阶段3] 首页有最近运行流", async () => {
+fixtureTest("[首页有最近运行流", async () => {
   const kv = fakeKv();
   seedFull(kv, "FEED1");
   await tickWith(kv, [leakyTool(okStep())]);
@@ -1408,7 +1409,7 @@ fixtureTest("[阶段3] 首页有最近运行流", async () => {
   assert.ok(home.text.includes("FEED1"));
 });
 
-test("[阶段3] ?tool= 筛选日志，且成本与日志总量无关", async () => {
+test("[?tool= 筛选日志，且成本与日志总量无关", async () => {
   const kv = fakeKv();
   seedFull(kv, "FILT1");
   await tickWith(kv, [leakyTool(okStep())]);
@@ -1427,7 +1428,7 @@ test("[阶段3] ?tool= 筛选日志，且成本与日志总量无关", async () 
   assert.equal(kv.calls.filter((c) => c === "list").length, 1, `4000 条他工具日志下筛 FIX 用了 ${kv.count} 次 list`);
 });
 
-test("[阶段3] 归并后的日志列表按时间倒序，身份取自键名而不是 metadata", async () => {
+test("[归并后的日志列表按时间倒序，身份取自键名而不是 metadata", async () => {
   const kv = fakeKv();
   const env = envFor(kv);
   const tool = leakyTool(okStep());
@@ -1445,7 +1446,7 @@ test("[阶段3] 归并后的日志列表按时间倒序，身份取自键名而�
   assert.ok(Number.isFinite(recent[0].at));
 });
 
-test("[阶段3] 汇总日志只存结构与计数，消息字段压根不存在", async () => {
+test("[汇总日志只存结构与计数，消息字段压根不存在", async () => {
   const kv = fakeKv();
   seedFull(kv, "LOGD1");
   await tickWith(kv, [leakyTool([leakStep()])]);
@@ -1454,7 +1455,7 @@ test("[阶段3] 汇总日志只存结构与计数，消息字段压根不存在"
   assert.equal(tick.plan[0].accounts[0].steps, undefined, "步骤明细属于账号日志，不该重复进汇总");
 });
 
-test("[阶段3审核] 预约的上界不小于真实用量", async () => {
+test("[预约的上界不小于真实用量", async () => {
   const kv = fakeKv();
   seedFull(kv, "FRAME1");
   const { budget } = await tickWith(kv, [leakyTool(okStep())]);
@@ -1465,7 +1466,7 @@ test("[阶段3审核] 预约的上界不小于真实用量", async () => {
   assert.equal(budget.over, 0, "一轮一号不该超支");
 });
 
-// ═══════════ 阶段 4 · 第 1 家：Qoder ═══════════
+// ═══════════ Qoder ═══════════
 //
 // 这一节验的是"方言翻译"对不对，全部用字节级请求桩，不打真实站点。
 // 桩记录每一次请求的 method / URL / header / body，所以头拼错、GET 带了 body、
@@ -1519,7 +1520,7 @@ const claimable = (n) => Array.from({ length: n }, (_, i) => ({
 }));
 const qoderTick = (kv, now = cst(11)) => tickWith(kv, [findTool("qoder")], 45, now);
 
-test("[阶段4·qoder] 请求形状：GET 不带 body 与 Content-Type，claim 带空对象体，设备头齐全", async () => {
+test("[qoder] 请求形状：GET 不带 body 与 Content-Type，claim 带空对象体，设备头齐全", async () => {
   const kv = fakeKv();
   seedQoder(kv, "qdr-77001", { campaigns: claimable(1) });
   const stub = stubUpstream({ ...qoderCampaigns(claimable(1)), "POST /sash/api/v1/me/campaigns/cmp-0/claim": { payload: { data: { status: "CLAIMED", benefit: { amount: 20 }, replayed: false } } } });
@@ -1546,7 +1547,7 @@ test("[阶段4·qoder] 请求形状：GET 不带 body 与 Content-Type，claim �
   }
 });
 
-test("[阶段4·qoder] 领取成功算积分，多活动各发一次 claim", async () => {
+test("[qoder] 领取成功算积分，多活动各发一次 claim", async () => {
   const kv = fakeKv();
   seedQoder(kv);
   const stub = stubUpstream({
@@ -1564,7 +1565,7 @@ test("[阶段4·qoder] 领取成功算积分，多活动各发一次 claim", asy
   } finally { stub.restore(); }
 });
 
-test("[阶段4·qoder] amount=0 是合法领取，不能被 || 兜底成列表里的数字", async () => {
+test("[qoder] amount=0 是合法领取，不能被 || 兜底成列表里的数字", async () => {
   const kv = fakeKv();
   seedQoder(kv);
   const zero = [{ campaignId: "cmp-z", campaignKey: "z", actionType: "CLAIM_BENEFIT", claimStatus: "CLAIMABLE", benefit: { amount: 999 } }];
@@ -1581,7 +1582,7 @@ test("[阶段4·qoder] amount=0 是合法领取，不能被 || 兜底成列表�
   } finally { stub.restore(); }
 });
 
-test("[阶段4·qoder] 上游判为幂等重放时如实说，不冒充新领到", async () => {
+test("[qoder] 上游判为幂等重放时如实说，不冒充新领到", async () => {
   const kv = fakeKv();
   seedQoder(kv);
   const stub = stubUpstream({
@@ -1594,7 +1595,7 @@ test("[阶段4·qoder] 上游判为幂等重放时如实说，不冒充新领到
   } finally { stub.restore(); }
 });
 
-test("[阶段4·qoder] 活动列表为空报 inactive，并把三种可能说清（旧实现报成绿色已领取）", async () => {
+test("[qoder] 活动列表为空报 inactive，并把三种可能说清（旧实现报成绿色已领取）", async () => {
   const kv = fakeKv();
   seedQoder(kv);
   const stub = stubUpstream({ "GET /sash/api/v1/me/campaigns": { payload: { campaigns: [] } } });
@@ -1610,7 +1611,7 @@ test("[阶段4·qoder] 活动列表为空报 inactive，并把三种可能说清
   } finally { stub.restore(); }
 });
 
-test("[阶段4·qoder] 设备身份是必填的工具级配置：没填全时整家在配置闸就被跳过，不打上游", async () => {
+test("[qoder] 设备身份是必填的工具级配置：没填全时整家在配置闸就被跳过，不打上游", async () => {
   const kv = fakeKv();
   seedQoder(kv, "qdr-nodev", { device: false });
   const stub = stubUpstream({ "GET /sash/api/v1/me/campaigns": { payload: { campaigns: [] } } });
@@ -1623,7 +1624,7 @@ test("[阶段4·qoder] 设备身份是必填的工具级配置：没填全时整
   } finally { stub.restore(); }
 });
 
-test("[阶段4·qoder] CLAIMED 且在窗口内 → already；endAt 缺失当无界，不当「1970 就结束」", async () => {
+test("[qoder] CLAIMED 且在窗口内 → already；endAt 缺失当无界，不当「1970 就结束」", async () => {
   const kv = fakeKv();
   seedQoder(kv);
   const noEnd = [{ campaignId: "cmp-n", campaignKey: "n", actionType: "CLAIM_BENEFIT", claimStatus: "CLAIMED", startAt: cst(9) }];
@@ -1634,7 +1635,7 @@ test("[阶段4·qoder] CLAIMED 且在窗口内 → already；endAt 缺失当无�
   } finally { stub.restore(); }
 });
 
-test("[阶段4·qoder] 活动未下发是 pending：不上闩、不亮红条、下一轮接着看", async () => {
+test("[qoder] 活动未下发是 pending：不上闩、不亮红条、下一轮接着看", async () => {
   const kv = fakeKv();
   seedQoder(kv);
   const later = [{ campaignId: "cmp-l", campaignKey: "l", actionType: "CLAIM_BENEFIT", claimStatus: "PENDING", startAt: cst(20), endAt: cst(23) }];
@@ -1657,7 +1658,7 @@ test("[阶段4·qoder] 活动未下发是 pending：不上闩、不亮红条、�
   } finally { stub.restore(); }
 });
 
-test("[阶段4·qoder] 401 → 续期 → 只重试一次；新凭据当场写回 KV", async () => {
+test("[qoder] 401 → 续期 → 只重试一次；新凭据当场写回 KV", async () => {
   const kv = fakeKv();
   const { uid } = seedQoder(kv);
   let refreshed = 0;
@@ -1684,7 +1685,7 @@ test("[阶段4·qoder] 401 → 续期 → 只重试一次；新凭据当场写�
   } finally { stub.restore(); }
 });
 
-test("[阶段4·qoder] 续期也救不回来才是 login_required，且不再发 claim", async () => {
+test("[qoder] 续期也救不回来才是 login_required，且不再发 claim", async () => {
   const kv = fakeKv();
   seedQoder(kv);
   const stub = stubUpstream({
@@ -1698,7 +1699,7 @@ test("[阶段4·qoder] 续期也救不回来才是 login_required，且不再发
   } finally { stub.restore(); }
 });
 
-test("[阶段4·qoder] 403 不再被当成「这个端点不对」吞掉", async () => {
+test("[qoder] 403 不再被当成「这个端点不对」吞掉", async () => {
   const kv = fakeKv();
   seedQoder(kv);
   // 旧实现把 401/403/404 都当作"换下一个 base 重试"，单 host 下就变成没有出口的循环，
@@ -1713,7 +1714,7 @@ test("[阶段4·qoder] 403 不再被当成「这个端点不对」吞掉", async
   } finally { stub.restore(); }
 });
 
-test("[阶段4·qoder] 一轮最多领 3 个，剩下的标记可接续、不被 30 分钟间隔挡住", async () => {
+test("[qoder] 一轮最多领 3 个，剩下的标记可接续、不被 30 分钟间隔挡住", async () => {
   const kv = fakeKv();
   seedQoder(kv);
   const five = claimable(5);
@@ -1742,7 +1743,7 @@ test("[阶段4·qoder] 一轮最多领 3 个，剩下的标记可接续、不被
   } finally { stub.restore(); }
 });
 
-test("[阶段4·qoder] uid 从 access token 的 sub 里解出来，人不用抄第二遍", async () => {
+test("[qoder] uid 从 access token 的 sub 里解出来，人不用抄第二遍", async () => {
   const kv = fakeKv();
   kv.store.set("v1:tool:qoder", JSON.stringify({ clientType: "10", machineToken: "MT", machineCode: "MC", machineId: "MI" }));
   const token = mkJwt({ sub: "qdr-sub-42", exp: cst(30) });
@@ -1754,7 +1755,7 @@ test("[阶段4·qoder] uid 从 access token 的 sub 里解出来，人不用抄�
   assert.ok(kv.store.has("v1:acct:qoder:qdr-sub-42"), "uid 应是 JWT 的 sub");
 });
 
-test("[阶段4·qoder] 解不出 sub 就拒存，且绝不退化成用 refresh_token 派生", async () => {
+test("[qoder] 解不出 sub 就拒存，且绝不退化成用 refresh_token 派生", async () => {
   const kv = fakeKv();
   kv.store.set("v1:tool:qoder", JSON.stringify({ clientType: "10", machineToken: "MT", machineCode: "MC", machineId: "MI" }));
   const res = await hit("/account/qoder/new", {
@@ -1768,7 +1769,7 @@ test("[阶段4·qoder] 解不出 sub 就拒存，且绝不退化成用 refresh_t
   // 旧记录（连同调度状态与日志）在 KV 里成孤儿
 });
 
-test("[阶段4·qoder] 把另一个号的票据粘进已有账号会被拒", async () => {
+test("[qoder] 把另一个号的票据粘进已有账号会被拒", async () => {
   const kv = fakeKv();
   const { uid } = seedQoder(kv);
   const otherToken = mkJwt({ sub: "qdr-OTHER", exp: cst(30) });
@@ -1781,7 +1782,7 @@ test("[阶段4·qoder] 把另一个号的票据粘进已有账号会被拒", asy
   assert.equal(JSON.parse(kv.store.get(`v1:acct:qoder:${uid}`)).cred.accessToken.split(".")[1], mkJwt({ sub: uid, exp: cst(30) }).split(".")[1], "凭据不该被改掉");
 });
 
-test("[阶段4·qoder] 令牌到期时间在界面上按北京时间显示，且表单不收它", async () => {
+test("[qoder] 令牌到期时间在界面上按北京时间显示，且表单不收它", async () => {
   const kv = fakeKv();
   seedQoder(kv);
   const page = await authed("/account/qoder/qdr-77001/edit", envFor(kv));
@@ -1795,7 +1796,7 @@ test("[阶段4·qoder] 令牌到期时间在界面上按北京时间显示，且
   assert.ok(!JSON.parse(kv.store.get("v1:acct:qoder:qdr-77001")).cred.expiresAt, "表单提交的 expiresAt 必须被丢掉");
 });
 
-test("[阶段4·qoder] 白名单：模块想打到别的域名会被内核直接拒掉", async () => {
+test("[qoder] 白名单：模块想打到别的域名会被内核直接拒掉", async () => {
   const kv = fakeKv();
   seedQoder(kv);
   const stub = stubUpstream({ "GET /sash/api/v1/me/campaigns": { payload: { campaigns: [] } } });
@@ -1811,7 +1812,7 @@ test("[阶段4·qoder] 白名单：模块想打到别的域名会被内核直接
   } finally { stub.restore(); }
 });
 
-test("[阶段4·qoder] 一轮一号的真实用量不超过预约（TOOL_FRAME + 步骤 cost）", async () => {
+test("[qoder] 一轮一号的真实用量不超过预约（TOOL_FRAME + 步骤 cost）", async () => {
   const kv = fakeKv();
   seedQoder(kv);
   const stub = stubUpstream({
@@ -1834,7 +1835,7 @@ function schedEntryOf(kv, toolId, uid) {
   return raw ? schedOf(JSON.parse(raw).entries[uid]) : schedOf();
 }
 
-test("[阶段4] 含 + 与 = 的令牌粘进表单不会被解码成空格", async () => {
+test("[含 + 与 = 的令牌粘进表单不会被解码成空格", async () => {
   // 旧 trae 专门绕开 URLSearchParams 解 query，理由写得很清楚：标准表单解码会把字面 +
   // 变成空格，refresh_token 一旦被改坏，账号就静默认证失败，而且看不出是编码问题。
   // 浏览器提交 urlencoded 表单会把 + 编成 %2B，服务端解回来应当原样不变 —— 这条是回归守卫。
@@ -1851,7 +1852,7 @@ test("[阶段4] 含 + 与 = 的令牌粘进表单不会被解码成空格", asyn
   assert.ok(!saved.refreshToken.includes(" "), "凭据里不该出现空格");
 });
 
-test("[阶段4] 只读派生字段不收表单值，界面上按北京时间显示", async () => {
+test("[只读派生字段不收表单值，界面上按北京时间显示", async () => {
   const kv = fakeKv();
   seedQoder(kv, "ro-user");
   kv.store.set("v1:acct:qoder:ro-user", JSON.stringify({
@@ -1868,7 +1869,7 @@ test("[阶段4] 只读派生字段不收表单值，界面上按北京时间显�
   assert.equal(JSON.parse(kv.store.get("v1:acct:qoder:ro-user")).cred.expiresAt, String(cst(30)), "表单里的伪报值不该覆盖内核记的到期时间");
 });
 
-test("[阶段4] 某个工具的表单里不该出现别的工具的字段名", async () => {
+test("[某个工具的表单里不该出现别的工具的字段名", async () => {
   // 「加第 N 个工具不用改界面」这条承诺最容易被破的方式，就是有人往共享的渲染代码里
   // 写死一句具体工具的字段名。这条测试把那种做法直接判红。
   const env = envFor(fakeKv());
@@ -1886,7 +1887,7 @@ test("[阶段4] 某个工具的表单里不该出现别的工具的字段名", a
   }
 });
 
-test("[阶段4·qoder] 逻辑日按上游的活动窗口在 10:00 翻，而不是按北京零点", async () => {
+test("[qoder] 逻辑日按上游的活动窗口在 10:00 翻，而不是按北京零点", async () => {
   // 内核每轮算一次 day 注入 ctx.day，"今天已领"的上闩与当日次数都挂在它上面。
   // 这家的活动按 UTC+8 每天 10:00 前后重新下发，所以零点翻只会让 00:00–10:00 那段
   // 被当成"新的一天"，白换一个预算与进度。
@@ -1897,7 +1898,7 @@ test("[阶段4·qoder] 逻辑日按上游的活动窗口在 10:00 翻，而不�
   assert.equal(dayOf(qoder, cst(23, 0)), dayOf(qoder, cst(10, 30)), "同一个窗口内不该被切成两天");
 });
 
-// ═══════════ 阶段 4 · 第 2 家：Trae ═══════════
+// ═══════════ Trae ═══════════
 //
 // Trae 的方言比 Qoder 更刁：两家域名、两套鉴权头、业务码藏在中文 message 里、
 // 空 body 的 200 既可能是"已签到"也可能是"响应结构异常"。
@@ -1925,7 +1926,7 @@ function seedTrae(kv, uid = "991001", { exp = cst(60), device = "123456789012345
 const traeTick = (kv, now = cst(10)) => tickWith(kv, [findTool("trae")], 45, now);
 const statusOf = (checked, credits) => ({ payload: { checked_in: checked, credits, enable: true } });
 
-test("[阶段4·trae] 两个域名的鉴权头不共用：换票/用户信息用 x-cloudide-token，签到用 Cloud-IDE-JWT + x-device-id", async () => {
+test("[trae] 两个域名的鉴权头不共用：换票/用户信息用 x-cloudide-token，签到用 Cloud-IDE-JWT + x-device-id", async () => {
   const kv = fakeKv();
   const uid = seedTrae(kv);
   const stub = stubUpstream({
@@ -1947,7 +1948,7 @@ test("[阶段4·trae] 两个域名的鉴权头不共用：换票/用户信息用
   } finally { stub.restore(); }
 });
 
-test("[阶段4·trae] HTTP 200 + 空 body 不能被判成签到成功", async () => {
+test("[trae] HTTP 200 + 空 body 不能被判成签到成功", async () => {
   const kv = fakeKv();
   seedTrae(kv);
   const stub = stubUpstream({
@@ -1965,7 +1966,7 @@ test("[阶段4·trae] HTTP 200 + 空 body 不能被判成签到成功", async ()
   } finally { stub.restore(); }
 });
 
-test("[阶段4·trae] 「请求已过期」「账号已在其他设备登录」不许被当成今日已签", async () => {
+test("[trae] 「请求已过期」「账号已在其他设备登录」不许被当成今日已签", async () => {
   // 旧实现用裸 msg.includes("已") 判"已签到"，把这两种完全不同的故障都报成成功
   for (const msg of ["请求已过期", "账号已在其他设备登录"]) {
     const kv = fakeKv();
@@ -1985,7 +1986,7 @@ test("[阶段4·trae] 「请求已过期」「账号已在其他设备登录」�
   }
 });
 
-test("[阶段4·trae] 「今天已签到」这类说法要判成 already", async () => {
+test("[trae] 「今天已签到」这类说法要判成 already", async () => {
   const kv = fakeKv();
   seedTrae(kv);
   const stub = stubUpstream({
@@ -1999,7 +2000,7 @@ test("[阶段4·trae] 「今天已签到」这类说法要判成 already", async
   } finally { stub.restore(); }
 });
 
-test("[阶段4·trae] 9074 走退避阶梯，且退避期内不排队", async () => {
+test("[trae] 9074 走退避阶梯，且退避期内不排队", async () => {
   const kv = fakeKv();
   seedTrae(kv);
   const busy = {
@@ -2022,7 +2023,7 @@ test("[阶段4·trae] 9074 走退避阶梯，且退避期内不排队", async ()
   } finally { stub.restore(); }
 });
 
-test("[阶段4·trae] enable=false 是「活动未开」，不是今日已领也不是失败", async () => {
+test("[trae] enable=false 是「活动未开」，不是今日已领也不是失败", async () => {
   const kv = fakeKv();
   seedTrae(kv);
   const stub = stubUpstream({ "POST /trae/api/v2/ug/checkin_credits/status": { payload: { checked_in: false, enable: false } } });
@@ -2033,7 +2034,7 @@ test("[阶段4·trae] enable=false 是「活动未开」，不是今日已领也
   } finally { stub.restore(); }
 });
 
-test("[阶段4·trae] checked_in=true 直接收手，一次 claim 都不发", async () => {
+test("[trae] checked_in=true 直接收手，一次 claim 都不发", async () => {
   const kv = fakeKv();
   seedTrae(kv);
   const stub = stubUpstream({
@@ -2049,7 +2050,7 @@ test("[阶段4·trae] checked_in=true 直接收手，一次 claim 都不发", as
   } finally { stub.restore(); }
 });
 
-test("[阶段4·trae] 领取成功但没回积分时补读一次，界面上要看得见领到了多少", async () => {
+test("[trae] 领取成功但没回积分时补读一次，界面上要看得见领到了多少", async () => {
   const kv = fakeKv();
   seedTrae(kv);
   let statusCalls = 0;
@@ -2070,7 +2071,7 @@ test("[阶段4·trae] 领取成功但没回积分时补读一次，界面上要�
   } finally { stub.restore(); }
 });
 
-test("[阶段4·trae] 临近到期才换票；换出的新串当场写回，旧串不进日志", async () => {
+test("[trae] 临近到期才换票；换出的新串当场写回，旧串不进日志", async () => {
   const kv = fakeKv();
   seedTrae(kv, "991002", { expiresAt: cst(10) + 3600 });   // 只剩 1 小时，落在 72 小时提前量里
   const stub = stubUpstream({
@@ -2090,7 +2091,7 @@ test("[阶段4·trae] 临近到期才换票；换出的新串当场写回，旧�
   } finally { stub.restore(); }
 });
 
-test("[阶段4·trae] 票据还很新时不该白换票", async () => {
+test("[trae] 票据还很新时不该白换票", async () => {
   const kv = fakeKv();
   seedTrae(kv, "991003", { expiresAt: cst(200) });      // 还剩 190 小时
   const stub = stubUpstream({
@@ -2104,7 +2105,7 @@ test("[阶段4·trae] 票据还很新时不该白换票", async () => {
   } finally { stub.restore(); }
 });
 
-test("[阶段4·trae] 点「测试」把票续了也要写回，否则一点测试就烧掉账号", async () => {
+test("[trae] 点「测试」把票续了也要写回，否则一点测试就烧掉账号", async () => {
   const kv = fakeKv();
   seedTrae(kv, "991004", { expiresAt: cst(10) + 600 });
   const stub = stubUpstream({
@@ -2126,7 +2127,7 @@ test("[阶段4·trae] 点「测试」把票续了也要写回，否则一点测�
   } finally { stub.restore(); }
 });
 
-test("[阶段4·trae] uid 来自 GetUserInfo；取不到就拒存并说清原因", async () => {
+test("[trae] uid 来自 GetUserInfo；取不到就拒存并说清原因", async () => {
   const kv = fakeKv();
   kv.store.set("v1:tool:trae", JSON.stringify({ clientId: "cid", appVersion: "0.1.43" }));
   const token = mkJwt({ sub: "not-the-uid", exp: cst(60) });
@@ -2152,7 +2153,7 @@ test("[阶段4·trae] uid 来自 GetUserInfo；取不到就拒存并说清原因
   } finally { bad.restore(); }
 });
 
-test("[阶段4·trae] Aha 设备号在录入时就要求 8–16 位数字", async () => {
+test("[trae] Aha 设备号在录入时就要求 8–16 位数字", async () => {
   // 旧实现运行时才校验 \d{8,16}，8 位值静默通过后每天撞 9074：
   // 一个立刻能说明白的错被变成了每周都难查一次的怪病。
   // 但也不能反过来收紧到 16 位 —— 手上现成的 8–15 位账号会被挡在录入之外，
@@ -2187,7 +2188,7 @@ test("[阶段4·trae] Aha 设备号在录入时就要求 8–16 位数字", asyn
   } finally { stub.restore(); }
 });
 
-test("[阶段4·trae] 域名白名单：两家自家放行，别的一律拒", async () => {
+test("[trae] 域名白名单：两家自家放行，别的一律拒", async () => {
   const kv = fakeKv();
   seedTrae(kv, "991005");
   const stub = stubUpstream({ "POST /trae/api/v2/ug/checkin_credits/status": statusOf(false, 0) });
@@ -2201,7 +2202,7 @@ test("[阶段4·trae] 域名白名单：两家自家放行，别的一律拒", a
   } finally { stub.restore(); }
 });
 
-// ═══════════ 阶段 4 · 第 3 家：WorkBuddy ═══════════
+// ═══════════ WorkBuddy ═══════════
 //
 // 这一家的测试重点不是"能不能跑通"，而是三件旧代码吃过账的事：
 // 登录失效不能被读成"今天已签过"、幂等键必须可重放、一轮做不完时必须整步顺延。
@@ -2243,7 +2244,7 @@ const wbIdleRoutes = (over = {}) => ({
   ...over,
 });
 
-test("[阶段4·workbuddy] 401 必须排在「空 body 算已领」前面", async () => {
+test("[workbuddy] 401 必须排在「空 body 算已领」前面", async () => {
   // 上游把 daily-checkin 设计成"空 body = 今天已领"。于是登录失效返回的 401 + 空 body
   // 会被同一条判据读成"今天签过了"并返回成功 —— 旧代码注释里专门记了这一条
   const kv = fakeKv();
@@ -2256,7 +2257,7 @@ test("[阶段4·workbuddy] 401 必须排在「空 body 算已领」前面", asyn
   } finally { stub.restore(); }
 });
 
-test("[阶段4·workbuddy] 空 body / code 10001 / 含「已签」都判今日已领；credit:0 仍是领到", async () => {
+test("[workbuddy] 空 body / code 10001 / 含「已签」都判今日已领；credit:0 仍是领到", async () => {
   const cases = [
     [{ status: 400, payload: { code: 10001, msg: "今天已签到，请明天再来" } }, "already"],
     [{ status: 200, body: "" }, "already"],
@@ -2277,7 +2278,7 @@ test("[阶段4·workbuddy] 空 body / code 10001 / 含「已签」都判今日�
   }
 });
 
-test("[阶段4·workbuddy] active=false 是活动未开，不是已领也不是失败", async () => {
+test("[workbuddy] active=false 是活动未开，不是已领也不是失败", async () => {
   const kv = fakeKv();
   seedWorkbuddy(kv);
   const stub = stubUpstream(wbIdleRoutes({ "POST /v2/billing/meter/checkin-activity-status": { payload: { active: false } } }));
@@ -2288,7 +2289,7 @@ test("[阶段4·workbuddy] active=false 是活动未开，不是已领也不是�
   } finally { stub.restore(); }
 });
 
-test("[阶段4·workbuddy] 幂等键按 (账号, 逻辑日, 序号) 派生：同轮内不重复、跨轮换键", async () => {
+test("[workbuddy] 幂等键按 (账号, 逻辑日, 序号) 派生：同轮内不重复、跨轮换键", async () => {
   const day = logicalDay(0, cst(10));
   const key = (d, i) => idemKey("draw", "wb-77002", d, i);
   assert.equal(key(day, 0), key(day, 0), "同一天同一序号必须是同一个键，否则重放就是再抽一次");
@@ -2311,7 +2312,7 @@ test("[阶段4·workbuddy] 幂等键按 (账号, 逻辑日, 序号) 派生：同
   } finally { stub.restore(); }
 });
 
-test("[阶段4·workbuddy] 到站礼物没领到就不派新行程", async () => {
+test("[workbuddy] 到站礼物没领到就不派新行程", async () => {
   // 旧实现改成 idle 就派下一趟，那一趟的礼物会盖掉这次没领到的，等于白丢
   const kv = fakeKv();
   seedWorkbuddy(kv);
@@ -2328,7 +2329,7 @@ test("[阶段4·workbuddy] 到站礼物没领到就不派新行程", async () =>
   } finally { stub.restore(); }
 });
 
-test("[阶段4·workbuddy] target:0 的「0/0」任务不许每天白发一次 accept", async () => {
+test("[workbuddy] target:0 的「0/0」任务不许每天白发一次 accept", async () => {
   const kv = fakeKv();
   seedWorkbuddy(kv);
   const stub = stubUpstream(wbIdleRoutes({
@@ -2348,7 +2349,7 @@ test("[阶段4·workbuddy] target:0 的「0/0」任务不许每天白发一次 a
   } finally { stub.restore(); }
 });
 
-test("[阶段4·workbuddy] 连签兑换：409/403 是正常无事，天数不够就整步 inactive", async () => {
+test("[workbuddy] 连签兑换：409/403 是正常无事，天数不够就整步 inactive", async () => {
   const kv = fakeKv();
   seedWorkbuddy(kv);
   const stub = stubUpstream(wbIdleRoutes({
@@ -2375,7 +2376,7 @@ test("[阶段4·workbuddy] 连签兑换：409/403 是正常无事，天数不够
   } finally { stub.restore(); }
 });
 
-test("[阶段4·workbuddy] 积分挂在 6 个位置都要能取到：上游换版本就静默报 +0", async () => {
+test("[workbuddy] 积分挂在 6 个位置都要能取到：上游换版本就静默报 +0", async () => {
   // 旧实现逐个探测（worker.js:660 的 firstNum，注释写着「不同接口版本把积分挂在不同字段上」）。
   // 收窄成单路径的后果不是报错 —— 能量真扣了、状态是 claimed、界面显示成功，只有积分数对不上。
   const cases = [
@@ -2402,7 +2403,7 @@ test("[阶段4·workbuddy] 积分挂在 6 个位置都要能取到：上游换�
   }
 });
 
-test("[阶段4·workbuddy] 抽奖/兑换给 0 的那层要跳过，不能被 ?? 短路吃掉后面的真值", async () => {
+test("[workbuddy] 抽奖/兑换给 0 的那层要跳过，不能被 ?? 短路吃掉后面的真值", async () => {
   // ?? 只挡 null/undefined。上游把"本项没给"写成 0 是常见形态，
   // `credit ?? reward_credit` 于是停在 0 上，12 分变成 0 分 —— 看着一切正常。
   const kv = fakeKv();
@@ -2428,7 +2429,7 @@ test("[阶段4·workbuddy] 抽奖/兑换给 0 的那层要跳过，不能被 ?? 
   } finally { stub2.restore(); }
 });
 
-test("[阶段4·workbuddy] 顶层字段是 null 时要能穿透到包装层取到真值", async () => {
+test("[workbuddy] 顶层字段是 null 时要能穿透到包装层取到真值", async () => {
   // 旧实现（worker.js:480）在命中即返回前明确跳过 null/undefined。
   // 少了这个判断：{state:null, data:{state:"arrived"}} 读出 null，
   // travel 于是走不进"到站领奖"分支，一次能白拿的到站礼物无声过期，
@@ -2456,7 +2457,7 @@ test("[阶段4·workbuddy] 顶层字段是 null 时要能穿透到包装层取�
   } finally { stub.restore(); }
 });
 
-test("[阶段4·workbuddy] 一轮装不下 7 步时整步顺延，下一轮接着做而不是重做", async () => {
+test("[workbuddy] 一轮装不下 7 步时整步顺延，下一轮接着做而不是重做", async () => {
   const kv = fakeKv();
   seedWorkbuddy(kv);
   const stub = stubUpstream(wbIdleRoutes({
@@ -2465,7 +2466,7 @@ test("[阶段4·workbuddy] 一轮装不下 7 步时整步顺延，下一轮接�
   }));
   try {
     // 19 = 够付停用标记 1 + 每工具 3 + 账号闸（框架 6 + 收尾余量 5）+ 签到那一步的 4，
-    // 但下一步就装不下了。停用标记那 1 笔是阶段 5 加进来的：调这个数字前先确认它还在账上。
+    // 但下一步就装不下了。停用标记那 1 笔（FLAGS_FRAME）也在账上：调这个数字前先确认它还在。
     const first = await wbTick(kv, cst(10), 19);
     const view = wbView(first.summary);
     assert.equal(view.steps[0].status, "claimed");
@@ -2485,7 +2486,7 @@ test("[阶段4·workbuddy] 一轮装不下 7 步时整步顺延，下一轮接�
   } finally { stub.restore(); }
 });
 
-test("[阶段4·workbuddy] 续期只写一次盘：7 个步骤共用同一个新串不能写 7 回", async () => {
+test("[workbuddy] 续期只写一次盘：7 个步骤共用同一个新串不能写 7 回", async () => {
   const kv = fakeKv();
   seedWorkbuddy(kv, "wb-rot", { expiresAt: cst(10) + 600 });   // 只剩 10 分钟 → 必然触发续期
   let refreshed = 0;
@@ -2510,7 +2511,7 @@ function everyWbLog(kv) {
   return logKeys(kv).map((k) => `${k}${kv.store.get(k)}${JSON.stringify(kv.metas.get(k) || {})}`).join("\n");
 }
 
-test("[阶段4·workbuddy] 出口只有 copilot.tencent.com，包装格式的票据也能解出 uid", async () => {
+test("[workbuddy] 出口只有 copilot.tencent.com，包装格式的票据也能解出 uid", async () => {
   const kv = fakeKv();
   const stub = stubUpstream(wbIdleRoutes());
   try {
@@ -2527,7 +2528,7 @@ test("[阶段4·workbuddy] 出口只有 copilot.tencent.com，包装格式的票
   } finally { stub.restore(); }
 });
 
-test("[阶段4·workbuddy] 建号走真实入口：明文票据与包装票据都要解出 uid", async () => {
+test("[workbuddy] 建号走真实入口：明文票据与包装票据都要解出 uid", async () => {
   // 之前这类 bug 全在"直接塞 KV"的测试里溜过去了：uidOf 是每家建号都要过的一道门，
   // 只有走 HTTP 建号才测得到它。
   const kv = fakeKv();
@@ -2551,7 +2552,7 @@ test("[阶段4·workbuddy] 建号走真实入口：明文票据与包装票据�
   assert.equal(Number(saved.cred.expiresAt), cst(60), "到期时间要在建号时就解出来，否则第一次运行会白换一次票");
 });
 
-test("[阶段4·jwt] subjectOf 与 expiresAtOf 收的都是 JWT 原文", async () => {
+test("[jwt] subjectOf 与 expiresAtOf 收的都是 JWT 原文", async () => {
   // 这两个 helper 都收"票"而不是"已解开的载荷"。误传载荷时 subjectOf 会解不出，
   // 但 expiresAtOf 会安静地返回 0 —— 表现是"每天白换一次票"，比报错更难查。
   // 所以两个都要有直接断言，不能只测一个好发现的那半。
@@ -2563,7 +2564,7 @@ test("[阶段4·jwt] subjectOf 与 expiresAtOf 收的都是 JWT 原文", async (
   assert.equal(expiresAtOf(mkJwt({ sub: "no-exp" })), 0, "没给 exp 要如实返回 0，不能猜一个未来时间");
 });
 
-// ═══════════ 阶段 4 审核结论的回归断言 ═══════════
+// ═══════════ 三家接入的回归断言 ═══════════
 // 这三条是"当前 146 条全绿也抓不到"的那三类：它们不是某个请求出错，而是系统静默地少做事。
 // 断言全部写成不变量，而不是写成某一次探针的输出。
 
@@ -2764,7 +2765,7 @@ test("[审核P0-2c] 收尾最坏 7 笔没预约住时，宁可整步顺延也不
 });
 
 test("[审核P0-3] 成功路径（HTTP 200 + code:0）必须有断言：blindbox 与 redeem 不许报 error", async () => {
-  // 这条测试补的是"测试形状"的洞，不是实现洞：阶段 4 的 workbuddy 桩测只用 409/403，
+  // 这条测试补的是"测试形状"的洞，不是实现洞：workbuddy 的桩测只用 409/403，
   // 而 `result.status >= 400 || api.codeOf(...)` 在 4xx 时短路，右侧根本不执行 ——
   // 于是 api.codeOf 没被导出这件事，在 11 条 workbuddy 测试全绿的情况下活了很久。
   // 后果不在"报错"上：buddy/open 没有幂等字段，上游已经真的扣了额度、开了盒子，
@@ -2794,7 +2795,7 @@ test("[审核P0-3] 成功路径（HTTP 200 + code:0）必须有断言：blindbox
   } finally { stub.restore(); }
 });
 
-// ═══════════ 阶段 5：工具停用开关（§6.1 的 5 条验收判据）═══════════
+// ═══════════ 工具停用开关 ═══════════
 //
 // 设计要点（照 §6.1 实现，不要凭直觉改）：
 //   · 单键 v1:flags 存全部工具，FLAGS_FRAME=1 在 runTick 开头读一次贯穿本轮
@@ -2815,7 +2816,7 @@ const seedFor = (kv, toolId, uid) => {
   kv.store.set(`v1:schedidx:${toolId}`, JSON.stringify({ day: null, entries: {} }));
 };
 
-test("[阶段5] 关掉一个工具：连跑 5 轮它一条记录都不留，且一个 KV 键都不碰", async () => {
+test("[关掉一个工具：连跑 5 轮它一条记录都不留，且一个 KV 键都不碰", async () => {
   const kv = fakeKv();
   const qoder = { ...syntheticTool("qoder"), name: "Qoder" };
   const trae = { ...syntheticTool("trae"), name: "Trae" };
@@ -2852,7 +2853,7 @@ test("[阶段5] 关掉一个工具：连跑 5 轮它一条记录都不留，且�
   assert.ok(logKeys(kv).some((k) => k.startsWith("v1:tick:")), "本轮汇总仍要写，B 的结果在里面");
 });
 
-test("[阶段5] 停用期间删不得任何东西：重开后当天进度接着做，已完成的那步不重做", async () => {
+test("[停用期间删不得任何东西：重开后当天进度接着做，已完成的那步不重做", async () => {
   // 判据 2。停用只是"不跑"，不是"忘掉"：删掉 step / schedidx 的话，
   // 重开后就变成从零开始，WorkBuddy 那种 7 步的账号会重打一遍上游（其中 buddy/open 真扣额度）。
   const kv = fakeKv();
@@ -2897,7 +2898,7 @@ test("[阶段5] 停用期间删不得任何东西：重开后当天进度接着�
   assert.equal(view.status, "claimed", "三步做完就该是成功领取");
 });
 
-test("[阶段5] 停用跨过 resetHour 再打开：按新逻辑日照常从头跑", async () => {
+test("[停用跨过 resetHour 再打开：按新逻辑日照常从头跑", async () => {
   // 判据 3。这是 loadProgress 的既有行为（跨 day 视为全未做），**不该**为开关特殊化。
   // 写这条测试正是为了钉住它：哪天有人给开关加个"保留进度"逻辑，跨天那次的重跑就没了。
   const kv = fakeKv();
@@ -2932,7 +2933,7 @@ test("[阶段5] 停用跨过 resetHour 再打开：按新逻辑日照常从头�
   assert.equal(schedEntryOf(kv, "fix", "SEATR1").attemptsDate, logicalDay(0, cst(35, 10)));
 });
 
-fixtureTest("[阶段5] 停用中直接 POST 手动执行：被拒绝，且一个上游请求都不许发", async () => {
+fixtureTest("[停用中直接 POST 手动执行：被拒绝，且一个上游请求都不许发", async () => {
   // 判据 4。界面上「执行」按钮已经隐藏了，但隐藏不等于权限 ——
   // 直接敲 URL 不该绕过开关。断言必须落在 stub.seen 上：
   // 只断言"页面返回了拒绝"的话，把 run() 换成"先发请求再拒绝"照样绿。
@@ -2967,7 +2968,7 @@ fixtureTest("[阶段5] 停用中直接 POST 手动执行：被拒绝，且一个
   } finally { stub.restore(); }
 });
 
-fixtureTest("[阶段5] 界面：停用的卡片变暗 + 显示开关状态，停用中隐藏「执行」保留「测试」", async () => {
+fixtureTest("[界面：停用的卡片变暗 + 显示开关状态，停用中隐藏「执行」保留「测试」", async () => {
   const kv = fakeKv();
   const env = envFor(kv);
   await createAccount(env, kv);
@@ -3000,7 +3001,7 @@ fixtureTest("[阶段5] 界面：停用的卡片变暗 + 显示开关状态，停
   assert.match(page.text, /有 1 个账号处于失败或需重新登录状态/, "停用中要如实说明还有几个待处理");
 });
 
-fixtureTest("[阶段5] 开关切换是 POST：成功回执跳回总览，不许 GET 改状态", async () => {
+fixtureTest("[开关切换是 POST：成功回执跳回总览，不许 GET 改状态", async () => {
   const kv = fakeKv();
   const env = envFor(kv);
   await createAccount(env, kv);
@@ -3020,7 +3021,7 @@ fixtureTest("[阶段5] 开关切换是 POST：成功回执跳回总览，不许 
   assert.doesNotMatch(back.text, /class="card dim"/, "恢复后卡片不该还暗着");
 });
 
-test("[阶段5] 不做「全部停用」总开关：停用标记只影响该工具自己", async () => {
+test("[不做「全部停用」总开关：停用标记只影响该工具自己", async () => {
   // 用户明确拒绝过"全部停用"。这条把它钉住：任何一个工具的 off 都不许波及其它工具。
   const kv = fakeKv();
   const tools = ["fix", "t2", "t3"].map((id) => syntheticTool(id));
@@ -3035,7 +3036,7 @@ test("[阶段5] 不做「全部停用」总开关：停用标记只影响该工�
   assert.deepEqual(Object.keys(JSON.parse(kv.store.get("v1:flags"))), ["t2"]);
 });
 
-fixtureTest("[阶段5] /api/state 报出停用状态，说明页写清开关语义", async () => {
+fixtureTest("[/api/state 报出停用状态，说明页写清开关语义", async () => {
   const kv = fakeKv();
   const env = envFor(kv);
   await createAccount(env, kv);
@@ -3053,20 +3054,19 @@ fixtureTest("[阶段5] /api/state 报出停用状态，说明页写清开关语�
   assert.match(help.text, /一条都不删/, "说明页要写清停用不删数据 —— 这是最该被知道的一条");
 });
 
-test("[阶段5] 说明页不许出现开发进度", async () => {
-  // /help 是使用者看的操作说明。「阶段 N · 已完成 / 待做」是内部工程进度：
-  // 对使用者无用，而且没有任何机制会更新它 —— 阶段 5 收尾后那几行"待做"会变成永久的谎言。
-  // 阶段信息的正规留存处是交接文档 §1.1 与设计方案 §9，不在界面上。
+test("[说明页不许出现开发进度", async () => {
+  // /help 是使用者看的操作说明。「阶段 N · 已完成 / 待做」这类内部工程进度
+  // 对使用者无用，而且没有任何机制会更新它 —— 只会过期成永久的谎言。
   const res = await authed("/help", envFor(fakeKv()));
   for (const leak of ["阶段进度", "阶段 1", "已完成 —", "待做 —", "接三家", "会管"]) {
     assert.ok(!res.text.includes(leak), `说明页漏出了开发进度「${leak}」`);
   }
-  // 删掉的那块里有真内容的话要确保没跟着删掉：状态词表与工具清单必须还在
-  assert.match(res.text, /状态词汇表/, "状态词表是长期有效的操作信息，不该跟着阶段表一起没掉");
+  // 删掉进度表不能连带删掉真内容：状态词表与工具清单必须还在
+  assert.match(res.text, /状态词汇表/, "状态词表是长期有效的操作信息，不该跟着进度表一起没掉");
   assert.match(res.text, /已注册的工具/);
 });
 
-test("[阶段5] 注册表里只有三家真实工具，夹具不许留在里面", async () => {
+test("[注册表里只有三家真实工具，夹具不许留在里面", async () => {
   // 夹具一旦留在注册表里就会产生真实副作用：占导航一格、被 cron 每 30 分钟调度一次、
   // 往 /runs 写假记录。演示工具不该有这些。所以它只在测试里临时注入。
   assert.deepEqual(TOOLS.map((t) => t.id), ["qoder", "trae", "workbuddy"],
@@ -3093,7 +3093,7 @@ test("[阶段5] 注册表里只有三家真实工具，夹具不许留在里面"
   assert.equal((await authed("/tool/fix", env)).status, 404, "摘掉之后路由不该再认得它");
 });
 
-test("[阶段5] uidField 已彻底删除：契约里只剩 uidOf 一个来源", async () => {
+test("[uidField 已彻底删除：契约里只剩 uidOf 一个来源", async () => {
   // uidField 不是一种能力，是 uidOf 的语法糖（uidField: "x" ≡ uidOf: c => c.values.x）。
   // 留着它等于在契约里多放一个"必须和 uidOf 保持行为一致"的分支，而没有任何机制
   // 能保证这一点。三家在用的都是 uidOf，没有任何工具的身份是表单上的明面字段。
@@ -3123,7 +3123,7 @@ test("[阶段5] uidField 已彻底删除：契约里只剩 uidOf 一个来源", 
   assert.doesNotMatch(form, /自动得出/, "uidField 那句文案该随之消失");
 });
 
-test("[阶段5] 图标内联在 data URI 里，且必须是 PNG", async () => {
+test("[图标内联在 data URI 里，且必须是 PNG", async () => {
   // 图标走内联而不是 public/ + Static Assets：public/ 下的文件由 Cloudflare
   // 直接伺服、绕过 Worker，也就绕过了 ?pwd= 那道闸。内联让图标和其它界面一样在闸后。
   // 这条断言守的是那个决定 —— 哪天有人改成外链，图标就变成无口令可拿的资源了。
@@ -3164,4 +3164,141 @@ test("[阶段5] 图标内联在 data URI 里，且必须是 PNG", async () => {
   assert.ok(help.text.includes('class="ico"'), "说明页的工具清单也该带图标");
   const page = await authed("/tool/qoder", env);
   assert.ok(page.text.includes('class="ico"'), "工具页该带图标");
+});
+
+test("[三家的参数获取教程在「新增账号」页上，且步骤完整", async () => {
+  // 教程内容挪自三个旧 Worker 的 README（客户端取值那一套），不是 F12 抓包。
+  // 这条守三件事：三家都有教程、步骤带序号、PowerShell 代码块完整。
+  const env = envFor(fakeKv());
+  for (const tool of TOOLS) {
+    const page = await authed(`/account/new?tool=${tool.id}`, env);
+    assert.equal(page.status, 200, `${tool.name} 的新增页打不开`);
+    assert.match(page.text, /class="tutbox"/, `${tool.name} 的新增页没有教程块`);
+    // 步骤序号从 1 连续排下去
+    const nums = [...page.text.matchAll(/class="tut-n">(\d+)</g)].map((m) => Number(m[1]));
+    assert.ok(nums.length >= 3, `${tool.name} 的教程只有 ${nums.length} 步，太少：${JSON.stringify(nums)}`);
+    assert.deepEqual(nums, nums.map((_, i) => i + 1), `${tool.name} 的步骤序号不连续：${JSON.stringify(nums)}`);
+    // 代码块数量按各家设计走：Qoder 是"一整段复制粘贴"（1 块），
+    // Trae 分散在取设备号 / 开登录页 / 解析回调（3 块），WorkBuddy 两步两块。
+    // 所以断的是"代码块非空"，不是块数 —— 硬要求 >= 2 会把 Qoder 那种正确形态判红。
+    const blocks = [...page.text.matchAll(/<pre class="tut-c">([\s\S]*?)<\/pre>/g)].map((m) => m[1]);
+    assert.ok(blocks.length >= 1, `${tool.name} 的教程没有代码块`);
+    const total = blocks.reduce((sum, b) => sum + b.trim().length, 0);
+    assert.ok(total > 200, `${tool.name} 的教程代码块加起来只有 ${total} 字符，太少了`);
+    // 最大的一块要够长 —— 一段能抳出凭据的脚本不会只有几行
+    assert.ok(Math.max(...blocks.map((b) => b.length)) > 300,
+      `${tool.name} 最长的一段脚本只有 ${Math.max(...blocks.map((b) => b.length))} 字符，抳不出东西的教程比没有更坏`);
+  }
+});
+
+test("[教程里 PowerShell 脚本能真的抳出对应的凭据字段", async () => {
+  // 这是本条最关键的地方：教程里的脚本是**真的会被人复制去跑**的，
+  // 抳不出东西的教程比没有教程更坏（人会以为是自己弄错了）。
+  // 所以这里不只检查"有代码块"，而是检查每段脚本里出现了本工具真实要用的那个值。
+  const expect = {
+    qoder: [/runtime-info\.exe/, /auth\.v1\.dat/, /machineToken/, /refreshToken/],
+    trae: [/iCubeAuthInfo/, /icube-dc/, /userJwt/, /refreshToken/, /UnescapeDataString/],
+    workbuddy: [/send-sms/, /login\/token/, /sms_code/, /accessToken/, /refreshToken/],
+  };
+  for (const [id, patterns] of Object.entries(expect)) {
+    const t = TUTORIALS[id];
+    assert.ok(t, `${id} 没有教程`);
+    const body = JSON.stringify(t.steps);
+    for (const re of patterns) {
+      assert.match(body, re, `${id} 的教程里找不到 ${re} —— 脚本抳不出这个值`);
+    }
+  }
+});
+
+test("[Trae 教程的解析脚本与服务端 parseCallbackUrl 同语义", async () => {
+  // 服务端（trae-cf-checkin/worker.js 的 parseCallbackUrl）与教程里的 PowerShell
+  // 必须解出**同一个** refreshToken。两边不一致 = 用户按教程拿到的是错的串。
+  // 那个坑很具体：searchParams.get() 会把字面量 '+' 解成空格，
+  // 令牌里含 '+' 就会被悄悄破坏 —— 所以两边都只用一次 %XX 解码。
+  const cb = "http://127.0.0.1:18080/authorize?userJwt=%7B%22Token%22%3A%22JWT.VALUE%22%2C%22RefreshToken%22%3A%22RT%2BPLUS%22%7D&userInfo=%7B%22UserID%22%3A123456%7D";
+  const raw = cb.slice(cb.indexOf("?") + 1);
+  // 复刻教程里 Q 函数的语义：正则取值 + 一次 UnescapeDataString
+  const q = (name) => {
+    const m = raw.match(new RegExp(`(?:^|&)${name}=([^&]*)`));
+    return m ? decodeURIComponent(m[1]) : "";
+  };
+  const jwt = JSON.parse(q("userJwt"));
+  assert.equal(jwt.Token, "JWT.VALUE");
+  assert.equal(jwt.RefreshToken, "RT+PLUS", "令牌里的 '+' 被解成了空格 —— 上游给的就是带加号的串");
+  assert.equal(JSON.parse(q("userInfo")).UserID, 123456);
+  // 教程里 Q 函数的正则必须真的能匹配上（少一个转义就会静默返回空串）
+  assert.match(raw, /(?:^|&)userJwt=([^&]*)/);
+  assert.match(raw, /(?:^|&)userInfo=([^&]*)/);
+});
+
+test("[Trae 教程里那行正则本身能匹配（抠出发布文本实测，非重抄）", () => {
+  // 上一条是在测试里**重抄**一份服务端语义；这条反过来：把教程源码里真正发给用户的那行
+  // 正则抠出来编译成 JS RegExp 跑一遍。抄一份的测法有个盲区——教程里的正则
+  // 被人改坏了（少了转义、$ 拼错、锚点写错），重抄的那份照样通过。
+  // 教程是**会被真人复制去跑**的东西，抳不出值比没有教程更坏，所以必须咬住发布文本。
+  const code = TUTORIALS.trae.steps[3].code;
+  const line = code.split("\n").find((l) => l.includes("[regex]::Match($raw"));
+  assert.ok(line, "Trae 教程第 4 步里找不到 Q 函数的正则那一行");
+  // 抠出模式串：那一行里恰好有一对引号（单引号或双引号都行），内容就是要编译的正则
+  const lit = line.match(/["']([^"']*)["']/);
+  assert.ok(lit, `无法从教程那一行抠出正则字面量：${line.trim()}`);
+  // (?:^|&)$n= 里的 $n 是 PowerShell 变量插值，编译前替成真实参数名
+  const src = lit[1].replace("$n", "userJwt");
+  assert.ok(src.startsWith("(?:^|&)"), `抠出来的不是那条正则：${src}`);
+  const re = new RegExp(src);
+
+  // 真实回调串：userJwt 后面还跟着别的参数，锚点写错就会只匹配到第一个
+  const raw = "userInfo=%7B%22UserID%22%3A123456%7D&userJwt=%7B%22Token%22%3A%22JWT.VALUE%22%7D&refreshToken=RT.PLAIN";
+  const m = re.exec(raw);
+  assert.ok(m, `教程的正则 ${src} 匹配不上真实回调串`);
+  assert.equal(decodeURIComponent(m[1]), '{"Token":"JWT.VALUE"}');
+  // '+' 不能被解成空格：令牌里含加号时会被悄悄破坏（服务端 rawParam 同此）
+  const plus = "userJwt=AAA%2BBB";
+  assert.equal(decodeURIComponent(re.exec(plus)[1]), "AAA+BB");
+});
+
+test("[教程块不引入脚本，也不含访问口令以外的敏感内容", async () => {
+  const env = envFor(fakeKv());
+  await createAccount(env, envFor(fakeKv()));
+  for (const tool of TOOLS) {
+    const page = await authed(`/account/new?tool=${tool.id}`, env);
+    // 整站零 JS 的约定不能被教程破掉
+    const box = page.text.slice(page.text.indexOf('class="tutbox"'));
+    assert.ok(!/<script[\s>]/i.test(box), `${tool.name} 的教程里混进了 <script>`);
+    assert.ok(!/\son\w+\s*=/i.test(box), `${tool.name} 的教程里混进了内联事件属性`);
+    // 教程里不该出现任何形似真实凭据的长串
+    assert.ok(!box.includes(SECRET_VALUE), `${tool.name} 的教程里混进了凭据`);
+  }
+  // 口令只允许出现在 HTML **属性**里（href / value），绝不出现在可见文本 ——
+  // 这是全站约定（见项目规范），教程也不例外。断言要按"剥掉标签与属性值之后
+  // 还剩不剩得到口令"来判，而不是简单地"页面里有没有这个串"：
+  // 每个链接都带 ?pwd= 是设计如此。
+  const page = await authed("/account/new?tool=qoder", env);
+  const visible = page.text
+    .replace(/<[^>]+>/g, " ")            // 去掉整个标签（含属性值）
+    .replace(/&[a-z]+;/g, " ");          // 实体也算标签外
+  assert.ok(!visible.includes(PASSWORD),
+    `口令出现在了可见文本里：${visible.slice(Math.max(0, visible.indexOf(PASSWORD) - 60), visible.indexOf(PASSWORD) + 40)}`);
+  // 但它必须在链接与 hidden input 里 —— 否则点一次链接就 401
+  assert.ok(page.text.includes(`?pwd=${encodeURIComponent(PASSWORD)}`), "导航链接该带口令");
+  assert.ok(page.text.includes(`name="pwd" value="${PASSWORD}"`), "表单该带隐藏的口令字段");
+});
+
+test("[工具配置页也带教程（Qoder 的设备标识在 config 里）", async () => {
+  // Qoder 的 Cosy-* 是工具级配置、不在账号表单上，所以教程必须同时出现在配置页 ——
+  // 否则用户照着新增页的教程做，会找不到地方填那 8 个值。
+  const env = envFor(fakeKv());
+  for (const tool of TOOLS) {
+    const page = await authed(`/tool/${tool.id}/settings`, env);
+    assert.equal(page.status, 200, `${tool.name} 的配置页打不开`);
+    const has = /class="tutbox"/.test(page.text);
+    assert.equal(has, Boolean(TUTORIALS[tool.id]), `${tool.name} 配置页的教程有无与数据不符`);
+  }
+});
+
+test("[没有教程的工具不渲染空壳", async () => {
+  // 夹具没有教程。渲染出一个空盒子就是"界面层不认识具体工具"被破掉的形态：
+  // 界面该由"有没有数据"决定，而不是由"是不是第几个工具"决定。
+  assert.equal(renderTutorial({ id: "nope" }), "");
+  assert.equal(renderTutorial(FIXTURE), "");
 });

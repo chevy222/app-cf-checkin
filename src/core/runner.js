@@ -277,7 +277,7 @@ function commitSched(index, tool, uid, result, day, now) {
       : s.status === "pending" ? now + PENDING_RETRY_SEC : 0,
     resumable: s.resumable,
     // 紧凑的步骤摘要顺手存进索引：工具页渲染色块时已经读过这条索引了，
-    // 若改为从运行日志逐账号取，就是 N 次 get —— 阶段 2 刚为同样的坑改过结构
+    // 若改为从运行日志逐账号取，就是 N 次 get
     lastSteps: (result.steps || []).map((r) => `${r.id}:${r.status}${r.reused ? ":r" : ""}`),
   };
 }

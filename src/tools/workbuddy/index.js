@@ -3,13 +3,13 @@ import * as api from "./api.js";
 // WorkBuddy 签到工具。
 //
 // 这一家的形状与另两家完全不同：不是一个"领取"动作，而是 7 件互相有顺序依赖的事。
-// 旧实现把它们全塞进一次调用，且完全不数子请求 —— 单账号一轮最坏 30+ 次上游调用，
-// 2–3 个账号串在同一次调用里必然撞穿免费版 50 次/调用的硬顶。旧代码那句
-// 「可能登录态失效，请重新登录」就是撞顶之后冒出来的假症状，
-// 很多人因此天天重贴凭据，而真正的原因是配额。
+// 7 件事必须分轮跑：全塞进一次调用的话，单账号一轮最坏 30+ 次上游调用，
+// 2–3 个账号串在同一次调用里必然撞穿免费版 50 次/调用的硬顶。撞顶之后冒出来的
+// 症状是假的「可能登录态失效，请重新登录」，很多人因此天天重贴凭据，
+// 而真正的原因是配额。
 //
-// 新内核按 (账号 × 步骤) 排队：每步声明自己的**最坏**开销，装不下就整步顺延到下一轮，
-// 已完成的部分不重做。所以下面每个 cost 都是上界，不是均值。
+// 所以下面每个 cost 都是上界而不是均值，内核按 (账号 × 步骤) 排队：
+// 装不下就整步顺延到下一轮，已完成的部分不重做。
 const DRAWS_PER_ROUND = 5;
 const OPENS_PER_ROUND = 5;
 const TASKS_PER_ROUND = 3;
@@ -54,7 +54,7 @@ export default {
     notBeforeHour: 8,    // 旧方案的运行时间
     minIntervalSec: 1800,
     maxDaily: 20,
-    backoff: [10, 30],   // 旧实现连 429 都不判；这里只兜住偶发限频，让它下一轮再来
+    backoff: [10, 30],   // 只兜住偶发限频，让它下一轮再来
   },
 
   hosts: api.workbuddyHosts,
@@ -104,15 +104,15 @@ export default {
           const claimed = await api.claimTravel(ctx, recordId);
           const reward = api.num(api.dig(claimed.payload, "reward_credit"));
           if (claimed.status < 400 && reward !== null) {
-            // 领到就 return，**不**在同一趟里接着派新行程 —— 这是有意的。
-            // 旧实现（worker.js:590）是 `travel = "idle"` 后一路走到 config+depart，
-            // 代价是该步最坏从 3 次请求涨到 4 次，cost:4 顶到 5。恢复它要先改 cost，
-            // 否则账本算低，正是 §P0-2 那类缺陷。
-            // 不恢复的代价只有"派发最多晚一轮 cron（*/30，即 ≤30 分钟）"：
-            // 领奖后 travel 变 idle，下一轮读到 idle 会正常派出。行程周期以小时计，
-            // 少掉的那一趟并不存在 —— 一天能派几趟由行程时长和 daily_limit 决定，与派发时刻无关。
-            // 注意"领失败也不派"是**必须保留**的：旧代码那句注释说得很清楚，
-            // 一失败就当 idle 会立刻派下一趟，把这次已到站的礼物顶掉，等于白丢。
+            // 领到就 return，**不**在同一趟里接着派新行程 —— 这是有意的选择。
+            // 代价：该步最坏从 3 次请求涨到 4 次（cost 4），曾一度顶到 TOOL_FRAME 上限。
+            // 换来的是"派发最多晚一轮 cron（*/30，即 ≤30 分钟）"：领奖后 travel 变 idle，
+            // 下一轮读到 idle 会正常派出。行程周期以小时计，少掉的那一趟并不存在 ——
+            // 一天能派几趟由行程时长和 daily_limit 决定，与派发时刻无关。
+            // 若要恢复成同一趟里派发，必须先把这步的 cost 改对，否则账本算低。
+            //
+            // 注意"领失败也不派"是**必须保留**的：一失败就当 idle 会立刻派下一趟，
+            // 把这次已到站的礼物顶掉，等于白丢。
             return { status: "claimed", message: `到站礼物 +${reward}`, credits: reward, cred: ctx.rotated };
           }
           return { status: "error", message: `到站礼物领取失败（HTTP ${claimed.status}），本次不派新行程`, credits: 0, cred: ctx.rotated };
@@ -210,13 +210,13 @@ export default {
           const progress = task.progress || {};
           const target = api.num(progress.target);
           const current = api.num(progress.current) || 0;
-          // 给了 0 就是 0：旧实现写 `progress.target || 1`，于是 "0/0" 的任务
+          // 给了 0 就是 0：不要写 `progress.target || 1`，那会让 "0/0" 的任务
           // 永远被当成已完成，每天白发一次 accept
           return (target === null ? 1 : target) <= current && task.accept_status !== "claimed" && task.has_reward;
         });
         if (eligible.length === 0) return { status: "ok", message: "没有待领的任务奖励", credits: 0, cred: ctx.rotated };
 
-        // 旧实现对可领任务数量没有上界，一轮能打出 1 + T 次调用，T 由上游决定
+        // 可领任务数量必须有上界：不封顶的话一轮能打出 1 + T 次调用，T 由上游决定
         const batch = eligible.slice(0, TASKS_PER_ROUND);
         let claimedCount = 0;
         let credits = 0;

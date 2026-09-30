@@ -36,7 +36,7 @@ function decodeSegment(segment) {
 //
 // 只从 access token 取，绝不用 refresh token 兜底：refresh_token 会轮换，
 // 拿它派生 uid 意味着续一次期就换出一个新 uid —— 旧的 acct 键被孤立，
-// 账号看起来"消失了"，而凭据其实还好好的（旧 qoder 的 hashUid 正是这个坑）。
+// 账号看起来"消失了"，而凭据其实还好好的。
 export function subjectOf(token) {
   const claims = readJwtClaims(token);
   if (!claims) return "";

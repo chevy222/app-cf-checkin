@@ -3,10 +3,7 @@ import { link, navHtml, pageShell, STATUS } from "../layout.js";
 import { glyph, sectionHead } from "../components.js";
 import { iconImg } from "../icons.js";
 
-// 这里原本有一块「阶段 1..5 / 已完成 / 待做」。已删：它是开发进度，不是操作信息 ——
-// 使用者要的是"怎么用、怎么加工具、失败了怎么办"，而"阶段 4 已完成"对谁都没有用。
-// 更实际的问题是它会过期：阶段 5 收尾后没有任何机制会改这一行，"待做：图标 · README"会变成永久的谎言。
-// 阶段信息在交接文档 §1.1 与设计方案 §9 里有正规留存，代码里这份只是会漂移的副本。
+// 这页只写"怎么用"，不写开发进度 —— 进度信息会过期，而使用者要的是操作信息。
 export function renderHelp({ pwd, tools }) {
   const statuses = Object.entries(STATUS).map(([key, info]) => `<div class="kv">
       <span class="k"><span class="badge b-${key === "rate_limited" ? "rate" : key === "login_required" ? "login" : key === "deferred" ? "defer" : key === "already" ? "already" : key === "inactive" || key === "skipped" ? "skipped" : key === "partial" || key === "pending" ? "partial" : key === "error" ? "error" : "ok"}">${glyph(info.glyph)}${escapeHtml(info.label)}</span></span>

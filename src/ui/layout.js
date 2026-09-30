@@ -107,6 +107,23 @@ table.t tr:last-child td{border-bottom:0}
 .chip{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:1.5px 7px;border-radius:99px;
   background:var(--accent-weak);color:var(--accent);font-weight:600}
 .chip.off{background:var(--warn-bg);color:var(--warn)}
+/* 参数获取教程。内容来自 tools 侧的数据，排版只这一份（见 tutorials.js 的说明）。 */
+.tutbox{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel2);
+  padding:14px 16px;margin-bottom:16px}
+.tut-intro{font-size:12.5px;line-height:1.6;color:var(--muted);margin-bottom:12px}
+.tut{margin-bottom:12px}
+.tut:last-child{margin-bottom:0}
+.tut-h{display:flex;align-items:flex-start;gap:8px;font-size:13px;font-weight:650;line-height:1.5}
+.tut-n{flex:none;width:18px;height:18px;border-radius:50%;background:var(--accent-weak);
+  color:var(--accent);font-size:11px;display:grid;place-items:center;margin-top:1px}
+.tut-b{font-size:12.5px;line-height:1.6;color:var(--muted);margin:6px 0 0 26px}
+.tut-c{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:11.5px;line-height:1.5;
+  background:var(--panel3);border:1px solid var(--line);border-radius:var(--radius-sm);
+  padding:10px 12px;margin:8px 0 0 26px;overflow-x:auto;white-space:pre;
+  color:var(--text);max-height:340px;overflow-y:auto}
+.tut-c code{background:none;padding:0;font-size:inherit}
+.tutbox .alert{margin:8px 0 0 26px;font-size:12px}
+.tutbox .tw{margin:8px 0 0 26px}
 .cmdbox{display:flex;gap:8px;align-items:center;background:var(--panel3);border:1px solid var(--line);
   border-radius:var(--radius-sm);padding:8px 10px;font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;
   font-size:11.5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
