@@ -9,13 +9,13 @@ import { commitSchedEntries, loadSchedIndex } from "../src/core/accounts.js";
 import { ACCOUNT_FRAME, FLAGS_FRAME, ROUND_FRAME, TOOL_FRAME, aggregate, runAccountNow, runTick } from "../src/core/runner.js";
 import { makeBudget, trackedFetch, trackedKv } from "../src/core/budget.js";
 import { listRunLog, readRunLog, scrubSecrets, writeRunLog } from "../src/core/logs.js";
-import { logicalDay } from "../src/core/time.js";
+import { logicalDay, cstDate } from "../src/core/time.js";
 import * as wbApi from "../src/tools/workbuddy/api.js";
 import { idemKey } from "../src/tools/workbuddy/api.js";
 import { expiresAtOf, subjectOf } from "../src/core/jwt.js";
 import { ICONS, iconImg } from "../src/ui/icons.js";
 import { TUTORIALS, renderTutorial } from "../src/ui/tutorials.js";
-import { dayOf } from "../src/core/scheduler.js";
+import { dayOf, isDue } from "../src/core/scheduler.js";
 
 const PASSWORD = "correct-horse-battery";
 const SECRET_VALUE = "eyJhbGciOiJIUzI1NiJ9.SUPERSECRETVALUE.doNotLeak";
@@ -1896,6 +1896,36 @@ test("[qoder] 逻辑日按上游的活动窗口在 10:00 翻，而不是按北�
   assert.equal(dayOf(qoder, cst(9, 30)), logicalDay(10, cst(9, 30)));
   assert.notEqual(dayOf(qoder, cst(10, 30)), dayOf(qoder, cst(9, 30)), "10:00 两侧该属于两个逻辑日");
   assert.equal(dayOf(qoder, cst(23, 0)), dayOf(qoder, cst(10, 30)), "同一个窗口内不该被切成两天");
+});
+
+test("[schedule] resetHour 填错的后果：日界决定「今天已领」的上闩", () => {
+  // resetHour 不是"看起来合理就行"的数字，它直接决定 lastStatusDate 与哪一天
+  // 比对 —— 填错会让"今天已领"这道上闩比对错日子，于是重复领取或整天空跑。
+  // 这一条把三家的实际取值与填错的后果都钉住，换工具时照着填。
+  const tool = (resetHour, notBeforeHour) => ({
+    schedule: { resetHour, notBeforeHour, minIntervalSec: 1800, maxDaily: 20, backoff: [] },
+  });
+  // 场景要落在 notBeforeHour 之后 —— 否则第一道闸就挡跑了，测不到日界判定。
+  // 北京 08:00，账号当天 07:00 已签到成功。
+  const now = cst(8, 0);
+  const signedDay = cstDate(now);
+  const entry = { lastStatus: "claimed", lastStatusDate: signedDay, lastAt: now - 3600, attempts: 1, attemptsDate: signedDay };
+
+  // 正确：Trae/WorkBuddy 的 0 —— 逻辑日就是北京日期，与 lastStatusDate 相同 → 已结清
+  assert.equal(isDue(tool(0, 8), entry, dayOf(tool(0, 8), now), now), false,
+    "resetHour=0 且当天已签到过，不该重新到期");
+  // 填错：把 0 写成 10 —— 逻辑日退回前一天，与 lastStatusDate 比不上 → 当场重复领取
+  assert.equal(isDue(tool(10, 8), entry, dayOf(tool(10, 8), now), now), true,
+    "resetHour 填成 10 会让当天早上那轮重新到期（这就是它不能瞎填的原因）");
+
+  // 三家的实际取值：Qoder 跟着上游活动窗口，另两家跟北京零点
+  assert.equal(findTool("qoder").schedule.resetHour, 10, "Qoder 的日界是 10 点");
+  assert.equal(findTool("trae").schedule.resetHour, 0, "Trae 的日界是 0 点");
+  assert.equal(findTool("workbuddy").schedule.resetHour, 0, "WorkBuddy 的日界是 0 点");
+  // 日界与"最早几点跑"是两个旋钮，不能互相顶替：
+  // Qoder 的 notBeforeHour 必须不早于 resetHour，否则 10 点前会白打并烧掉 pending 机会
+  assert.ok(findTool("qoder").schedule.notBeforeHour >= findTool("qoder").schedule.resetHour,
+    "Qoder 的 notBeforeHour 不该早于 resetHour");
 });
 
 // ═══════════ Trae ═══════════
