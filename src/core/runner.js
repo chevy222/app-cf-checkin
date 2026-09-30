@@ -1,6 +1,7 @@
 import { truncate } from "./text.js";
 import { getJson, heartbeatKey, listUids, lockKey, putJson, requireKv, toolKey } from "./store.js";
 import { applyCredPatch, getAccount, loadSchedIndex, commitSchedEntries, schedOf } from "./accounts.js";
+import { isOff, loadFlags } from "./flags.js";
 import { trackedFetch } from "./budget.js";
 import { clearProgress, configComplete, dayOf, isDue, loadProgress, missingConfigFields, saveProgress } from "./scheduler.js";
 import { secretValuesOf, scrubSecrets, writeRunLog, writeTickLog } from "./logs.js";
@@ -29,6 +30,11 @@ export const ACCOUNT_FRAME = 6;
 // 本轮汇总日志：一次调用一份，不摊到每个工具头上（旧写法把它算进 TOOL_FRAME，
 // 四个工具就多_reserve 三次 —— 方向是安全的，但预约数字本身就不准了）
 export const ROUND_FRAME = 1;
+// 读一次 v1:flags 的开销。单键存全部工具，所以是 1 笔而不是"工具数"笔。
+// 漏记这一笔的后果不是"多花一次"：TOOL_FRAME / ACCOUNT_FRAME / TAIL_RESERVE
+// 全都是按 45 这个自限算的，账本实际比预约多 1 笔时，整轮会在 46 才停 ——
+// 而 TAIL_RESERVE 正是靠"准入时预留"才保证收尾那几笔无处可付的。
+export const FLAGS_FRAME = 1;
 
 // 一步做完之后还可能要写的笔数（最坏路径，逐笔数出来的，不是估的）：
 //   2  凭据轮换当场写回（读新鲜记录 + 写）—— 只有续期了才有，但续期恰恰发生在最贵的那几轮
@@ -307,8 +313,17 @@ function picked(index, uids) {
 export async function runTick({ env, budget, tools, trigger = "cron", now = nowSec() }) {
   const plan = [];
   let ran = 0;
+  // 停用标记只读一次、贯穿本轮。放在循环里逐工具读就是"工具数"笔，
+  // 而工具数会随加第 4 个工具一起涨 —— 那正是这套预算最经不起的变化。
+  const flags = budget.fits(FLAGS_FRAME) ? await loadFlags(env) : {};
 
   for (const tool of tools) {
+    // 判据放在 TOOL_FRAME 之前：停用中的工具**一笔 KV 都不该花**。
+    // 排在后面的话，为了知道"它停着"已经读掉了配置、列过了账号。
+    if (isOff(flags, tool.id)) {
+      plan.push({ tool: tool.id, skipped: "已停用", accounts: [] });
+      continue;
+    }
     if (!budget.fits(TOOL_FRAME)) {
       plan.push({ tool: tool.id, skipped: "预算已用尽", accounts: [] });
       continue;
@@ -379,7 +394,16 @@ export async function runTick({ env, budget, tools, trigger = "cron", now = nowS
 //
 // 唯一不跳的是"工具配置没填"：那不是节流，是前置条件。缺项时这家站点根本没有可用的接入点
 // 与超时值，cron 会整个跳过这个工具，手动却照跑就等于拿残缺的配置去打上游。
+//
+// 停用中的工具同样拒绝：界面上「执行」按钮已经隐藏了，但**隐藏不等于权限**——
+// 直接敲 URL 不该绕过开关。这里必须在打任何上游请求之前就返回。
 export async function runAccountNow({ env, budget, tool, uid, trigger = "manual", now = nowSec() }) {
+  if (isOff(await loadFlags(env), tool.id)) {
+    return {
+      uid, label: uid, status: "error", credits: 0, steps: [],
+      message: `「${tool.name}」已停用，已拒绝执行。要恢复请到总览页把它的开关打开。`,
+    };
+  }
   const kv = requireKv(env);
   const config = await getJson(kv, toolKey(tool.id), {});
   const missing = missingConfigFields(tool, config);

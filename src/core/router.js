@@ -1,4 +1,5 @@
 import { coerceFields, countAccounts, deleteAccount, getAccount, listAccounts, loadSchedIndex, sanitizeUid, saveAccount } from "./accounts.js";
+import { isOff, loadFlags, setToolOff } from "./flags.js";
 import { getJson, putJson, requireKv, toolKey } from "./store.js";
 import { listRunLog, readRunLog, scrubSecrets } from "./logs.js";
 import { truncate } from "./text.js";
@@ -23,6 +24,17 @@ function flashFrom(url) {
   const flag = url.searchParams.get("done");
   if (flag === "saved") return { kind: "info", text: "已保存。" };
   if (flag === "deleted") return { kind: "info", text: "已删除。" };
+  // 开关切换的回执要说清是哪一家、变成了什么状态。跳转参数里只放工具 id 与 0/1，
+  // 名字现查注册表 —— 免得一个纯展示用的查询串成为第二个事实来源。
+  const toggled = url.searchParams.get("toggled");
+  if (toggled) {
+    const tool = findTool(toggled);
+    if (tool) {
+      return url.searchParams.get("off") === "1"
+        ? { kind: "warn", text: `「${tool.name}」已停用：不再参与调度，账号与进度都原样留着，重新打开即可接着做。` }
+        : { kind: "info", text: `「${tool.name}」已恢复，下一轮起重新参与调度。` };
+    }
+  }
   return null;
 }
 
@@ -46,14 +58,16 @@ async function homePage(env, pwd, flash, budget) {
     counts[tool.id] = await countAccounts(env, tool.id);
     sched[tool.id] = await schedMap(env, tool.id);
   }
+  const flags = await loadFlags(env);
   const runs = await listRunLog(env, { limit: 12, toolIds: TOOLS.map((t) => t.id) });
-  return htmlRes(renderHome({ pwd, tools: TOOLS, counts, sched, runs, flash, budget }));
+  return htmlRes(renderHome({ pwd, tools: TOOLS, counts, sched, runs, flash, budget, flags }));
 }
 
 async function toolPage(env, pwd, tool, flash) {
   const { accounts, total } = await listAccounts(env, tool.id);
   const sched = await schedMap(env, tool.id);
-  return htmlRes(renderTool({ pwd, tool, accounts, total, sched, flash }));
+  const flags = await loadFlags(env);
+  return htmlRes(renderTool({ pwd, tool, accounts, total, sched, flash, flags }));
 }
 
 async function runsPage(ctx) {
@@ -217,22 +231,28 @@ async function accountDelete(ctx, tool, uid) {
 // 结果里的 message 已在内核侧洗掉凭据（runner 的 runOneAccount），这里可以直接显示。
 async function runNowHandler(ctx, tool, uid) {
   const result = await runAccountNow({ env: ctx.env, budget: ctx.budget, tool, uid, trigger: "manual" });
-  const { accounts, total } = await listAccounts(ctx.env, tool.id);
-  const sched = await schedMap(ctx.env, tool.id);
-  return htmlRes(renderTool({
-    pwd: ctx.pwd, tool, accounts, total, sched,
-    flash: { kind: ["error", "login_required"].includes(result.status) ? "bad" : "info", text: `${uid} → ${result.status}：${result.message}` },
-  }));
+  return renderToolWithFlash(ctx, tool, { kind: ["error", "login_required"].includes(result.status) ? "bad" : "info", text: `${uid} → ${result.status}：${result.message}` });
 }
 
 async function validateHandler(ctx, tool, uid) {
   const result = await validateAccount({ env: ctx.env, budget: ctx.budget, tool, uid });
+  return renderToolWithFlash(ctx, tool, { kind: result.status === "ok" || result.status === "claimed" ? "info" : "bad", text: `测试 ${uid}：${result.status} — ${result.message}` });
+}
+
+async function renderToolWithFlash(ctx, tool, flash) {
   const { accounts, total } = await listAccounts(ctx.env, tool.id);
   const sched = await schedMap(ctx.env, tool.id);
-  return htmlRes(renderTool({
-    pwd: ctx.pwd, tool, accounts, total, sched,
-    flash: { kind: result.status === "ok" || result.status === "claimed" ? "info" : "bad", text: `测试 ${uid}：${result.status} — ${result.message}` },
-  }));
+  const flags = await loadFlags(ctx.env);
+  return htmlRes(renderTool({ pwd: ctx.pwd, tool, accounts, total, sched, flash, flags }));
+}
+
+// 开关切换。表单里带 pwd，状态变更走 POST —— 与全站其它变更一致，页面里没有一行 JS。
+// 停用不删任何调度数据（step / schedidx / acct / lock 全部原样留着），
+// 所以重新打开时当天进度照旧、接着做即可。
+async function toolToggle(ctx, tool) {
+  const next = !isOff(await loadFlags(ctx.env), tool.id);
+  await setToolOff(ctx.env, tool.id, next);
+  return redirectRes(link("/", ctx.pwd, { toggled: tool.id, off: next ? "1" : "0" }));
 }
 
 async function configPage(ctx, tool) {
@@ -287,6 +307,7 @@ const ROUTES = [
   ["GET", /^\/api\/tick$/, (ctx) => apiTick(ctx)],
   ["POST", /^\/api\/tick$/, (ctx) => apiTick(ctx)],
   ["GET", /^\/tool\/([^/]+)$/, (ctx, tool) => toolPage(ctx.env, ctx.pwd, tool, ctx.flash)],
+  ["POST", /^\/tool\/([^/]+)\/toggle$/, (ctx, tool) => toolToggle(ctx, tool)],
   ["GET", /^\/tool\/([^/]+)\/settings$/, (ctx, tool) => configPage(ctx, tool)],
   ["POST", /^\/tool\/([^/]+)\/settings$/, (ctx, tool) => configSave(ctx, tool)],
   ["GET", NEW_ACCOUNT, (ctx) => (ctx.tool ? accountNewPage(ctx, ctx.tool) : notFound(ctx.pwd))],

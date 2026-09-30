@@ -6,7 +6,7 @@ import { maskSecret } from "../src/core/text.js";
 import { coerceFields, saveAccount, schedOf } from "../src/core/accounts.js";
 import { listUids } from "../src/core/store.js";
 import { commitSchedEntries, loadSchedIndex } from "../src/core/accounts.js";
-import { ACCOUNT_FRAME, ROUND_FRAME, TOOL_FRAME, aggregate, runAccountNow, runTick } from "../src/core/runner.js";
+import { ACCOUNT_FRAME, FLAGS_FRAME, ROUND_FRAME, TOOL_FRAME, aggregate, runAccountNow, runTick } from "../src/core/runner.js";
 import { makeBudget, trackedFetch, trackedKv } from "../src/core/budget.js";
 import { listRunLog, readRunLog, writeRunLog } from "../src/core/logs.js";
 import { logicalDay } from "../src/core/time.js";
@@ -25,6 +25,9 @@ function fakeKv({ pageSize = 1000, hardCap = Infinity } = {}) {
   const metas = new Map();
   const expiry = new Map();
   const calls = [];
+  // 键名轨迹：calls 只记操作类型（"get"/"put"…），断言"某个工具的键一个都没被碰过"
+  // 时需要知道碰的是哪些键。两条轨迹并存，避免改动 calls 的形状把既有断言弄坏。
+  const keys = [];
   // 虚拟时钟：测试里的"第二轮"是 31 分钟之后，真实毫秒只过了几个。
   // 不跟着走的话 90 秒的锁永远不会过期，测出来的行为和线上相反。
   let clockMs = Date.now();
@@ -34,17 +37,21 @@ function fakeKv({ pageSize = 1000, hardCap = Infinity } = {}) {
     if (calls.length > hardCap) throw new Error(`Too many subrequests (>${hardCap})`);
   };
   return {
-    store, calls, metas,
+    store, calls, metas, keys,
     get count() { return calls.length; },
+    // 从某个位置起，动过所有带 prefix 的键。用来看"某一轮里某个工具的键被碰了几次"。
+    countKeys(prefix, since = 0) { return keys.slice(since).filter((k) => String(k).startsWith(prefix)).length; },
+    mark() { return keys.length; },
     advanceTo(ms) { clockMs = ms; },
     alive(key) {
       const at = expiry.get(key);
       if (at !== undefined && at <= clockMs) { expiry.delete(key); store.delete(key); metas.delete(key); return false; }
       return true;
     },
-    async get(key) { hit("get"); if (!this.alive(key)) return null; return store.has(key) ? store.get(key) : null; },
+    async get(key) { hit("get"); keys.push(key); if (!this.alive(key)) return null; return store.has(key) ? store.get(key) : null; },
     async put(key, value, options) {
       hit("put");
+      keys.push(key);
       store.set(key, String(value));
       // metadata 必须照存：日志列表页整页靠它渲染，shim 丢掉它的话
       // "摘要进 metadata ⇒ 列表零 get"这条设计在测试里就是没跑过（阶段 3 审核实测踩过）
@@ -52,9 +59,10 @@ function fakeKv({ pageSize = 1000, hardCap = Infinity } = {}) {
       const ttl = options && Number.isFinite(options.expirationTtl) ? options.expirationTtl : null;
       if (ttl) expiry.set(key, clockMs + ttl * 1000); else expiry.delete(key);
     },
-    async delete(key) { hit("delete"); store.delete(key); metas.delete(key); expiry.delete(key); },
+    async delete(key) { hit("delete"); keys.push(key); store.delete(key); metas.delete(key); expiry.delete(key); },
     async list({ prefix, cursor, limit }) {
       hit("list");
+      keys.push(`list:${prefix}`);
       const all = [...store.keys()].filter((k) => k.startsWith(prefix) && this.alive(k)).sort().map((name) => ({ name, metadata: metas.get(name) }));
       const from = cursor ? Number(cursor) : 0;
       // 真实 KV 的 limit 是"这一页最多回多少键"（上限 1000），分页游标按 pageSize 走
@@ -485,7 +493,7 @@ test("配置未完成的工具被整体跳过；补齐后同一年号即可执�
   const blocked = await tick(env, {}).run();
   assert.equal(blocked.ran, 0);
   assert.equal(blocked.plan[0].skipped, "配置未完成");
-  assert.equal(kv.calls.filter((c) => c === "get").length, 1, "跳过时只读过一次配置，不该逐账号读");
+  assert.equal(kv.calls.filter((c) => c === "get").length, 2, "跳过时只该读一次配置 + 一次停用标记；多了就是在逐账号读");
 
   kv.store.set("v1:tool:demo", JSON.stringify({ portal: "cn", timeoutSec: "15" }));
   assert.equal(firstAccount(await tick(env, {}).run()).status, "claimed");
@@ -716,9 +724,9 @@ test("[P1-6] 首页子请求数与账号数无关", async () => {
   assert.equal(many.status, 200);
   // 真正的不变量是"成本不随账号数增长"，而不是某个魔法数字
   assert.equal(many.calls, one.calls, `41 账号花 ${many.calls} 次，1 账号花 ${one.calls} 次 —— 又变成线性了`);
-  // 界是每工具 3 次：列账号 1 + 读调度索引 1 + 日志归并各占 1 次 list（外加汇总键 1 次）。
+  // 界是每工具 3 次 + 汇总键 1 次 + 停用标记 1 次（FLAGS_FRAME）。
   // 写死数字会让"接第 3 家工具"变成一次假红，正如它曾经让"接第 3 家"没人注意到成本在长。
-  const bound = TOOLS.length * 3 + 1;
+  const bound = TOOLS.length * 3 + 1 + FLAGS_FRAME;
   assert.ok(one.calls <= bound, `首页成本 ${one.calls} 次，超过按工具数算的上界 ${bound}`);
   assert.ok(one.calls < 30, `首页 ${one.calls} 次必须远低于 50 硬顶，还要留给点开卡片的空间`);
   assert.ok(many.text.includes("0/41"), `卡片应显示今日完成进度 0/41，实际片段：${many.text.match(/今日完成[^<]*/)?.[0] ?? "未找到"}`);
@@ -1176,7 +1184,7 @@ test("[阶段3审核] 工具配置未完成时「执行」被拒绝，不拿残�
   assert.equal(view.status, "error");
   assert.match(view.message, /工具配置未完成/, "要如实说是被配置闸挡住的");
   assert.match(view.message, /接入点/, "要说出缺哪一项");
-  assert.ok(kv.count - callsBefore <= 1, `拒绝路径只该花一次读，实际 ${kv.count - callsBefore} 次`);
+  assert.ok(kv.count - callsBefore <= 1 + FLAGS_FRAME, `拒绝路径只该花一次读 + 一次停用标记，实际 ${kv.count - callsBefore} 次`);
   assert.ok(!kv.store.has("v1:step:demo:CFG1"), "被拒绝的执行不该留下进度");
   const page = await hit("/account/demo/CFG1/run", { method: "POST", body: form({ pwd: PASSWORD }), env: envFor(kv) });
   assert.ok(page.text.includes("工具配置未完成"), "页面上要看得出的原因");
@@ -1343,7 +1351,7 @@ test("[阶段3审核] 预约的上界不小于真实用量", async () => {
   const { budget } = await tickWith(kv, [leakyTool(okStep())]);
   // 账本靠 TOOL_FRAME / ACCOUNT_FRAME 预约来判"这一步装不装得下"。
   // 预约小于真实用量就等于给出一张比生产环境乐观的假票：第 51 次请求会把整轮炸掉。
-  const reserved = TOOL_FRAME + ACCOUNT_FRAME + ROUND_FRAME;
+  const reserved = TOOL_FRAME + ACCOUNT_FRAME + ROUND_FRAME + FLAGS_FRAME;
   assert.ok(budget.used <= reserved, `一轮一号真实用了 ${budget.used}，超过预约的 ${reserved}`);
   assert.equal(budget.over, 0, "一轮一号不该超支");
 });
@@ -2347,8 +2355,9 @@ test("[阶段4·workbuddy] 一轮装不下 7 步时整步顺延，下一轮接�
     "POST /v2/billing/meter/daily-checkin": { payload: { credit: 100 } },
   }));
   try {
-    // 18 = 够付每工具 3 + 账号闸（框架 6 + 收尾余量 5）+ 签到那一步的 4，但下一步就装不下了
-    const first = await wbTick(kv, cst(10), 18);
+    // 19 = 够付停用标记 1 + 每工具 3 + 账号闸（框架 6 + 收尾余量 5）+ 签到那一步的 4，
+    // 但下一步就装不下了。停用标记那 1 笔是阶段 5 加进来的：调这个数字前先确认它还在账上。
+    const first = await wbTick(kv, cst(10), 19);
     const view = wbView(first.summary);
     assert.equal(view.steps[0].status, "claimed");
     const deferred = view.steps.filter((s) => s.status === "deferred" || s.status === "skipped");
@@ -2674,4 +2683,245 @@ test("[审核P0-3] 成功路径（HTTP 200 + code:0）必须有断言：blindbox
     assert.equal(view.steps.filter((s) => s.status === "error").length, 0,
       view.steps.filter((s) => s.status === "error").map((s) => `${s.id}: ${s.message}`).join("；"));
   } finally { stub.restore(); }
+});
+
+// ═══════════ 阶段 5：工具停用开关（§6.1 的 5 条验收判据）═══════════
+//
+// 设计要点（照 §6.1 实现，不要凭直觉改）：
+//   · 单键 v1:flags 存全部工具，FLAGS_FRAME=1 在 runTick 开头读一次贯穿本轮
+//   · 判 off 的位置在 TOOL_FRAME 之前 —— 停用中的工具一笔 KV 都不花
+//   · 停用时绝不删 step / schedidx / acct / lock，重开即续跑
+//   · 隐藏「执行」不等于权限：runAccountNow 自己在打上游之前再判一次
+//   · 不做「全部停用」总开关（用户明确拒绝过）
+const offFlags = (kv, ids) => kv.store.set("v1:flags", JSON.stringify(Object.fromEntries(ids.map((id) => [id, { off: true, at: cst(12) }]))));
+const onFlags = (kv, ids) => kv.store.set("v1:flags", JSON.stringify(Object.fromEntries(ids.map((id) => [id, { off: false, at: cst(12) }]))));
+// 合成工具的凭据字段一律叫 seatId，所以给第 N 家 seeding 时键前缀也要跟着换。
+// 忘了这一步会得到一个"没有账号"的工具，于是"关掉 A 不影响 B"这种断言
+// 变成在验证 B 压根没被调度过 —— 假绿。
+const seedFor = (kv, toolId, uid) => {
+  seedConfig(kv);
+  kv.store.set(`v1:acct:${toolId}:${uid}`, JSON.stringify({
+    label: uid, cred: { seatId: uid, plan: "pro", session: SECRET_VALUE }, createdAt: 1, updatedAt: 1,
+  }));
+  kv.store.set(`v1:schedidx:${toolId}`, JSON.stringify({ day: null, entries: {} }));
+};
+
+test("[阶段5] 关掉一个工具：连跑 5 轮它一条记录都不留，且一个 KV 键都不碰", async () => {
+  const kv = fakeKv();
+  const qoder = { ...syntheticTool("qoder"), name: "Qoder" };
+  const trae = { ...syntheticTool("trae"), name: "Trae" };
+  seedFor(kv, "qoder", "SEATQ1");
+  seedFor(kv, "trae", "SEATT1");
+
+  // 基准：两家都开着时 qoder 那一轮真实的键轨迹长度（后面拿它对照"关掉之后 = 0"）
+  const base = fakeKv();
+  seedFor(base, "qoder", "SEATQ1");
+  seedFor(base, "trae", "SEATT1");
+  await tickWith(base, [qoder, trae], 45, cst(10));
+  const qoderKeysWhenOn = base.countKeys("v1:acct:qoder:") + base.countKeys("v1:tool:qoder") + base.countKeys("v1:schedidx:qoder")
+    + base.countKeys("v1:step:qoder:") + base.countKeys("v1:heartbeat:qoder") + base.countKeys("v1:run:qoder:");
+  assert.ok(qoderKeysWhenOn > 0, "基准无效：开着的时候本来就没碰 qoder 的键，这套断言测不出东西");
+
+  offFlags(kv, ["qoder"]);
+  for (let round = 0; round < 5; round += 1) {
+    const mark = kv.mark();
+    const { summary } = await tickWith(kv, [qoder, trae], 45, cst(10, round * 30));
+    const q = planOf(summary, "qoder");
+    assert.equal(q.skipped, "已停用", `第 ${round + 1} 轮：停用的工具不该进调度`);
+    assert.deepEqual(q.accounts, [], `第 ${round + 1} 轮：停用工具名下出现了账号`);
+    // 判据 1 的核心：关掉的那家一个 KV 键都不许碰 —— 读配置、列账号也都算。
+    // 只断言"没记日志"是不够的：日志只在真的有账号跑过时才写，
+    // 而"读了配置、列了账号、什么都没跑"正是开关插错位置时会露出的形态。
+    assert.equal(kv.countKeys("v1:tool:qoder", mark), 0, `第 ${round + 1} 轮：停用期间仍读了 qoder 的配置`);
+    assert.equal(kv.countKeys("v1:acct:qoder:", mark), 0, `第 ${round + 1} 轮：停用期间仍列了 qoder 的账号`);
+    assert.equal(kv.countKeys("v1:schedidx:qoder", mark), 0, `第 ${round + 1} 轮：停用期间仍读了 qoder 的调度索引`);
+    assert.equal(kv.countKeys("v1:heartbeat:qoder", mark), 0, `第 ${round + 1} 轮：停用期间仍写了 qoder 的心跳`);
+  }
+  assert.equal(logKeys(kv).filter((k) => k.includes("qoder")).length, 0, "/runs 里不该出现任何 qoder 新记录");
+  // 判据 5：关 A 不影响 B/C 的调度与计数
+  assert.ok(logKeys(kv).some((k) => k.includes("trae")), "关掉 A 不该让 B 也停下");
+  assert.ok(logKeys(kv).some((k) => k.startsWith("v1:tick:")), "本轮汇总仍要写，B 的结果在里面");
+});
+
+test("[阶段5] 停用期间删不得任何东西：重开后当天进度接着做，已完成的那步不重做", async () => {
+  // 判据 2。停用只是"不跑"，不是"忘掉"：删掉 step / schedidx 的话，
+  // 重开后就变成从零开始，WorkBuddy 那种 7 步的账号会重打一遍上游（其中 buddy/open 真扣额度）。
+  const kv = fakeKv();
+  seedAccount(kv, "SEATD1");
+  const runs = [];
+  const tool = (steps) => syntheticTool("demo", steps);
+  // 一步成功 + 一步极贵（装不下）→ 正好造出"做了一半"的形态
+  const steps = [
+    { id: "a", label: "甲", cost: 3, async run() { runs.push("a"); return { status: "claimed", message: "甲成了", credits: 1 }; } },
+    { id: "b", label: "乙", cost: 30, async run() { runs.push("b"); return { status: "claimed", message: "乙成了", credits: 1 }; } },
+    { id: "c", label: "丙", cost: 3, async run() { runs.push("c"); return { status: "claimed", message: "丙成了", credits: 1 }; } },
+  ];
+  // 先跑一轮：a 做成，b 装不下顺延
+  const first = await tickWith(kv, [tool(steps)], 22, cst(10));
+  assert.equal(first.summary.plan[0].accounts[0].steps[0].status, "claimed", "前置：这一轮该做成 a");
+  assert.equal(first.summary.plan[0].accounts[0].steps[1].status, "deferred", "前置：b 该装不下");
+  const done = Object.keys(JSON.parse(kv.store.get("v1:step:demo:SEATD1")).done);
+  assert.deepEqual(done, ["a"], "前置：进度键里只该有 a");
+
+  // 关掉，两小时后再打开（锁的 TTL 90s，靠虚拟时钟过期）
+  offFlags(kv, ["demo"]);
+  const mark = kv.mark();
+  const gap = await tickWith(kv, [tool(steps)], 45, cst(12));
+  assert.equal(gap.summary.plan[0].skipped, "已停用");
+  // 判据 2 的字面要求：这几类键一个都不许少
+  assert.ok(kv.store.has("v1:step:demo:SEATD1"), "停用把步骤进度删了：重开后要从零开始，7 步的账号会重打一遍上游");
+  assert.ok(kv.store.has("v1:acct:demo:SEATD1"), "停用把账号记录删了");
+  assert.ok(kv.store.has("v1:schedidx:demo"), "停用把调度索引删了：lastAt 归零会让所有账号挤成同一批");
+  assert.deepEqual(Object.keys(JSON.parse(kv.store.get("v1:step:demo:SEATD1")).done), ["a"],
+    "停用期间进度键被改动了：重开后会重做已完成的步骤");
+  assert.equal(kv.countKeys("v1:step:demo:", mark), 0, "停用期间碰了步骤进度键");
+  assert.equal(kv.countKeys("v1:acct:demo:", mark), 0, "停用期间碰了账号记录");
+  assert.equal(kv.countKeys("v1:schedidx:demo", mark), 0, "停用期间碰了调度索引");
+
+  // 重新打开 → 接着做，且 a 不重做
+  onFlags(kv, ["demo"]);
+  runs.length = 0;
+  const back = await tickWith(kv, [tool(steps)], 45, cst(12, 5));
+  const view = back.summary.plan[0].accounts[0];
+  assert.deepEqual(runs, ["b", "c"], `重开后该从 b 接着做，实际跑了 ${JSON.stringify(runs)} —— a 被重做了`);
+  assert.equal(view.steps[0].reused, true, "a 是复用，不该真的打上游");
+  assert.equal(view.status, "claimed", "三步做完就该是成功领取");
+});
+
+test("[阶段5] 停用跨过 resetHour 再打开：按新逻辑日照常从头跑", async () => {
+  // 判据 3。这是 loadProgress 的既有行为（跨 day 视为全未做），**不该**为开关特殊化。
+  // 写这条测试正是为了钉住它：哪天有人给开关加个"保留进度"逻辑，跨天那次的重跑就没了。
+  const kv = fakeKv();
+  seedAccount(kv, "SEATR1");
+  const ran = [];
+  const steps = [
+    { id: "a", label: "甲", cost: 3, async run() { ran.push("a"); return { status: "claimed", message: "甲", credits: 1 }; } },
+    { id: "b", label: "乙", cost: 30, async run() { ran.push("b"); return { status: "claimed", message: "乙", credits: 1 }; } },
+  ];
+  await tickWith(kv, [syntheticTool("demo", steps)], 22, cst(10));
+  assert.deepEqual(ran, ["a"], "前置：D 日只做成了 a");
+
+  offFlags(kv, ["demo"]);
+  // 停用期间跨过 10:00 的日界（cst(10,40) 是 D+1 日 10:40，不是当天 10:40 ——
+  // DAY 定在 D 日 00:00，加 10 小时 40 分仍在 D 日。这里必须真跨天，
+  // 否则验的是"同一天隔 40 分钟"，而那种情况本来就该复用进度）
+  await tickWith(kv, [syntheticTool("demo", steps)], 45, cst(34, 40));
+  onFlags(kv, ["demo"]);
+  ran.length = 0;
+  const next = await tickWith(kv, [syntheticTool("demo", steps)], 45, cst(35, 10));
+  // 新的一天预算充足，a 与 b 都会真跑。关键不是"只跑 a"，而是 **a 又跑了一次**：
+  // 昨天做过的步骤不会被当成已完成而跳过。
+  assert.ok(ran.includes("a"), `新逻辑日该从头跑（a 必须再做一次），实际 ${JSON.stringify(ran)}`);
+  assert.equal(!!next.summary.plan[0].accounts[0].steps[0].reused, false, "新的一天不该复用昨天的进度");
+  // 全部步骤结清后进度键会被 clearProgress 删掉（这是既有行为），所以"记在哪一天"
+  // 要看调度索引里的 lastStatusDate —— 它证明这一轮归属的是新逻辑日。
+  assert.equal(schedEntryOf(kv, "demo", "SEATR1").lastStatusDate, logicalDay(0, cst(35, 10)),
+    "这一轮该记在新逻辑日下，而不是把昨天的归属留着");
+  // attempts 是**当天**计数（跨日归零），所以新的一天从 1 重新开始 —— 这正是
+  // maxDaily 按天生效的实现方式。若哪天它变成累计值，maxDaily 就会跨日失效。
+  assert.equal(schedEntryOf(kv, "demo", "SEATR1").attempts, 1, "attempts 该按天归零，而不是累计");
+  assert.equal(schedEntryOf(kv, "demo", "SEATR1").attemptsDate, logicalDay(0, cst(35, 10)));
+});
+
+test("[阶段5] 停用中直接 POST 手动执行：被拒绝，且一个上游请求都不许发", async () => {
+  // 判据 4。界面上「执行」按钮已经隐藏了，但隐藏不等于权限 ——
+  // 直接敲 URL 不该绕过开关。断言必须落在 stub.seen 上：
+  // 只断言"页面返回了拒绝"的话，把 run() 换成"先发请求再拒绝"照样绿。
+  const kv = fakeKv();
+  seedAccount(kv, "SEATX1");
+  const stub = stubUpstream({ "POST /stub/claim": { payload: { ok: true } } });
+  const tool = {
+    ...syntheticTool("demo", [{ id: "claim", label: "领取", cost: 3, async run(ctx) {
+      await ctx.fetch("https://stub.example/stub/claim", { method: "POST", body: "{}" });
+      return { status: "claimed", message: "不该走到这里", credits: 1 };
+    } }]),
+    hosts: ["stub.example"],
+  };
+  try {
+    const toolId = tool.id;
+    kv.store.set("v1:tool:demo", JSON.stringify({ portal: "cn", timeoutSec: "15" }));
+    offFlags(kv, [toolId]);
+    const view = await runAccountNow({ env: envFor(kv), budget: makeBudget(45), tool, uid: "SEATX1", trigger: "manual", now: cst(10) });
+    assert.equal(view.status, "error", "停用中的工具不该被手动执行");
+    assert.match(view.message, /已停用/, `回执要说清为什么：${view.message}`);
+    assert.equal(stub.seen.length, 0, `被拒绝了却还是发了 ${stub.seen.length} 个上游请求：隐藏按钮不等于权限`);
+    // 走路由也一样拒
+    const page = await hit("/account/demo/SEATX1/run", { method: "POST", body: form({ pwd: PASSWORD }), env: envFor(kv) });
+    assert.match(page.text, /已停用/, "页面上要看得见拒绝的原因");
+    assert.equal(stub.seen.length, 0, "直接敲 URL 绕过了开关");
+
+    // 打开后同一条路由就该真跑 —— 证明刚才的拒绝不是"路由坏了"
+    onFlags(kv, [toolId]);
+    const allowed = await runAccountNow({ env: envFor(kv), budget: makeBudget(45), tool, uid: "SEATX1", trigger: "manual", now: cst(10) });
+    assert.equal(allowed.status, "claimed", "开关打开后手动执行该真的能跑：拒绝不是路由坏了");
+    assert.equal(stub.seen.length, 1);
+  } finally { stub.restore(); }
+});
+
+test("[阶段5] 界面：停用的卡片变暗 + 显示开关状态，停用中隐藏「执行」保留「测试」", async () => {
+  const kv = fakeKv();
+  const env = envFor(kv);
+  await createAccount(env, kv);
+  // 必须先造一个"需要处理"的账号，否则红条那一条根本无从验证：
+  // stuck 为 0 时红条两条分支都渲染成空，改代码它照样绿 —— 那是空断言。
+  kv.store.set("v1:schedidx:demo", JSON.stringify({
+    day: null, entries: { ABCD1234: { ...schedOf(), lastStatus: "login_required", lastStatusDate: logicalDay(0, cst(10)) } },
+  }));
+
+  const on = await authed("/", env);
+  assert.match(on.text, /1 个账号需要处理/, "前置：开着的时候红条该亮");
+
+  offFlags(kv, ["demo"]);
+  const home = await authed("/", env);
+  assert.match(home.text, /已停用/, "卡片上要看得见这个工具停着");
+  assert.match(home.text, /class="card dim"/, "停用的卡片要变暗（复用 .dim）");
+  // 停用中不亮红条，但"需要处理"的数字照常显示 —— 下线中的工具报错不是用户的待办，
+  // 而用户点进去仍要看得见停在哪、为什么停。
+  assert.doesNotMatch(home.text, /1 个账号需要处理/, "停用中不该亮红条");
+  assert.match(home.text, /1 个账号（停用中，恢复后仍要处理）/, "停用中仍要如实显示待处理数量");
+  // 进度与最后结果照常显示：用户要的是"我知道它不动，但我也知道它停在哪"
+  assert.match(home.text, /今日完成/, "停用中也要显示今日进度");
+  assert.ok(home.text.includes("/tool/demo/toggle"), "卡片上要有开关");
+
+  const page = await authed("/tool/demo", env);
+  assert.ok(!page.text.includes(">执行<"), `停用中不该显示「执行」：${page.text.match(/<button[^>]*>[^<]*/g)?.join(" | ")}`);
+  assert.ok(page.text.includes(">测试<"), "停用中要保留「测试」");
+  assert.match(page.text, /已停用/, "工具页要说明停用语义");
+  assert.doesNotMatch(page.text, /个账号需要你处理/, "停用中工具页也不该亮红条");
+  assert.match(page.text, /有 1 个账号处于失败或需重新登录状态/, "停用中要如实说明还有几个待处理");
+});
+
+test("[阶段5] 开关切换是 POST：成功回执跳回总览，不许 GET 改状态", async () => {
+  const kv = fakeKv();
+  const env = envFor(kv);
+  await createAccount(env, kv);
+  assert.equal((await authed("/tool/demo/toggle", env)).status, 404, "GET 不该改状态");
+
+  const off = await hit("/tool/demo/toggle", { method: "POST", body: form({ pwd: PASSWORD }), env });
+  assert.equal(off.status, 303);
+  assert.ok(off.headers.get("location").includes("/?"), `该跳回总览，实际 ${off.headers.get("location")}`);
+  assert.deepEqual(JSON.parse(kv.store.get("v1:flags")).demo.off, true);
+  const home = await hit(off.headers.get("location"), { env });
+  assert.match(home.text, /已停用/, "回执要说清楚");
+
+  const on = await hit("/tool/demo/toggle", { method: "POST", body: form({ pwd: PASSWORD }), env });
+  assert.equal(JSON.parse(kv.store.get("v1:flags")).demo.off, false);
+  const back = await hit(on.headers.get("location"), { env });
+  assert.match(back.text, /已恢复/, "恢复也要有回执");
+  assert.doesNotMatch(back.text, /class="card dim"/, "恢复后卡片不该还暗着");
+});
+
+test("[阶段5] 不做「全部停用」总开关：停用标记只影响该工具自己", async () => {
+  // 用户明确拒绝过"全部停用"。这条把它钉住：任何一个工具的 off 都不许波及其它工具。
+  const kv = fakeKv();
+  const tools = ["demo", "t2", "t3"].map((id) => syntheticTool(id));
+  tools.forEach((t, i) => seedFor(kv, t.id, `SEAT${i}1`));
+  offFlags(kv, ["t2"]);
+  const { summary } = await tickWith(kv, tools, 45, cst(10));
+  const skipped = summary.plan.filter((p) => p.skipped).map((p) => p.tool);
+  assert.deepEqual(skipped, ["t2"], `只有 t2 该被跳过，实际 ${JSON.stringify(skipped)}`);
+  assert.equal(planOf(summary, "demo").accounts.length, 1, "demo 该照常跑");
+  assert.equal(planOf(summary, "t3").accounts.length, 1, "t3 该照常跑");
+  // 存储形状：单键存全部工具，不是每工具一个键（那会让读一次变成 N 次 get）
+  assert.deepEqual(Object.keys(JSON.parse(kv.store.get("v1:flags"))), ["t2"]);
 });

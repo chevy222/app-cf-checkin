@@ -17,6 +17,9 @@ export const schedIdxKey = (tool) => `${SCHEMA}:schedidx:${tool}`;
 export const stepKey = (tool, uid) => `${SCHEMA}:step:${tool}:${uid}`;
 export const lockKey = (tool, uid) => `${SCHEMA}:lock:${tool}:${uid}`;
 export const heartbeatKey = (tool) => `${SCHEMA}:heartbeat:${tool}`;
+// 工具停用标记。**单键存全部工具**，不是每工具一个键：后者读一次要 N 次 get，
+// 而首页与每一轮都只需要"哪些工具停着"这一个事实
+export const flagsKey = () => `${SCHEMA}:flags`;
 
 export async function getJson(kv, key, fallback) {
   const raw = await kv.get(key);

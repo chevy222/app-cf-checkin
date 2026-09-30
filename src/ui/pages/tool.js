@@ -1,5 +1,6 @@
 import { escapeHtml, maskSecret } from "../../core/text.js";
 import { fmtCST } from "../../core/time.js";
+import { isOff } from "../../core/flags.js";
 import { TOOLS } from "../../tools/index.js";
 import { link, navHtml, pageShell } from "../layout.js";
 import { alertBox, badge, button, emptyState, sectionHead } from "../components.js";
@@ -52,16 +53,21 @@ function stepChips(tool, entry) {
   return `<span class="steps">${chips.join("")}</span><div class="note"><b>${done}/${codes.length}</b> 步已完成</div>`;
 }
 
-export function renderTool({ pwd, tool, accounts, total, sched = {}, flash }) {
+export function renderTool({ pwd, tool, accounts, total, sched = {}, flash, flags = {} }) {
   const addHref = link(`/account/new?tool=${tool.id}`, pwd);
   const configHref = link(`/tool/${tool.id}/settings`, pwd);
+  const off = isOff(flags, tool.id);
   // 红条只统计"自动重试治不好"的那几类：损坏的记录要删掉重建，凭据过期的要重新录入。
   // rate_limited / deferred / partial 会自己按退避阶梯恢复，把它们算进来红条就天天亮且无事可做。
-  const needsAttention = accounts.filter((a) => a.broken || ["login_required", "error"].includes((sched[a.uid] || {}).lastStatus));
+  // 停用时红条不亮 —— 下线中的工具报错不是用户的待办；但底部的说明里仍然如实写明有几个。
+  const stuckAll = accounts.filter((a) => a.broken || ["login_required", "error"].includes((sched[a.uid] || {}).lastStatus));
+  const needsAttention = off ? [] : stuckAll;
 
   const rows = accounts.map((account) => {
     const entry = sched[account.uid] || {};
     const base = `/account/${tool.id}/${encodeURIComponent(account.uid)}`;
+    // 停用时隐藏「执行」，保留「测试」「编辑」「删除」。用户明确决定：执行是打上游的动作，
+    // 测试只是看状态。服务端 runAccountNow 也会自己再判一次 —— 隐藏按钮不等于权限。
     return `<tr>
     <td><div class="acc"><span class="nm">${escapeHtml(account.label || "（未命名）")}</span><span class="nm mono">${escapeHtml(account.uid)}</span></div></td>
     <td>${account.broken ? badge("error", "记录损坏") : badge(entry.lastStatus || "skipped", entry.lastStatus ? undefined : "尚未运行")}</td>
@@ -69,7 +75,7 @@ export function renderTool({ pwd, tool, accounts, total, sched = {}, flash }) {
     <td>${nonSecretSummary(tool, account)}</td>
     <td class="mono dim">${escapeHtml(fmtCST(account.updatedAt))}</td>
     <td><div class="acts">
-      ${account.broken ? "" : actionForm(pwd, `${base}/run`, "执行", "pri")}
+      ${account.broken || off ? "" : actionForm(pwd, `${base}/run`, "执行", "pri")}
       ${account.broken || typeof tool.validate !== "function" ? "" : actionForm(pwd, `${base}/validate`, "测试")}
       ${account.broken ? "" : button(link(`${base}/edit`, pwd), "编辑", "", true)}
       ${deleteForm(pwd, link(`${base}/delete`, pwd))}
@@ -93,12 +99,13 @@ export function renderTool({ pwd, tool, accounts, total, sched = {}, flash }) {
     title: tool.name,
     nav: navHtml(pwd, `tool:${tool.id}`, TOOLS),
     body: `${flash ? alertBox(flash.kind, escapeHtml(flash.text)) : ""}
+      ${off ? alertBox("warn", `<b>${escapeHtml(tool.name)} 已停用。</b>不参与调度（cron 与手动执行都跳过），账号、凭据与当天进度全部原样保留；重新打开后从停下的那一步接着做。${stuckAll.length ? `当前有 ${stuckAll.length} 个账号处于失败或需重新登录状态，恢复后仍要处理。` : ""}`) : ""}
       ${needsAttention.length ? `<div class="card">${alertBox("bad", `<b>${needsAttention.length} 个账号需要你处理：</b>${escapeHtml(needsAttention.map((a) => a.label || a.uid).join("、"))} —— 自动重试治不好这一类，要么重新录入凭据，要么删掉重建。`)}</div>` : ""}
       ${sectionHead(tool.name, tool.summary || "", button(addHref, "+ 新增账号", "pri") + " " + button(configHref, "工具配置"))}
       ${table}
       ${hidden > 0 ? `<div style="margin-top:12px">${alertBox("warn", `共 ${total} 个账号，这里只列出前 ${accounts.length} 个。这一页要逐个读记录才能显示字段值，而一次调用只有 50 个子请求，所以列表是有上界的；要管更多请先把账号删到有意义的规模。`)}</div>` : ""}
       ${accounts.length ? `<div style="margin-top:12px">${button(addHref, "+ 新增账号")}</div>` : ""}
-      <p class="tiny" style="margin-top:12px">「执行」跳过到期判定的时间闸，立刻跑这一个账号（预算、并发锁、进度复用照旧，工具配置没填时会被拒绝）。
+      <p class="tiny" style="margin-top:12px">「执行」跳过到期判定的时间闸，立刻跑这一个账号（预算、并发锁、进度复用照旧，工具配置没填或工具已停用时会被拒绝）。
         注意它真的会再打一次上游：今天已经领过的账号被点「执行」，上游会收到第二次领取请求。步骤色块悬停可看每一步的处置。</p>`,
   });
 }
