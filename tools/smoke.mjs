@@ -533,6 +533,33 @@ test("已有锁的账号本轮跳过", async () => {
   assert.ok(result.message.includes("在途"));
 });
 
+test("锁的 TTL：同轮重复触发跳过，90 秒后自动失效可重跑", async () => {
+  // 锁靠 KV 的 expirationTtl 过期，不靠 runner 判断 —— 这个值没人守就会
+  // 在一次"顺手调大"里把账号永久卡死，或在"顺手调小"里失去互斥。
+  // 用单账号手动执行：它跳过调度闸但仍过锁，测的就是锁本身。
+  const kv = fakeKv();
+  seedAccount(kv, "LOCKTTL");
+  const t0 = cst(10);
+  const run = (now) => {
+    kv.advanceTo(now * 1000); // 虚拟时钟不推进，90 秒的锁永远不会过期
+    return runAccountNow({ env: envFor(kv), budget: makeBudget(45), tool: FIX, uid: "LOCKTTL", trigger: "manual", now });
+  };
+
+  // 第一轮：正常执行，留下锁
+  const r1 = await run(t0);
+  assert.equal(r1.status, "claimed");
+  assert.ok(kv.store.has("v1:lock:fix:LOCKTTL"), "第一轮应留下锁");
+
+  // 第二轮：10 秒后，锁还在 → 跳过（互斥生效）
+  const r2 = await run(t0 + 10);
+  assert.equal(r2.status, "skipped");
+  assert.ok(r2.message.includes("在途"));
+
+  // 第三轮：91 秒后，锁已过期 → 正常执行（账号没有被锁卡死）
+  const r3 = await run(t0 + 91);
+  assert.equal(r3.status, "claimed", "锁过期后应能重跑");
+});
+
 test("出口域名白名单：不在名单里的域名直接抛错", async () => {
   const budget = makeBudget(45);
   const fetchTracked = trackedFetch(budget, ["copilot.tencent.com"]);
