@@ -134,21 +134,43 @@ export default {
         // 领取成功但上游没回积分时，补读一次状态、用**前后差值**当本次到账。
         // 不能直接把补读到的数当积分：那是"当前余额"，报成"本次领到"会让日志里的
         // 成就每天都是同一个大数字，看一周就像领了几千。
-        let gained = outcome.credits;
+        //
+        // ⚠️ 但"算不出差值"**不等于**"本次到账 0"。有三种走法都会算不出，而它们都不是零：
+        //   ① 领取前 status 没给 credits（未签到时上游可能不返回这个字段）→ pre 是 NaN；
+        //   ② 上游入账是异步的，补读那一刻还没涨；
+        //   ③ status.credits 根本不是余额口径（那它前后相等，差值恒为 0）。
+        //   旧 Worker 对这三种的处置是"显示当前值，不报 +0"；本文件原先统一打印
+        //   `本次 +0` —— 等于拿一个假的测量值冒充"确实没领到"，而用户手里明明多了 150
+        //   积分。这比报错更难查：它看起来像"系统测过了，就是 0"。
+        //   所以这里：能算就算；算不出就如实说"上游未回"，并把补读到的当前值与领取前的
+        //   值一并报出来 —— 这一行本身就是下一次的排查证据（领取前显示"未给"= ①，
+        //   两次数字相同 = ②或③）。
+        let gained = outcome.credits || 0;
+        let current = null;   // 补读到的"当前签到积分"
+        let before = null;    // 领取前的签到积分；上游没给就是 null
         if (!gained && outcome.status === "claimed") {
           const after = await api.readStatus(ctx, token);
-          const pre = Number(status.credits);
-          const post = Number(after.credits);
-          if (!after.error && !after.authFailed && Number.isFinite(pre) && Number.isFinite(post)) {
-            gained = Math.max(0, post - pre);
+          if (!after.error && !after.authFailed) {
+            const pre = Number(status.credits);
+            const post = Number(after.credits);
+            if (Number.isFinite(post)) current = post;
+            if (Number.isFinite(pre)) before = pre;
+            if (Number.isFinite(pre) && Number.isFinite(post)) gained = Math.max(0, post - pre);
           }
         }
+        // 只有"这一轮真的领了"才谈本次到账。already / 带业务码的 error 挂一句「本次 +0」
+        // 是没有意义的噪音，还会让人以为系统测出了 0。
+        const credited = outcome.status !== "claimed" ? ""
+          : gained > 0 ? `，本次 +${gained}`
+            : current !== null
+              ? `，本次到账上游未回；当前签到积分 ${current}（领取前 ${before === null ? "未给" : before}）`
+              : "，本次到账上游未回（领取与状态接口都没给积分）";
 
         const usage = await api.readUsage(ctx, token);
         const tail = usage.error || usage.authFailed ? "（额度包读取失败）" : `，额度包剩余 ${usage.remaining}`;
         return {
           status: outcome.status,
-          message: `${outcome.message}，本次 +${gained}${tail}`,
+          message: `${outcome.message}${credited}${tail}`,
           credits: gained,
           cred,
         };
