@@ -212,18 +212,18 @@ export default {
         if (api.isAuthFail(listed)) return { status: "login_required", message: "任务列表被拒", credits: 0, cred: ctx.rotated };
         const tasks = api.dig(listed.payload, "tasks") || [];
 
-        // 状态机按 accept_status 分流，2026-10-01 在页面上实测过 18 个任务的真实取值：
+        // 状态机按 accept_status 分流，页面上实测过 18 个任务的真实取值：
         //   not_accepted 未接领 → accept
         //   in_progress / accepted  进行中或已接领但没做完 → 等，本轮什么都不做
         //   completed 已完成待领奖 → claim
         //   claimed 已领 → 跳过
-        // 旧实现只判 `!== "claimed"`，把 completed（已完成待领）当成"还没领"去发 accept，
+        // 不能只判 `!== "claimed"`：completed（已完成待领）会被当成"还没领"去发 accept，
         // 上游对已完成任务再接领一律 400 invalid request，任务奖励就永远卡在"完成但没领"。
         //
         // has_reward 仍要看：black_cat 这类任务是 in_progress 且 reward_credit=0，
         // 光看状态会把它算进来。
         //
-        // 时间窗与锁也要看（2026-10-01 实测：Buddy_App_QQ 到 10-10、Expert_lighthouse 到 11-13）：
+        // 时间窗与锁也要看（实测：Buddy_App_QQ 到 10-10、Expert_lighthouse 到 11-13）：
         // · locked=true 是"还没到上线时间"（链式任务每天零点解一环），打了也是白打；
         // · valid_end 已过期的任务不该再去 claim —— 那是我们不想做的上游交互，
         //   而且症状会是 400，用户看不出是"过期了"还是"任务坏了"。

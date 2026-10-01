@@ -188,7 +188,7 @@ table.t tr:last-child td{border-bottom:0}
   font-size:11.5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .tiny{color:var(--faint);font-size:11.5px}
 /* 一组小工具类：各页面反复内联的那几行样式收进来（CSP 已放行内联，纯为一致性）。
-   边距口径归一：上边距一律 .mt=12px（原先散着 10/14/16/18px），下边距用 .mb（10px）。
+   边距口径归一：上边距一律 .mt=12px，下边距用 .mb（10px）。
    恢复正常换行叫 .flow 而不是 .wrap —— .wrap 已是页面容器（max-width 那条），同名会互相误伤。 */
 .m0{margin:0}
 .mt{margin-top:12px}
@@ -202,7 +202,7 @@ th.r,td.r{text-align:right}
 .center{justify-content:center}
 .tc{text-align:center}
 .flow{white-space:normal}
-/* 管理页卡片头右侧的按钮组：margin-left:auto 顶到右边（代替原来的 .spacer） */
+/* 管理页卡片头右侧的按钮组：margin-left:auto 顶到右边 */
 .card .hd .acts{margin-left:auto;gap:8px}
 .login{max-width:330px;margin:48px auto;text-align:center}
 .login .lock{width:44px;height:44px;border-radius:12px;background:var(--panel3);color:var(--muted);

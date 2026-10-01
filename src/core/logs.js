@@ -77,8 +77,7 @@ const formsOf = (value) => {
 //                   pro / free / team / basic / trial / admin。
 //                   7 位往上（abcdefgh）就可能是密码了，重新变成要洗。
 // 短信验证码那种「短但含数字」的形态（WorkBuddy 是 5 位）必须照洗：
-// 它含数字，不命中第二条；长度够，也不命中第一条。这正是"按长度设门槛"会漏掉的那一类 ——
-// 早先的版本靠长度过滤，5 位码整个漏出去过。
+// 它含数字，不命中第二条；长度够，也不命中第一条。这正是"按长度设门槛"会漏掉的那一类。
 const isLowEntropy = (value) => value.length < 4 || (value.length <= 6 && /^[A-Za-z]+$/.test(value));
 
 export function scrubSecrets(text, secretValues) {
@@ -107,7 +106,7 @@ function metaOf(entry) {
     message: truncate(scrubSecrets(entry.message, secrets), META_MESSAGE_MAX),
     credits: entry.credits || 0,
     // 这两个数进 metadata（而不是等详情页再读正文）——列表页有这一列，
-    // 而列表页只读 metadata。2026-10-01 起账本分成两本，两个数各走各的额度。
+    // 而列表页只读 metadata。账本分成两本，两个数各走各的额度。
     http: entry.http || 0,
     kv: entry.kv || 0,
   };

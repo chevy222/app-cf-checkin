@@ -208,8 +208,8 @@ fixtureTest("总览渲染注册表里的工具", async () => {
   assert.ok(res.text.includes("夹具"));
 });
 
-// 工具卡片上原来有两行内部参数：「单账号约需」（子请求数 + 日界 + 开始时间）与
-// 「下一次预计执行」。这两项对使用者没有行动价值；而日界/开始时间是内核的调度参数，
+// 工具卡片不显示「单账号约需」（子请求数 + 日界 + 开始时间）与「下一次预计执行」：
+// 这两项对使用者没有行动价值；而日界/开始时间是内核的调度参数，
 // 摆在卡片上只会让人以为改了它就能改执行时间。
 fixtureTest("总览卡片：子请求数与下一次预计执行仍不显示，日界恢复成一行人话", async () => {
   const res = await authed("/", envFor(fakeKv()));
@@ -439,7 +439,7 @@ test("预算装不下的步骤单独顺延，不影响已完成的部分", async
   seedAccount(kv, "SEATA3");
   // 第一步 4 笔、第二步 20 笔。额度给 22：够付任一步单独的 cost（20 < 22），
   // 但付不起第二步（4 + 20 = 24 > 22）→ 第一步跑完、第二步整步顺延。
-  // 边界靠 httpStep 真发请求来造：账本只算外部 HTTP（2026-10-01 起），
+  // 边界靠 httpStep 真发请求来造：账本只算外部 HTTP，
   // 夹具 run() 里不调 ctx.fetch 就不再消耗额度，limit 给小也触发不了顺延。
   const tools = [httpTool([httpStep("claim", 4), httpStep("survey", 20)])];
   const stub = stubUpstream({ "GET /claim/0": { payload: { ok: true } } });
@@ -607,7 +607,7 @@ test("出口域名白名单：不在名单里的域名直接抛错", async () =>
   assert.equal(budget.used, 0, "被拦下的请求不该记账，它根本没发出去");
 });
 
-// 2026-10-01：账本分成两本（外部 HTTP / KV），官方给的是两个独立上限
+// 账本分成两本（外部 HTTP / KV），官方给的是两个独立上限
 // （50 外部子请求 + 1000 Cloudflare 内部服务）。所以这里分别对齐两个读数。
 test("一次调用两本账：KV 次数等于实际调用数，外部请求单独记", async () => {
   const kv = fakeKv(); const env = envFor(kv);
@@ -620,7 +620,6 @@ test("一次调用两本账：KV 次数等于实际调用数，外部请求单�
   assert.equal(budget.kv, kv.calls.length, "KV 账本与实际 KV 调用数必须一致");
   assert.ok(budget.kv > 0, "这轮确实该碰 KV");
   // 夹具工具 hosts 为空、不打上游，所以外部请求必须是 0 —— 而 KV 次数远大于它。
-  // 这正是"两个池子"的直接证据：旧口径下 used 会被 KV 抬到几十。
   assert.equal(budget.used, 0, "不联网的夹具不该产生任何外部请求");
 });
 
@@ -659,7 +658,7 @@ test("真·空转的轮次（一步都没跑成）不刷新 lastAt、不计入�
   const now = cst(10);
 
   // 额度只够第一步（cost 4）的一半 → 账号在进管线前就被拦掉。
-  // 旧口径下这里靠"KV 帧"构造边界，现在 KV 不占额度，所以只能用外部请求额度。
+  // KV 不占额度，这条边界只能用外部请求额度来造。
   const round1 = firstAccount(await tick(env, { now, limit: 2 }).run());
   assert.equal(round1.status, "deferred");
   const after = schedOf(schedEntry(kv, "SEATE1"));
@@ -752,7 +751,7 @@ test("多账号：预算耗尽时后面的账号顺延，不报错", async () =>
   seedAccount(kv, "SEATD1");
   seedAccount(kv, "SEATD2");
   seedAccount(kv, "SEATD3");
-  // 额度只够两个账号各 6 笔 → 第三个必须顺延。账本只算外部 HTTP（2026-10-01 起），
+  // 额度只够两个账号各 6 笔 → 第三个必须顺延。账本只算外部 HTTP，
   // 所以边界要靠 httpStep 真发请求来造，不能再靠 KV 写入把 used 抬起来。
   const tools = [httpTool([httpStep("claim", 6)])];
   const stub = stubUpstream({ "GET /claim/0": { payload: { ok: true } } });
@@ -890,8 +889,7 @@ fixtureTest("[P1-6] 首页子请求数与账号数无关", async () => {
   // 真正的不变量是"成本不随账号数增长"，而不是某个魔法数字
   assert.equal(many.calls, one.calls, `41 账号花 ${many.calls} 次，1 账号花 ${one.calls} 次 —— 又变成线性了`);
   // 上界 = 每工具 3 次（列账号 1 + 读调度索引 1 + 日志那页归并 1）+ 停用标记 1 次
-  // = TOOLS.length * 3 + 1。写死数字会让"接第 3 家工具"变成一次假红，
-  // 正如它曾经让"接第 3 家"没人注意到成本在长。
+  // = TOOLS.length * 3 + 1。写死数字会让"接第 3 家工具"变成一次假红。
   const bound = TOOLS.length * 3 + 2;   // +2：停用标记 1 + 首页预算读数 1
   assert.ok(one.calls <= bound, `首页成本 ${one.calls} 次，超过按工具数算的上界 ${bound}`);
   // 这些全是 KV 操作，各走 1000 那份额度；不再要求"远低于 50"。
@@ -901,11 +899,10 @@ fixtureTest("[P1-6] 首页子请求数与账号数无关", async () => {
 });
 
 fixtureTest("[P1-6] 调度索引读取也不随账号数增长", async () => {
-  // 2026-10-01：账本分成两本后要盯的是 **KV 次数**，而它分两部分：
+  // 账本分成两本后要盯的是 **KV 次数**，而它分两部分：
   //   · 枚举（列账号 + 读调度索引）= 每工具常数笔，**不随账号数变** ← 本条守这个
   //   · 每账号的固定开销（取锁、进度、凭据、收尾）= 随账号数线性增长，那是设计
-  // 所以不能断言总额不变（旧口径下总额被 45 卡住，碰巧过了），
-  // 要断言**每新增一个账号的边际成本是常数**，而不是随 N 变大。
+  // 所以不能断言总额不变，要断言**每新增一个账号的边际成本是常数**，而不是随 N 变大。
   const kvCostWith = async (n) => {
     const kv = fakeKv(); const env = envFor(kv);
     seedConfig(kv);
@@ -1000,7 +997,7 @@ test("[P0-1] 调度枚举与账号数无关：3 工具 × 16 账号不撞 50 硬
     }
   }
   const { budget, summary } = await tickWith(kv, tools);
-  // 2026-10-01：KV 不再占 50 那份额度，所以这里盯 KV 次数（它有 1000/天）
+  // 账本分两本：这里盯 KV 次数（它有 1000/天）
   // 与外部请求次数（夹具不联网，应为 0）两个读数，而不是混一个数字比 50。
   assert.ok(budget.kv < 1000, `真实 KV 操作 ${budget.kv} 次，超过 1000 的额度`);
   assert.equal(budget.used, 0, "夹具不联网，不该产生外部请求");
@@ -1042,8 +1039,8 @@ test("[P1-4] 步骤实际消耗超过 cost 会被显式记下，不静默吸收"
   const kv = fakeKv();
   seedAccount(kv, "SEATD8");
   // cost 2、实际发 3 次外部请求 → 超支 1，必须被记下来而不是静默吸收。
-  // 2026-10-01 起要拿 ctx.fetch 造超支：写 KV 不再计入 used（那是另一个池子），
-  // 用 ctx.kv.put 造出来的"超支"在新口径下根本不存在。
+  // 超支要拿 ctx.fetch 造：写 KV 不计入 used（那是另一个池子），
+  // 用 ctx.kv.put 造出来的"超支"根本不存在。
   const greedy = [{
     id: "greedy", label: "贪婪步骤", cost: 2,
     async run(ctx) {
@@ -1081,8 +1078,8 @@ test("[P1-4] 账本耗尽时 ctx.fetch 拒答，而不是让第 51 次请求炸�
   assert.equal(b2.fits(1), true, "KV 用量不该吃掉外部请求额度");
 });
 
-// 2026-10-01：账号级 KV 帧（取锁 2 + 进度 + 凭据 + 收尾）已从闸门里拿掉，
-// 所以「账号框架开销纳入预约」这个机制不存在了。留下的不变量是：
+// 账号级 KV 帧（取锁 2 + 进度 + 凭据 + 收尾）不参与闸门，「账号框架开销纳入预约」
+// 这个机制不存在。留下的不变量是：
 // **额度耗尽时后面的账号顺延，且账本不越限** —— 用真发外部请求的夹具来造边界。
 test("[P1-5] 额度耗尽时后面的账号顺延，账本不越限", async () => {
   const kv = fakeKv();
@@ -1199,12 +1196,11 @@ const okStep = (message = "ok", credits = 1) => [{
 }];
 const leakyTool = (steps) => ({ ...syntheticTool("fix", steps), creds: credsFull });
 
-// 2026-10-01 起账本分成两本：只有外部 HTTP 参与 fits() 闸门，KV 只计数。
-// 于是"预算耗尽"这个场景**只能靠真的发外部请求来造** —— 过去那些测试是靠
-// KV 写入把 used 抬起来才构造出边界的（夹具 hosts 为空、run() 里不调 fetch，
-// 旧口径下 used 却等于 KV 次数，于是 limit 给小一点就能触发顺延）。
+// 账本分成两本：只有外部 HTTP 参与 fits() 闸门，KV 只计数。
+// 于是"预算耗尽"这个场景**只能靠真的发外部请求来造**（夹具 run() 里不调
+// fetch 就永远构造不出边界）。
 //
-// 现在给夹具一个会真发请求的步骤：它打上游需要 hosts 放行，所以配套的测试
+// 给夹具一个会真发请求的步骤：它打上游需要 hosts 放行，所以配套的测试
 // 要用 stubUpstream 挂上路由，否则 trackedFetch 的白名单会先拒掉。
 const HOST_FIX = "fixture.example.com";
 // 真花 n 笔外部请求的步骤
@@ -1250,8 +1246,8 @@ test("[全空转的轮什么都不写", async () => {
 // 清空日志：范围只限被点的那一个工具，且不能靠 GET 触发
 // 用真实注册表里的 qoder —— 路由只认注册表，夹具的 "fix" 会被 404 挡掉
 
-// 窄屏适配。2026-10-01 用户拿 390px 宽的手机截图反馈：导航折成两行（「总览」被拆成
-// 「总/览」），表格 640px 撑破屏幕（时间/对象/结果三列全在屏外）。
+// 窄屏适配：390px 宽的手机上导航会折成两行（「总览」被拆成「总/览」）、
+// 表格 640px 撑破屏幕（时间/对象/结果三列全在屏外）。
 // 这条守住两件事：窄屏媒体查询存在，且表格每格都带 data-label（卡片式排版的字段名来源）。
 test("窄屏适配：导航不折行、表格卡片化所需的 data-label 齐全", async () => {
   const kv = fakeKv();
@@ -1401,11 +1397,11 @@ test("[详情页展示步骤与预算", async () => {
   assert.equal(res.status, 200);
   // 断言要盯住表格单元：.b-claimed 这类 CSS 名在每一页的 <style> 里都有，只 includes("claim") 会假通过
   assert.ok(res.text.includes(">claim</td>"), "应列出步骤");
-  // 2026-10-01：详情页把原来那一行「子请求」拆成两个读数 —— 外部请求与 KV 各走各的额度，
-  // 混在一起会让人以为 KV 也在那 50 里面。
+  // 详情页把「外部请求」与「KV」分成两个读数：各走各的额度，
+  // 混在一个「子请求」里会让人以为 KV 也在那 50 里面。
   assert.ok(res.text.includes("本账号外部请求"), "应显示这一条记录自己花掉的外部请求");
   assert.ok(res.text.includes("本次调用 KV"), "应单独显示 KV 次数");
-  // 旧标签不许留着：它只出现在"两者混算"的口径下
+  // 笼统的「子请求」标签不许留着：它对应两者混算的口径
   assert.ok(!/>子请求</.test(res.text), "不该再出现笼统的「子请求」标签");
 });
 
@@ -1691,7 +1687,7 @@ test("[索引写回只覆盖自己改过的那几位", async () => {
   stale.entries.PARA1 = { ...schedOf(stale.entries.PARA1), lastStatus: "claimed", lastStatusDate: logicalDay(0, cst(10)) };
   await commitSchedEntries(env, "fix", { PARA1: stale.entries.PARA1 });
   const entries = JSON.parse(kv.store.get("v1:schedidx:fix")).entries;
-  // 老写法是整份覆盖：A 那份 stale 快照一写，B 刚落的条目就没了
+  // 整份覆盖的话：A 那份 stale 快照一写，B 刚落的条目就没了
   assert.deepEqual(Object.keys(entries).sort(), ["PARA1", "PARA2"], "只提交自己那几位，别人的更新必须留着");
   assert.equal(entries.PARA2.lastStatus, "claimed");
 });
@@ -1705,11 +1701,9 @@ fixtureTest("[首页有最近运行流", async () => {
   assert.ok(home.text.includes("FEED1"));
 });
 
-// 2026-10-01 用户拿线上截图反馈：最近运行里 N 条记录首尾相连成一段文字。
-// 根因是 layout.js 的内联 CSS 里从来没有 .flowitem / .prog 这两条规则 ——
-// 它们只存在于当年的设计稿 ui-preview.html 里，没跟着搬进代码。
-// 后果比"不好看"严重：<a> 保持行内元素，多条记录连成一行；而 <i> 是空元素，
-// 没有显式宽高就是 0×0，卡片上的账号进度条会什么都不剩。
+// 总览的运行流与进度条必须有显式布局规则：否则 <a> 保持行内元素，
+// 多条记录连成一行；而 <i> 是空元素，没有显式宽高就是 0×0，
+// 卡片上的账号进度条会什么都不剩。
 test("总览的运行流与进度条有布局规则：<a> 必须显式 flex，色块必须显式宽高", async () => {
   const kv = fakeKv();
   seedFull(kv, "FLOW1");
@@ -1824,7 +1818,6 @@ test("[?tool= 筛选日志，且成本与日志总量无关", async () => {
   assert.ok(!(await authed("/runs?tool=nonexistent", env)).text.includes("FILT1"));
 
   // 工具段在键名里 ⇒ 筛一个几乎没记录的工具也只需一次 list。
-  // 老写法（时间段在前 + 扫全量过滤）在这里要翻 5 页且永远筛不到，历史越久越读不到。
   for (let i = 0; i < 4000; i += 1) {
     kv.store.set(`v1:run:other:${String(8209000000000 - i).padStart(13, "0")}:U${i}`, "{}");
   }
@@ -1852,8 +1845,7 @@ test("[归并后的日志列表按时间倒序，身份取自键名而不是 met
   assert.ok(Number.isFinite(recent[0].at));
 });
 
-// 2026-10-01：KV 帧常量（TOOL_FRAME / ACCOUNT_FRAME / FLAGS_FRAME）已删 —— 它们是
-// 纯 KV 笔数，不该占外部请求的额度。这条守的是剩下那个真正的不变量：
+// KV 帧是纯 KV 笔数，不占外部请求的额度。这条守的是真正的不变量：
 // **一轮跑完（含全部收尾写入）外部请求仍未越限**，且没有超支。
 test("[预约的上界不小于真实用量", async () => {
   const kv = fakeKv();
@@ -2103,7 +2095,7 @@ test("[qoder] 续期也救不回来才是 login_required，且不再发 claim", 
 test("[qoder] 403 不再被当成「这个端点不对」吞掉", async () => {
   const kv = fakeKv();
   seedQoder(kv);
-  // 旧实现把 401/403/404 都当作"换下一个 base 重试"，单 host 下就变成没有出口的循环，
+  // 401/403/404 不能都当作"换下一个 base 重试"：单 host 下那是没有出口的循环，
   // 最后报成一条看不出所以然的错误
   const stub = stubUpstream({ "GET /sash/api/v1/me/campaigns": { status: 404, body: "not found" } });
   try {
@@ -2167,8 +2159,8 @@ test("[qoder] 解不出 sub 就拒存，且绝不退化成用 refresh_token 派�
   assert.match(res.text, /账号标识/);
   assert.deepEqual([...kv.store.keys()].filter((k) => k.startsWith("v1:acct:")), [], "存了账号就等于允许多个键指向同一个人");
   // 新版客户端把 access token 换成了设备令牌（不透明串），解不出 sub 时要求手填代号；
-  // 但绝不退化成用 refresh_token 派生 —— 旧实现这么干，refresh_token 一轮换个 uid，
-  // 旧记录（连同调度状态与日志）在 KV 里成孤儿
+  // 但绝不退化成用 refresh_token 派生 —— 那样 refresh_token 一轮换个 uid，
+  // 旧记录（连同调度状态与日志）会在 KV 里成孤儿
 });
 
 test("[qoder] 设备令牌形态：手填的固定代号当账号标识，JWT 形态照旧解 sub", async () => {
@@ -2207,11 +2199,10 @@ test("[qoder] 把另一个号的票据粘进已有账号会被拒", async () => 
   assert.equal(JSON.parse(kv.store.get(`v1:acct:qoder:${uid}`)).cred.accessToken.split(".")[1], mkJwt({ sub: uid, exp: cst(30) }).split(".")[1], "凭据不该被改掉");
 });
 
-// 2026-10-01 用户拿工具页截图反馈「令牌到期时间」永远是「（尚未取得）」。
-// 查下来是真的拿不到：dt-- 形态的设备令牌解不出 exp，而原脚本那种「+14 天」兜底
-// 是猜的日期。Qoder 的续期又完全由上游 401 触发（api.js 的 authorized 里没有
-// ensureToken），所以本地到期时间没有任何决策价值 —— 摆一个永远空着的只读字段
-// 只会让人以为哪里坏了。字段整个删掉，而不是留个空的。
+// 「令牌到期时间」字段整个删掉：dt-- 形态的设备令牌解不出 exp，「+14 天」那种兜底
+// 是猜的日期；Qoder 的续期又完全由上游 401 触发（api.js 的 authorized 里没有
+// ensureToken），本地到期时间没有任何决策价值 —— 摆一个永远空着的只读字段
+// 只会让人以为哪里坏了。拿不到真值就不摆字段。
 test("[qoder] 不声明 expiresAt：拿不到真值就不摆字段，而表单也不收它", async () => {
   const tool = findTool("qoder");
   assert.ok(!tool.creds.some((f) => f.key === "expiresAt"), "Qoder 不该声明 expiresAt");
@@ -2258,14 +2249,14 @@ test("[qoder] 一轮一号的真实用量不超过预约（步骤 cost 是纯 HT
   });
   try {
     // steps[].cost 是这一步的**外部请求**上界（读列表 1 + 领 3 + 最坏情况的换票重读 2），
-    // 2026-10-01 起账本只数外部请求，所以真实用量就该落在这个上界之内 ——
+    // 账本只数外部请求，所以真实用量就该落在这个上界之内 ——
     // 越界说明 cost 估低了，而估低会让 fits() 给出一张乐观的假票。
     const stepCost = findTool("qoder").steps[0].cost;
     const { budget } = await qoderTick(kv);
     assert.ok(budget.used <= stepCost, `真实 ${budget.used} 超过步骤 cost 上界 ${stepCost}`);
     assert.equal(budget.over, 0);
     // 顺带确认账本没把 KV 混进来：这个夹具一轮要碰十几次 KV，
-    // 若旧口径还在跑，used 会是 KV+HTTP 的和、远超 stepCost。
+    // 若混算，used 会是 KV+HTTP 的和、远超 stepCost。
     assert.ok(budget.kv > 0, "这轮确实碰了 KV");
   } finally { stub.restore(); }
 });
@@ -2374,7 +2365,7 @@ test("[schedule] resetHour 填错的后果：日界决定「今天已领」的�
 //
 // Trae 的方言比 Qoder 更刁：两家域名、两套鉴权头、业务码藏在中文 message 里、
 // 空 body 的 200 既可能是"已签到"也可能是"响应结构异常"。
-// 旧代码在注释里记着三条踩过的坑，这里逐条钉成断言。
+// 三条踩过的坑逐条钉成断言。
 
 const TRAE_OAUTH = "api.trae.com.cn";
 const TRAE_CLAIM = "api.trae.cn";
@@ -2425,8 +2416,8 @@ test("[trae] HTTP 200 + 空 body 不能被判成签到成功", async () => {
   seedTrae(kv);
   const stub = stubUpstream({
     "POST /trae/api/v2/ug/checkin_credits/status": { payload: {} },
-    // 空 body：code 缺失。旧写法 `code || 0` 会把它当成 code=0 = 成功，
-    // 于是当天上闩、退避暂停还被顺手清空
+    // 空 body：code 缺失，不能拿 `code || 0` 兜成 code=0（成功），
+    // 否则当天上闩、退避暂停还被顺手清空
     "POST /trae/api/v2/ug/checkin_credits/claim": { body: "", status: 200 },
     "POST /trae/api/v2/pay/ide_user_ent_usage": { payload: { user_entitlement_pack_list: [] } },
   });
@@ -2439,7 +2430,7 @@ test("[trae] HTTP 200 + 空 body 不能被判成签到成功", async () => {
 });
 
 test("[trae] 「请求已过期」「账号已在其他设备登录」不许被当成今日已签", async () => {
-  // 旧实现用裸 msg.includes("已") 判"已签到"，把这两种完全不同的故障都报成成功
+  // 不能用裸 msg.includes("已") 判"已签到"：这两种完全不同的故障都会被报成成功
   for (const msg of ["请求已过期", "账号已在其他设备登录"]) {
     const kv = fakeKv();
     seedTrae(kv);
@@ -2587,9 +2578,8 @@ test("[trae] 点「测试」把票续了也要写回，否则一点测试就烧�
   try {
     const res = await hit("/account/trae/991004/validate", { method: "POST", body: form({ pwd: PASSWORD }), env: envFor(kv) });
     assert.equal(res.status, 200);
-    // 这条曾经"绿着漏掉"了一个 ReferenceError：换票成功 → 兜底把新串写回 → 页面照样出现
-    // 「已换新凭据」，于是断言被那句副产物满足了，崩溃本身被当成成功。
-    // 必须正面断言这次测试真的读到了状态。
+    // 断言必须正面命中「登录态有效」本身：兜底把新串写回后页面照样出现
+    // 「已换新凭据」，只看那句副产物的话，崩溃本身会被当成成功。
     assert.match(res.text, /登录态有效/, `validate 没跑通：${res.text.slice(0, 300)}`);
     assert.doesNotMatch(res.text, /is not defined|ReferenceError/, "界面不该把崩溃当成结果");
     assert.equal(JSON.parse(kv.store.get("v1:acct:trae:991004")).cred.refreshToken, "rt-from-validate",
@@ -2626,8 +2616,8 @@ test("[trae] uid 来自 GetUserInfo；取不到就拒存并说清原因", async 
 });
 
 test("[trae] Aha 设备号在录入时就要求 8–16 位数字", async () => {
-  // 旧实现运行时才校验 \d{8,16}，8 位值静默通过后每天撞 9074：
-  // 一个立刻能说明白的错被变成了每周都难查一次的怪病。
+  // 设备号校验必须发生在录入时：8 位值若静默放过去，会每天撞 9074 ——
+  // 一个立刻能说明白的错被变成每周都难查一次的怪病。
   // 但也不能反过来收紧到 16 位 —— 手上现成的 8–15 位账号会被挡在录入之外，
   // 症状只是表单红字，与上游毫无关系，容易被误判成"平台坏了"。
   const kv = fakeKv();
@@ -2676,7 +2666,7 @@ test("[trae] 域名白名单：两家自家放行，别的一律拒", async () =
 
 // ═══════════ WorkBuddy ═══════════
 //
-// 这一家的测试重点不是"能不能跑通"，而是三件旧代码吃过账的事：
+// 这一家的测试重点不是"能不能跑通"，而是三件踩过坑的事：
 // 登录失效不能被读成"今天已签过"、幂等键必须可重放、一轮做不完时必须整步顺延。
 
 const WB_HOST = "copilot.tencent.com";
@@ -2718,7 +2708,7 @@ const wbIdleRoutes = (over = {}) => ({
 
 test("[workbuddy] 401 必须排在「空 body 算已领」前面", async () => {
   // 上游把 daily-checkin 设计成"空 body = 今天已领"。于是登录失效返回的 401 + 空 body
-  // 会被同一条判据读成"今天签过了"并返回成功 —— 旧代码注释里专门记了这一条
+  // 会被同一条判据读成"今天签过了"并返回成功
   const kv = fakeKv();
   const uid = seedWorkbuddy(kv);
   const stub = stubUpstream({ "POST /v2/billing/meter/checkin-activity-status": { status: 401, body: "" } });
@@ -2785,7 +2775,7 @@ test("[workbuddy] 幂等键按 (账号, 逻辑日, 序号) 派生：同轮内不
 });
 
 test("[workbuddy] 到站礼物没领到就不派新行程", async () => {
-  // 旧实现改成 idle 就派下一趟，那一趟的礼物会盖掉这次没领到的，等于白丢
+  // 没领到就把行程改回 idle 的话，下一趟的礼物会盖掉这次没领到的，等于白丢
   const kv = fakeKv();
   seedWorkbuddy(kv);
   const stub = stubUpstream(wbIdleRoutes({
@@ -2801,9 +2791,9 @@ test("[workbuddy] 到站礼物没领到就不派新行程", async () => {
   } finally { stub.restore(); }
 });
 
-// 2026-10-01 页面实测：accept_status 的合法值是 not_accepted / in_progress /
+// 页面实测：accept_status 的合法值是 not_accepted / in_progress /
 // accepted（已接领未完成）/ completed（完成待领）/ claimed（已领）。
-// 旧实现按 progress.current >= target 猜完成度，把 completed 判成"还没领"去发 accept，
+// 不能按 progress.current >= target 猜完成度：completed 会被判成"还没领"去发 accept，
 // 上游对已完成任务再接领一律 400 invalid request。
 test("[workbuddy] 任务按 accept_status 分流：completed 才领，accepted/in_progress 不动", async () => {
   const kv = fakeKv();
@@ -2856,7 +2846,7 @@ test("[workbuddy] already_claimed 的任务不算领到：上游说不发奖就�
   } finally { stub.restore(); }
 });
 
-// 2026-10-01 页面实测： Buddy_App_QQ 的 valid_end 是 2026-10-10、Expert_lighthouse 是 11-13。
+// 页面实测： Buddy_App_QQ 的 valid_end 是 2026-10-10、Expert_lighthouse 是 11-13。
 // 过期还去 claim 的症状是 400，而用户从界面上看不出"过期"与"任务坏了"的区别。
 test("[workbuddy] 过期与未上线的任务不领：打上游的只有还在窗口内的", async () => {
   const kv = fakeKv();
@@ -3075,8 +3065,8 @@ test("[workbuddy] 连签兑换：409/403 是正常无事，天数不够报正常
 });
 
 test("[workbuddy] 积分挂在 6 个位置都要能取到：上游换版本就静默报 +0", async () => {
-  // 旧实现逐个探测（worker.js:660 的 firstNum，注释写着「不同接口版本把积分挂在不同字段上」）。
-  // 收窄成单路径的后果不是报错 —— 能量真扣了、状态是 claimed、界面显示成功，只有积分数对不上。
+  // 积分字段必须全位置探测：只认单一路径的话，后果不是报错 ——
+  // 能量真扣了、状态是 claimed、界面显示成功，只有积分数对不上。
   const cases = [
     [{ code: 0, credit_amount: 7, results: [{ instance: { credit: 5 }, template: { credit: 3 } }] }, 7, "data 层 credit_amount"],
     [{ code: 0, credit_granted: 7, results: [{ instance: { credit: 5 } }] }, 7, "data 层 credit_granted"],
@@ -3128,9 +3118,8 @@ test("[workbuddy] 抽奖/兑换给 0 的那层要跳过，不能被 ?? 短路吃
 });
 
 test("[workbuddy] 顶层字段是 null 时要能穿透到包装层取到真值", async () => {
-  // 旧实现（worker.js:480）在命中即返回前明确跳过 null/undefined。
-  // 少了这个判断：{state:null, data:{state:"arrived"}} 读出 null，
-  // travel 于是走不进"到站领奖"分支，一次能白拿的到站礼物无声过期，
+  // dig 命中 null/undefined 时必须穿透到包装层：{state:null, data:{state:"arrived"}}
+  // 若读出 null，travel 走不进"到站领奖"分支，一次能白拿的到站礼物无声过期，
   // 而界面上看不出任何异常 —— 这正是最难发现的一类偏差。
   assert.equal(wbApi.dig({ state: null, data: { state: "arrived" } }, "state"), "arrived");
   assert.equal(wbApi.dig({ active: null, data: { active: true } }, "active"), true);
@@ -3196,10 +3185,9 @@ test("[workbuddy] 一轮装不下 7 步时整步顺延，下一轮接着做而�
     "POST /v2/billing/meter/daily-checkin": { payload: { credit: 100 } },
   }));
   try {
-    // 2026-10-01：账本只数外部请求（KV 走自己的 1000 额度，不再占这个池子）。
+    // 账本只数外部请求（KV 走自己的 1000 额度，不占这个池子）。
     // 额度给 4：够付签到那一步（cost 4，实际花 2 次请求：读状态 + 领取），
     // 但付不起 travel（cost 4，2+4=6 > 4）→ 后 6 步整步顺延。
-    // 19 那个数字原来含 6 笔账号 KV 帧与 7 笔收尾预留 —— 那些都不再占额度了。
     const first = await wbTick(kv, cst(10), 4);
     const view = wbView(first.summary);
     assert.equal(view.steps[0].status, "claimed");
@@ -3262,7 +3250,7 @@ test("[workbuddy] 出口只有 copilot.tencent.com，包装格式的票据也能
 });
 
 test("[workbuddy] 建号走真实入口：明文票据与包装票据都要解出 uid", async () => {
-  // 之前这类 bug 全在"直接塞 KV"的测试里溜过去了：uidOf 是每家建号都要过的一道门，
+  // "直接塞 KV"的测试测不到 uidOf：它是每家建号都要过的一道门，
   // 只有走 HTTP 建号才测得到它。
   const kv = fakeKv();
   const env = envFor(kv);
@@ -3431,7 +3419,7 @@ test("[审核P0-2b] 收尾写入不许把 used 顶过自限上限（预约不占
       const { budget } = await wbTick(kv, cst(8) + i * 1800);
       assert.equal(budget.over, 0, `t${i}：used=${budget.used} 越过了自限 ${budget.limit}`);
       assert.ok(budget.used <= budget.limit, `t${i}：used=${budget.used}`);
-      // 账本必须与真实发生的一致 —— 但 2026-10-01 起是两个池子，要分别对齐：
+      // 账本必须与真实发生的一致 —— 账本分成两本，要分别对齐：
       // used 只数外部 fetch（会撞平台 50 硬顶、抛异常作废整轮），kv 只数 KV 操作
       // （各有 1000 额度，撞了只是那一次失败）。把两者相加去比 used 会差 KV 那一半。
       const net = stub.seen.length - netBefore;
@@ -3473,13 +3461,11 @@ test("[审核P0-2b] 收尾写入不许把 used 顶过自限上限（预约不占
 });
 
 
-// 2026-10-01 重写。原先这条守的是 TAIL_RESERVE：「一步做完之后的 7 笔收尾写入
-// 没被预约住，于是账本越过自限、整次调用抛异常」。
-// 那 7 笔全是 KV（凭据写回 2、进度 1、运行日志 1、索引写回 2、心跳 1），
-// 而 KV 走独立的 1000 额度、撞了只会是那一次调用失败（safe() 吞掉），不会作废整轮。
-// 所以那个预留机制已删除（见 runner.js 的说明）。
+// 收尾写入（凭据写回、进度、运行日志、索引写回、心跳）全是 KV，走独立的 1000 额度、
+// 撞了只会是那一次调用失败（safe() 吞掉），不会作废整轮 —— 所以没有预留机制
+// （见 runner.js 的说明）。
 //
-// 留下来的不变量是它想守的那件事本身：**一轮跑完，外部请求仍未越限** ——
+// 这条守的不变量：**一轮跑完，外部请求仍未越限** ——
 // 包括所有收尾动作在内。这是"不会撞平台 50 硬顶"的直接断言，比钉死某个预留数字有用。
 test("[审核P0-2c] 一轮跑完（含收尾）外部请求仍未越限", async () => {
   const kv = fakeKv();
@@ -3554,8 +3540,8 @@ test("[审核P0-3] 成功路径（HTTP 200 + code:0）必须有断言：blindbox
 // ═══════════ 工具停用开关 ═══════════
 //
 // 设计要点（照 §6.1 实现，不要凭直觉改）：
-//   · 单键 v1:flags 存全部工具，FLAGS_FRAME=1 在 runTick 开头读一次贯穿本轮
-//   · 判 off 的位置在 TOOL_FRAME 之前 —— 停用中的工具一笔 KV 都不花
+//   · 单键 v1:flags 存全部工具，在 runTick 开头读一次贯穿本轮
+//   · 判 off 放在读配置 / 列账号之前 —— 停用中的工具一笔 KV 都不花
 //   · 停用时绝不删 step / schedidx / acct / lock，重开即续跑
 //   · 隐藏「执行」不等于权限：runAccountNow 自己在打上游之前再判一次
 //   · 不做「全部停用」总开关（用户明确拒绝过）
@@ -3935,9 +3921,8 @@ test("[图标内联在 data URI 里，且必须是 PNG", async () => {
   assert.ok(page.text.includes('class="ico"'), "工具页该带图标");
 });
 
-// 2026-10-01 用户拿说明页截图反馈：工具名（Qoder / Trae / WorkBuddy）压在图标下面。
-// 根因是 .kv .k 不是 flex 容器，而 .ico 是 display:block（那样它不占基线下的空隙），
-// 于是图标成块级元素竖在文字上方。设计稿 ui-preview.html 里那一行本来就是横向的。
+// 说明页工具清单里图标要与名字同行：.kv .k 必须是 flex 容器，
+// 否则 .ico（display:block，那样它不占基线下的空隙）会成块级元素竖在文字上方。
 test("说明页工具清单里图标排在名字左边（.kv .k 带图标时显式 flex）", async () => {
   const env = envFor(fakeKv());
   const page = await authed("/help", env);
@@ -4055,10 +4040,9 @@ test("[教程里 PowerShell 脚本能真的抳出对应的凭据字段", async (
   }
 });
 
-// 2026-10-01 用户指出：WorkBuddy 教程里写「桌面端把凭据文件加密了，改用短信登录」，
-// 而短信接口跟任何本机文件都没有因果关系 —— 那句是抄错的。
-// 真实情况是两条独立的取法：旧桌面端（.info 未加密）可以直接从文件里取到两个令牌，
-// 新桌面端才必须走短信。这条守住两件事：旧版路径真的写在教程里，且不再拿别的工具的
+// WorkBuddy 教程写的是两条独立的取法：旧桌面端（.info 未加密）可以直接从文件里
+// 取到两个令牌，新桌面端才必须走短信 —— 短信接口跟任何本机文件都没有因果关系，
+// 不能混在一句话里说。这条守住两件事：旧版路径真的写在教程里，且不再拿别的工具的
 // 文件名来解释（Qoder 那份 auth.v1.dat 与 WorkBuddy 毫无关系，提它只会让人串台）。
 test("[WorkBuddy] 教程有旧版 .info 取法，且不拿 Qoder 的文件名来解释", async () => {
   const t = TUTORIALS.workbuddy;

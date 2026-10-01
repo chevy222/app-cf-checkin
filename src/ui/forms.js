@@ -69,7 +69,6 @@ export function renderForm(fields, { values = {}, existing = {}, action, errors 
 
   return `<form method="post" action="${escapeHtml(action)}" accept-charset="utf-8">
     ${hidden}${body}
-    <!-- 按钮组交给 .acts（右对齐、可换行）+ .mt：原先的内联 18px 上边距与全站 12px 不一致 -->
     <div class="acts mt">
       ${cancel}<button class="btn pri" type="submit">${escapeHtml(submitLabel)}</button>
     </div>

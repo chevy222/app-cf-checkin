@@ -29,10 +29,8 @@ export function renderRuns({ pwd, tools, entries, active = {}, flash }) {
     const who = entry.kind === "tick"
       ? '<span class="mono dim">整轮调度</span>'
       : `<span>${escapeHtml(entry.tool)}/${escapeHtml(meta.label || entry.uid)}</span>`;
-    // 「请求」列：这一条记录自己花了多少外部请求 + 多少次 KV（2026-10-01 起两者
-    // 各走各的额度，所以并排列出）。旧实现读 meta.used 并要求 kind === "tick"，
-    // 而整轮汇总日志早已停写、meta 里也没有 used —— 那个条件永远不成立，
-    // 于是这一列一直是空的。现在直接读 metadata 里的账号级读数。
+    // 「请求」列：直接读 metadata 里的账号级读数 —— 这一条记录自己花了多少
+    // 外部请求 + 多少次 KV（两者各走各的额度，所以并排列出）。
     const usage = meta.http !== undefined || meta.kv !== undefined
       ? `<span class="num dim" title="外部请求 / KV 操作">${meta.http || 0} / ${meta.kv || 0}</span>`
       : "";

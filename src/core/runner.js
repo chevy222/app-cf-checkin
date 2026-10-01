@@ -22,16 +22,10 @@ const PENDING_RETRY_SEC = 3600;
 // 而把它当 already 会让当天再也不重试 —— 两个方向都不对，只有"可接续"是对的。
 const CONTINUABLE = new Set(["deferred", "skipped", "pending"]);
 
-// 曾经这里有四个常量：TOOL_FRAME / ACCOUNT_FRAME / FLAGS_FRAME（每轮固定 KV 开销的
-// 逐笔计数）与 TAIL_RESERVE（收尾写入的预留量）。2026-10-01 全部删掉了 ——
-// 它们只被用来加进 fits()，而 KV 不该占外部请求的额度（见 budget.js 文件头）。
-//
-// TAIL_RESERVE 的消失理由值得留在这里，它是"预留量"这种设计最容易出错的地方：
-// 它原本是 7 笔**收尾 KV 写入**（凭据轮换写回 2、进度 1、运行日志 1、调度索引 2、心跳 1），
-// 被算进 HTTP 额度里预留。曾经的担心是"不预留，收尾就无处可付、越过自限撞平台硬顶"。
-// 但那 7 笔全是 KV，各走 1000 那份额度；而 KV 撞顶的表现是**那一次 KV 调用失败**
-// （日志里的 safe()/catch 会吞掉），不是整次调用抛异常把整轮作废。
-// 真正会抛异常作废整轮的只有外部 fetch，而 fetch 全部发生在步骤内部、由 step.cost 预约。
+// 这里不设任何"每轮固定开销"的预留量：KV 不占外部请求额度（见 budget.js 文件头），
+// 而"预留"最容易出错 —— KV 撞顶的表现只是那一次 KV 调用失败（safe()/catch 会吞掉），
+// 不会作废整轮；真正会抛异常作废整轮的只有外部 fetch，而 fetch 全部发生在步骤
+// 内部、由 step.cost 预约。
 //
 // 需要知道某轮碰了多少次 KV 时直接读 budget.kv，不必再维护一份"理论值"。
 
@@ -82,8 +76,8 @@ async function runOneAccount({ env, budget, tool, uid, config, day, now, trigger
   const kv = requireKv(env);
   const bare = (status, message) => ({ uid, status, message, steps: [], sched: null });
 
-  // 锁、进度、凭据三次读放在同一个 try 里：KV 真不可用时只跳过这个账号。
-  // 旧写法只在取锁处 catch，而紧随其后的进度读会以同样方式再抛，既没降级成功还把整轮炸掉。
+  // 锁、进度、凭据三次读放在同一个 try 里：KV 真不可用时只跳过这个账号 ——
+  // 只包住取锁一处，紧随其后的进度读会以同样方式再抛，整轮照样炸。
   let account;
   let progress;
   try {
@@ -233,7 +227,7 @@ async function runOneAccount({ env, budget, tool, uid, config, day, now, trigger
     // 积分只算本轮真做的那些步：复用来的积分再报一次，日志里就是凭空翻倍
     credits: results.reduce((sum, r) => sum + (r.reused ? 0 : (r.credits || 0)), 0),
     steps: results.map((r) => ({ id: r.id, status: r.status, message: r.message, reused: !!r.reused, over: r.over || 0, unreachable: !!r.unreachable })),
-    // 本账号这一轮真实花掉的外部请求数（2026-10-01 起账本分成两本，KV 不计入）。
+    // 本账号这一轮真实花掉的外部请求数（账本分成两本，KV 不计入）。
     // 取的是差值而不是 budget.used —— 后者是整轮累计，混进单条日志就成了
     // "这账号花了整轮那么多请求"，越到后面的账号数字越离谱。
     // 同时带上 KV 次数，两个数各走各的额度，界面上要分别显示。
@@ -277,8 +271,8 @@ function commitSched(index, tool, uid, result, day, now) {
 const publicResult = (r) => ({
   uid: r.uid, label: r.label, status: r.status,
   message: r.message, credits: r.credits || 0, steps: r.steps || [],
-  // 本账号这一轮的外部请求 / KV 次数。列表页那一列显示的就是它（2026-10-01 起
-  // 账本分成两本，两个数各走各的额度，所以都要报）
+  // 本账号这一轮的外部请求 / KV 次数。列表页那一列显示的就是它（账本分成两本，
+  // 两个数各走各的额度，所以都要报）
   http: r.http || 0, kv: r.kv || 0,
 });
 
@@ -322,7 +316,6 @@ export async function runTick({ env, budget, tools, trigger = "cron", now = nowS
       continue;
     }
     // 准入闸只看外部 HTTP：这轮还剩多少额度决定这一轮还能不能开下一个账号。
-    // （旧实现在这里判 TOOL_FRAME —— 那是纯 KV 帧，等于用 HTTP 额度替 KV 记账。）
     if (budget.left() <= 0) {
       plan.push({ tool: tool.id, skipped: "外部请求额度已用尽", accounts: [] });
       continue;
@@ -338,7 +331,6 @@ export async function runTick({ env, budget, tools, trigger = "cron", now = nowS
     const index = await loadSchedIndex(env, tool.id);
     const day = dayOf(tool, now);
     // 到期判定全部走内存里的调度索引：每工具固定 1 次 list + 1 次 get，与账号数无关。
-    // 旧写法先 listAccounts（1 list + N get）再判定，账号一多就线性增长。
     // 到期队列按"最久没被服务"排序，不是按 uid 字典序。
     // 字典序配上全局预算闸 = 排在末尾的账号永远饿死：WorkBuddy 一个账号最坏 31 次外部请求，
     // 上限 45 只装得下 1 个，而前两个每轮都以 partial 收（resumable 豁免节流，立刻再来），
@@ -358,12 +350,9 @@ export async function runTick({ env, budget, tools, trigger = "cron", now = nowS
     for (const uid of due) {
       // 账号级顺延：一分钱外部请求都不花，留给下一个账号。
       //
-      // 旧实现在这里判 ACCOUNT_FRAME（6 笔**纯 KV**：取锁 2 + 进度 + 凭据 + 收尾）。
-      // 那是把 KV 算进 HTTP 额度，于是"KV 已经花了 40"会让剩下的 5 笔 HTTP
-      // 一个账号都跑不了 —— WorkBuddy 单账号最坏 31 笔上游请求，纯属误伤。
-      // 现在这一层只问"还有没有外部请求额度"，具体够不够跑完这个账号的某一步，
-      // 由 runOneAccount 里每一步的 fits(step.cost) 逐句判定（判据更准，且不会
-      // 因为一个账号的 KV 开销而拒掉另一个账号）。
+      // 这一层只问"还有没有外部请求额度"；具体够不够跑完这个账号的某一步，
+      // 由 runOneAccount 里每一步的 fits(step.cost) 逐句判定 —— 判据更准，
+      // 且 KV 开销（它有自己的额度）不会让一个账号拒掉另一个账号。
       if (budget.left() <= 0) {
         results.push({ uid, status: "deferred", message: "本轮外部请求额度已用尽，留到下一轮", steps: [] });
         continue;

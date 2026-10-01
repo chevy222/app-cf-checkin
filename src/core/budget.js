@@ -1,6 +1,6 @@
 // 一次调用一本账，但账本是**两本**。
 //
-// 为什么分开（2026-10-01 查证官方文档后改的）：
+// 为什么分开：
 // Cloudflare 免费版对一次调用给**两个独立上限**，不是一个大池子：
 //   · 50 次「外部子请求」= fetch() 打到你家上游站点
 //   · 1000 次「内部服务子请求」= KV / R2 / D1 这类 Cloudflare 自家服务
@@ -8,15 +8,7 @@
 // 与 2026-02-11 的 changelog（原文："free plan remain limited to 50 external
 // subrequests and 1000 subrequests to Cloudflare services per invocation"）。
 //
-// 旧实现把 KV 的 get/put/list/delete 和 fetch 记进同一个 used，共享一个 45 的自限值。
-// 那个口径下三处判断都是错的：
-//   1. steps[].cost 是纯 HTTP 上界（Qoder 3+N、Trae 6、WorkBuddy 1+N），却要跟
-//      一堆 KV 帧相加去比一个混合池子，加出来的数没有物理意义；
-//   2. TAIL_RESERVE 那 7 笔全是 KV 写入，把它算进 HTTP 闸门等于"为 KV 预留 HTTP 额度"；
-//   3. 最严重的是 trackedFetch 的拒答闸 —— KV 先把 used 抬到 40，剩下 5 笔就留给
-//      HTTP。WorkBuddy 单账号最坏 31 笔上游请求，**哪怕一笔 KV 都不花也会被挡下来**。
-//
-// 现在：http 是唯一参与 fits() 闸门的口径（它才是会抛异常的那个），
+// http 是唯一参与 fits() 闸门的口径（它才是会抛异常的那个），
 // kv 只计数、不参与判定 —— 它有自己的 1000 额度，而且真撞了也只是那一次 KV
 // 调用失败，不是整轮作废。
 

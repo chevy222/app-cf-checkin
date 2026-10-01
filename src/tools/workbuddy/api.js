@@ -23,7 +23,7 @@ const LOTTERY_DRAW = `${GROWTH}/lottery/draw`;
 const QUOTA = `${GROWTH}/buddy/quota`;
 const OPEN = `${GROWTH}/buddy/open`;
 const TASKS = `${GROWTH}/tasks`;
-// 写端点不带 /v2，读端点带 —— 两者不是笔误，是上游真实的分工（2026-10-01 实测）
+// 写端点不带 /v2，读端点带 —— 两者不是笔误，是上游真实的分工（实测）
 const TASK_ACCEPT = "/activity/growth/tasks/accept";
 const ENERGY = `${GROWTH}/energy`;
 const STREAK = `${GROWTH}/streak`;
@@ -211,7 +211,7 @@ export async function openBlindbox(ctx) {
 }
 
 // 到站礼物的领取不需要参数：服务端按当前账号的行程记录自己找。
-// 之前多传 record_id 属于自作多情，上游当时没报错不代表它认这个字段。
+// 多传 record_id 属于自作多情：上游没报错不代表它认这个字段。
 export const claimTravel = (ctx) => call(ctx, TRAVEL_CLAIM, { method: "POST", body: undefined });
 export const departTravel = (ctx, locationId) => call(ctx, TRAVEL_DEPART, { body: { location_id: locationId } });
 // 接领是**批量**接口：体是数组不是单值。发单数会被上游判成非法请求（400 invalid request）。
@@ -219,7 +219,7 @@ export const acceptTasks = (ctx, taskCodes) => call(ctx, TASK_ACCEPT, { body: { 
 
 // 批量接领的逐项结果。顶层 code=0 只说明这个请求被接受，不代表每个任务都登记成功 ——
 // 真实结果在 data.results[].status 里逐条给（这是从 L0NE-6/WorkBuddy-Daily 的实测结论，
-// 本项目 2026-10-01 尚未实测到这一层，故按"读不到就当全成"处理，见 index.js 的用法）。
+// 本项目尚未实测到这一层，故按"读不到就当全成"处理，见 index.js 的用法）。
 //
 // 返回 { code, message } 形状的对象；results 缺失时返回 null，调用方据此走"不逐项判定"的分支。
 export function acceptResults(payload) {
@@ -248,7 +248,7 @@ export function prerequisiteHint(text) {
 }
 
 // 领奖是另一个端点，路径里带 task_code。**不带任何请求体** —— 页面实测抓包是 body: null，
-// 传空对象会序列化成 "{}"，与实测形状不符（2026-10-01）。
+// 传空对象会序列化成 "{}"，与实测形状不符。
 // 响应里积分与能量叫 credit / energy，不叫 *_granted。
 export const claimTask = (ctx, taskCode) => call(ctx, `/activity/growth/tasks/${encodeURIComponent(taskCode)}/claim`, { method: "POST", body: undefined });
 export const redeemTier = (ctx, tier) => call(ctx, REDEEM, { body: { tier, client_token: idemKey("redeem", ctx.account.uid, ctx.day, tier) } });
