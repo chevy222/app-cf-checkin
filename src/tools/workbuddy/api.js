@@ -23,7 +23,8 @@ const LOTTERY_DRAW = `${GROWTH}/lottery/draw`;
 const QUOTA = `${GROWTH}/buddy/quota`;
 const OPEN = `${GROWTH}/buddy/open`;
 const TASKS = `${GROWTH}/tasks`;
-const TASK_ACCEPT = `${GROWTH}/tasks/accept`;
+// 写端点不带 /v2，读端点带 —— 两者不是笔误，是上游真实的分工（2026-10-01 实测）
+const TASK_ACCEPT = "/activity/growth/tasks/accept";
 const ENERGY = `${GROWTH}/energy`;
 const STREAK = `${GROWTH}/streak`;
 const REDEEM = `${GROWTH}/redeem`;
@@ -210,11 +211,15 @@ export async function openBlindbox(ctx) {
 }
 
 // 到站礼物的领取不需要参数：服务端按当前账号的行程记录自己找。
-// 前端就是空体（j = () => e.post("/activity/growth/buddy/travel/claim", {})），
 // 之前多传 record_id 属于自作多情，上游当时没报错不代表它认这个字段。
-export const claimTravel = (ctx) => call(ctx, TRAVEL_CLAIM, { body: {} });
+export const claimTravel = (ctx) => call(ctx, TRAVEL_CLAIM, { method: "POST", body: undefined });
 export const departTravel = (ctx, locationId) => call(ctx, TRAVEL_DEPART, { body: { location_id: locationId } });
-export const acceptTask = (ctx, taskCode) => call(ctx, TASK_ACCEPT, { body: { task_code: taskCode } });
+// 接领是**批量**接口：体是数组不是单值。发单数会被上游判成非法请求（400 invalid request）。
+export const acceptTasks = (ctx, taskCodes) => call(ctx, TASK_ACCEPT, { body: { task_codes: taskCodes } });
+// 领奖是另一个端点，路径里带 task_code。**不带任何请求体** —— 页面实测抓包是 body: null，
+// 传空对象会序列化成 "{}"，与实测形状不符（2026-10-01）。
+// 响应里积分与能量叫 credit / energy，不叫 *_granted。
+export const claimTask = (ctx, taskCode) => call(ctx, `/activity/growth/tasks/${encodeURIComponent(taskCode)}/claim`, { method: "POST", body: undefined });
 export const redeemTier = (ctx, tier) => call(ctx, REDEEM, { body: { tier, client_token: idemKey("redeem", ctx.account.uid, ctx.day, tier) } });
 
 // 签到的判定方言，分两段。顺序不能变：401/403 必须排在"空 body 算已领"之前，

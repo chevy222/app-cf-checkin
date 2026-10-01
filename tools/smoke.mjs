@@ -2437,23 +2437,83 @@ test("[workbuddy] 到站礼物没领到就不派新行程", async () => {
   } finally { stub.restore(); }
 });
 
-test("[workbuddy] target:0 的「0/0」任务照样能领：不许把 target 用 || 1 兜底", async () => {
+// 2026-10-01 页面实测：accept_status 的合法值是 not_accepted / in_progress /
+// accepted（已接领未完成）/ completed（完成待领）/ claimed（已领）。
+// 旧实现按 progress.current >= target 猜完成度，把 completed 判成"还没领"去发 accept，
+// 上游对已完成任务再接领一律 400 invalid request。
+test("[workbuddy] 任务按 accept_status 分流：completed 才领，accepted/in_progress 不动", async () => {
   const kv = fakeKv();
   seedWorkbuddy(kv);
   const stub = stubUpstream(wbIdleRoutes({
     "GET /v2/activity/growth/tasks": { payload: { tasks: [
-      { task_code: "t-zero", progress: { current: 0, target: 0 }, accept_status: "unclaimed", has_reward: true, reward_credit: 10 },
-      { task_code: "t-done", progress: { current: 3, target: 3 }, accept_status: "claimed", has_reward: true, reward_credit: 10 },
-      { task_code: "t-wait", progress: { current: 1, target: 5 }, accept_status: "unclaimed", has_reward: true, reward_credit: 10 },
+      { task_code: "t-done", progress: { current: 5, target: 5 }, accept_status: "completed", has_reward: true, reward_credit: 999 },
+      { task_code: "t-claimed", progress: { current: 3, target: 3 }, accept_status: "claimed", has_reward: true, reward_credit: 999 },
+      { task_code: "t-accepted", progress: { current: 0, target: 1 }, accept_status: "accepted", has_reward: true, reward_credit: 999 },
+      { task_code: "t-running", progress: { current: 1, target: 3 }, accept_status: "in_progress", has_reward: false, reward_credit: 0 },
     ] } },
-    "POST /v2/activity/growth/tasks/accept": { payload: { code: 0 } },
+    // 响应里的 credit 是 10，列表里的 reward_credit 是 999：两者必须能区分开。
+    // 上游发多少就是多少，列表上的标称值只是"完成之后大概能给多少"的预告。
+    "POST /activity/growth/tasks/t-done/claim": { payload: { code: 0, already_claimed: false, credit: 10, energy: 5 } },
   }));
   try {
     const { summary } = await wbTick(kv);
-    const accepted = stub.seen.filter((r) => r.path.endsWith("/tasks/accept")).map((r) => JSON.parse(r.body).task_code);
-    assert.deepEqual(accepted, ["t-zero"], "该领的只有 t-zero：t-done 已领过，t-wait 还没完成");
-    // 积分记在账号这一层：步骤视图只带状态与消息，逐步积分属于进度键内部的东西
+    const tasks = wbView(summary).steps[4];
+    assert.equal(tasks.status, "claimed");
+    assert.match(tasks.message, /领到 1 个任务奖励 \+10/, `状态机分流错了：${tasks.message}`);
+    // 领奖端点：路径带 task_code、无 /v2、无请求体
+    const claims = stub.seen.filter((r) => r.path.includes("/tasks/") && r.path.endsWith("/claim"));
+    assert.equal(claims.length, 1, `只该给 t-done 发一次 claim，实际 ${claims.length} 次`);
+    assert.equal(claims[0].method, "POST");
+    assert.equal(claims[0].body, undefined, `claim 不该带请求体，实际 ${claims[0].body}`);
+    // 已接领但没完成的（accepted）与进行中的都不许被当成可领
+    assert.equal(stub.seen.filter((r) => r.path.endsWith("/tasks/accept")).length, 0, "没有 not_accepted 的任务，不该发 accept");
+    // 积分从 claim 响应读，不从任务列表的 reward_credit 猜
     assert.equal(wbView(summary).credits, 10);
+  } finally { stub.restore(); }
+});
+
+test("[workbuddy] already_claimed 的任务不算领到：上游说不发奖就是不发，不能拿列表标称值充数", async () => {
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  const stub = stubUpstream(wbIdleRoutes({
+    "GET /v2/activity/growth/tasks": { payload: { tasks: [
+      { task_code: "t-dup", progress: { current: 1, target: 1 }, accept_status: "completed", has_reward: true, reward_credit: 100 },
+    ] } },
+    // 200 且 code:0，但 already_claimed=true —— 上游认为已经发过了，这一轮没有新奖
+    "POST /activity/growth/tasks/t-dup/claim": { payload: { code: 0, already_claimed: true, credit: 0, energy: 0 } },
+  }));
+  try {
+    const { summary } = await wbTick(kv);
+    const tasks = wbView(summary).steps[4];
+    // 照实报"没领到"，而不是把列表里的 reward_credit=100 算成到手
+    assert.equal(tasks.status, "error");
+    assert.match(tasks.message, /t-dup 上游报已领过/, `already_claimed 没被识别：${tasks.message}`);
+    assert.equal(wbView(summary).credits, 0, "上游没发奖就不该有积分");
+  } finally { stub.restore(); }
+});
+
+test("[workbuddy] not_accepted 的任务批量接领：体是 task_codes 数组，发单数会被判非法", async () => {
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  const stub = stubUpstream(wbIdleRoutes({
+    "GET /v2/activity/growth/tasks": { payload: { tasks: [
+      { task_code: "t-new1", progress: { current: 0, target: 1 }, accept_status: "not_accepted", has_reward: true, reward_credit: 10 },
+      { task_code: "t-new2", progress: { current: 0, target: 1 }, accept_status: "not_accepted", has_reward: true, reward_credit: 10 },
+      { task_code: "t-done", progress: { current: 1, target: 1 }, accept_status: "completed", has_reward: true, reward_credit: 7 },
+    ] } },
+    "POST /activity/growth/tasks/accept": { payload: { code: 0 } },
+    "POST /activity/growth/tasks/t-done/claim": { payload: { code: 0, already_claimed: false, credit: 7, energy: 5 } },
+  }));
+  try {
+    const { summary } = await wbTick(kv);
+    const accepts = stub.seen.filter((r) => r.path.endsWith("/tasks/accept"));
+    assert.equal(accepts.length, 1, "两个 not_accepted 的任务该合并成一次批量接领");
+    // 关键形状：数组。发 { task_code: "x" } 会被上游判 400 invalid request
+    assert.deepEqual(JSON.parse(accepts[0].body).task_codes, ["t-new1", "t-new2"], "接领体必须是 task_codes 数组");
+    const tasks = wbView(summary).steps[4];
+    // 接领不发奖，所以积分只算 claim 那一笔
+    assert.match(tasks.message, /已接领 2 个新任务/, `接领没被记进日志：${tasks.message}`);
+    assert.equal(wbView(summary).credits, 7, "接领阶段的 reward_credit 是虚账，不能计入");
   } finally { stub.restore(); }
 });
 
@@ -2462,9 +2522,9 @@ test("[workbuddy] 任务领取失败要把原因写进日志：只记「全部�
   seedWorkbuddy(kv);
   const stub = stubUpstream(wbIdleRoutes({
     "GET /v2/activity/growth/tasks": { payload: { tasks: [
-      { task_code: "t-gone", progress: { current: 3, target: 3 }, accept_status: "unclaimed", has_reward: true, reward_credit: 10 },
+      { task_code: "t-gone", progress: { current: 3, target: 3 }, accept_status: "completed", has_reward: true, reward_credit: 10 },
     ] } },
-    "POST /v2/activity/growth/tasks/accept": { status: 400, payload: { code: 10005, msg: "任务已下架" } },
+    "POST /activity/growth/tasks/t-gone/claim": { status: 400, payload: { code: 10005, msg: "任务已下架" } },
   }));
   try {
     const { summary } = await wbTick(kv);
@@ -2477,12 +2537,11 @@ test("[workbuddy] 任务领取失败要把原因写进日志：只记「全部�
     seedWorkbuddy(kv2, "wb-partial");
     const stub2 = stubUpstream(wbIdleRoutes({
       "GET /v2/activity/growth/tasks": { payload: { tasks: [
-        { task_code: "t-ok", progress: { current: 1, target: 1 }, accept_status: "unclaimed", has_reward: true, reward_credit: 5 },
-        { task_code: "t-bad", progress: { current: 2, target: 2 }, accept_status: "unclaimed", has_reward: true, reward_credit: 5 },
+        { task_code: "t-ok", progress: { current: 1, target: 1 }, accept_status: "completed", has_reward: true, reward_credit: 5 },
+        { task_code: "t-bad", progress: { current: 2, target: 2 }, accept_status: "completed", has_reward: true, reward_credit: 5 },
       ] } },
-      "POST /v2/activity/growth/tasks/accept": (rec) => (JSON.parse(rec.body).task_code === "t-ok"
-        ? { payload: { code: 0 } }
-        : { status: 403, payload: { msg: "frequency limit" } }),
+      "POST /activity/growth/tasks/t-ok/claim": { payload: { code: 0, already_claimed: false, credit: 5, energy: 5 } },
+      "POST /activity/growth/tasks/t-bad/claim": { status: 403, payload: { msg: "frequency limit" } },
     }));
     try {
       const { summary: s2 } = await wbTick(kv2);
@@ -2601,9 +2660,9 @@ test("[workbuddy] 顶层字段是 null 时要能穿透到包装层取到真值",
     assert.equal(travel.status, "claimed", `顶层 null 让到站礼物没领到（实际 ${travel.status}：${travel.message}）`);
     assert.match(travel.message, /\+8/);
     assert.equal(stub.seen.filter((r) => r.path.endsWith("/buddy/travel/claim")).length, 1, "到站了却没发领取请求");
-    // 前端发的是空体：多传 record_id 属于自作多情，上游当时没报错不代表它认这个字段
+    // 实测形状：到站领取不带任何参数，多传 record_id 属于自作多情
     const claimReq = stub.seen.find((r) => r.path.endsWith("/buddy/travel/claim"));
-    assert.deepEqual(JSON.parse(claimReq.body), {}, `到站领取不该带参数，实际 ${claimReq.body}`);
+    assert.equal(claimReq.body, undefined, `到站领取不该带请求体，实际 ${claimReq.body}`);
   } finally { stub.restore(); }
 });
 
@@ -2764,8 +2823,11 @@ test("[审核P0-1] 预算只够一个账号时，排在后面的账号不许饿�
     "POST /v2/activity/growth/lottery/draw": { payload: { credit: 5 } },
     "GET /v2/activity/growth/buddy/quota": { payload: { affordable: 500 } },
     "POST /v2/activity/growth/buddy/open": { payload: { code: 0, results: [{ credit: 3 }] } },
-    "GET /v2/activity/growth/tasks": { payload: { tasks: many(50, (i) => ({ task_code: `t${i}`, progress: { current: 2, target: 1 }, accept_status: "unclaimed", has_reward: true, reward_credit: 10 })) } },
-    "POST /v2/activity/growth/tasks/accept": { payload: { code: 0 } },
+    "GET /v2/activity/growth/tasks": { payload: { tasks: many(50, (i) => ({ task_code: `t${i}`, progress: { current: 2, target: 1 }, accept_status: "completed", has_reward: true, reward_credit: 10 })) } },
+    "POST /activity/growth/tasks/accept": { payload: { code: 0 } },
+    "POST /activity/growth/tasks/t0/claim": { payload: { code: 0, already_claimed: false, credit: 10, energy: 5 } },
+    "POST /activity/growth/tasks/t1/claim": { payload: { code: 0, already_claimed: false, credit: 10, energy: 5 } },
+    "POST /activity/growth/tasks/t2/claim": { payload: { code: 0, already_claimed: false, credit: 10, energy: 5 } },
     "GET /v2/activity/growth/energy": { payload: { balance: 50 } },
     "GET /v2/activity/growth/streak": { payload: { streak: { days: 15 } } },
   });
@@ -2861,8 +2923,11 @@ test("[审核P0-2b] 收尾写入不许把 used 顶过自限上限（预约不占
     "POST /v2/activity/growth/lottery/draw": { payload: { credit: 5 } },
     "GET /v2/activity/growth/buddy/quota": { payload: { affordable: 500 } },
     "POST /v2/activity/growth/buddy/open": { payload: { code: 0, results: [{ credit: 3 }] } },
-    "GET /v2/activity/growth/tasks": { payload: { tasks: Array.from({ length: 50 }, (_, i) => ({ task_code: `t${i}`, progress: { current: 2, target: 1 }, accept_status: "unclaimed", has_reward: true, reward_credit: 10 })) } },
-    "POST /v2/activity/growth/tasks/accept": { payload: { code: 0 } },
+    "GET /v2/activity/growth/tasks": { payload: { tasks: Array.from({ length: 50 }, (_, i) => ({ task_code: `t${i}`, progress: { current: 2, target: 1 }, accept_status: "completed", has_reward: true, reward_credit: 10 })) } },
+    "POST /activity/growth/tasks/accept": { payload: { code: 0 } },
+    "POST /activity/growth/tasks/t0/claim": { payload: { code: 0, already_claimed: false, credit: 10, energy: 5 } },
+    "POST /activity/growth/tasks/t1/claim": { payload: { code: 0, already_claimed: false, credit: 10, energy: 5 } },
+    "POST /activity/growth/tasks/t2/claim": { payload: { code: 0, already_claimed: false, credit: 10, energy: 5 } },
     "GET /v2/activity/growth/energy": { payload: { balance: 50 } },
     "GET /v2/activity/growth/streak": { payload: { streak: { days: 15 } } },
   });
