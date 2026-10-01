@@ -1132,10 +1132,90 @@ test("[全空转的轮什么都不写", async () => {
   assert.equal(logKeys(kv).length, 0);
 });
 
+// 清空日志：范围只限被点的那一个工具，且不能靠 GET 触发
+// 用真实注册表里的 qoder —— 路由只认注册表，夹具的 "fix" 会被 404 挡掉
+test("清空日志只删被点的那个工具，别家与账号凭据原样留着", async () => {
+  const kv = fakeKv();
+  const env = envFor(kv);
+  // 直接造日志，不跑 tick：tickWith 传入的合成工具会顶掉整个注册表，
+  // 那样造不出"两个工具各有日志"的前提，而那正是这条测试要守的不变量。
+  seedQoder(kv, "qdr-clear");
+  seedFull(kv, "LOGA1");
+  kv.store.set("v1:run:qoder:0000000000123:qdr-clear", "{}");
+  kv.store.set("v1:run:trae:0000000000456:u1", "{}");
+  const before = [...kv.store.keys()].filter((k) => k.startsWith("v1:acct:")).sort();
+  assert.equal(logKeys(kv).length, 2, `前置：两条日志，实际 ${logKeys(kv).join(", ")}`);
+
+  // GET 只该读，不该写。确认页要显示"当前一页能看到 N 条"，所以一次 list 是免不了的 ——
+  // 守的是"没有一次 delete / put"，不是"一个子请求都不花"。
+  const before2 = kv.calls.length;
+  const page = await hit(`/runs/qoder/clear?pwd=${PASSWORD}`, { env });
+  assert.equal(page.status, 200, `确认页打不开：${page.text.slice(0, 200)}`);
+  assert.ok(page.text.includes("确认清空"), "确认页没有实际的删除按钮");
+  assert.equal(kv.calls.slice(before2).filter((op) => op === "delete" || op === "put").length, 0,
+    `GET 打开确认页却动了写操作：${kv.calls.slice(before2).join(",")}`);
+
+  // POST 才真删
+  const done = await hit(`/runs/qoder/clear?pwd=${PASSWORD}`, { method: "POST", body: form({ pwd: PASSWORD }), env });
+  assert.equal(done.status, 303, `删除没走重定向：${done.status}`);
+  assert.match(done.headers.get("location") || "", /cleared=1&more=0/, `回执没带真实数字：${done.headers.get("location")}`);
+
+  assert.equal([...kv.store.keys()].filter((k) => k.startsWith("v1:run:qoder:")).length, 0, "被点的工具日志没删干净");
+  assert.ok(kv.store.has("v1:run:trae:0000000000456:u1"), "别家工具的日志被误删");
+  assert.deepEqual([...kv.store.keys()].filter((k) => k.startsWith("v1:acct:")).sort(), before, "账号记录被误删");
+
+  // 回执页必须把真实数字说出来。判据是 cleared 参数存在（不是 done=cleared）——
+  // 写成后者的话这个分支永远进不去，界面上的回执就成了死代码。
+  const back = await hit(`/runs?tool=qoder&cleared=1&more=0&pwd=${PASSWORD}`, { env });
+  assert.ok(back.text.includes("已删除 1 条运行日志"), `回执没显示真实数字：${back.text.match(/已删除[^<]*/)}`);
+});
+
+test("清空日志删不完时的回执要催你再点一次，不许显示成已清空", async () => {
+  const kv = fakeKv();
+  const env = envFor(kv);
+  const res = await hit(`/runs?tool=qoder&cleared=28&more=1&pwd=${PASSWORD}`, { env });
+  assert.ok(res.text.includes("再点一次"), `删不完却没提示继续：${res.text.match(/已删除[^<]*/)}`);
+  assert.ok(!res.text.includes("已删除 28 条运行日志。"), "删不完却显示成已清空");
+});
+
+test("清空日志的删除范围由注册表把关：未注册的工具 id 到不了 KV", async () => {
+  const kv = fakeKv();
+  const env = envFor(kv);
+  kv.store.set("v1:run:evil:0000000000123:u1", "{}");
+  const res = await hit(`/runs/evil/clear?pwd=${PASSWORD}`, { method: "POST", body: form({ pwd: PASSWORD }), env });
+  assert.equal(res.status, 404, `未注册的工具 id 应该 404，实际 ${res.status}`);
+  assert.ok(kv.store.has("v1:run:evil:0000000000123:u1"), "未注册前缀的键被删了");
+});
+
+test("清空日志删不完时必须说清还剩多少，不许谎报已清空", async () => {
+  const kv = fakeKv();
+  const env = envFor(kv);
+  // 60 条日志 > CLEAR_BUDGET(28)：一次删不完，必须报 more
+  for (let i = 0; i < 60; i += 1) {
+    kv.store.set(`v1:run:qoder:${String(9000000000000 - i).padStart(13, "0")}:u${i}`, "{}");
+  }
+  const res = await hit(`/runs/qoder/clear?pwd=${PASSWORD}`, { method: "POST", body: form({ pwd: PASSWORD }), env });
+  assert.equal(res.status, 303);
+  const q = new URL(`https://x${res.headers.get("location")}`).searchParams;
+  assert.equal(Number(q.get("cleared")), 28, `一次最多删 CLEAR_BUDGET 条，实际报 ${q.get("cleared")}`);
+  assert.equal(q.get("more"), "1", "删不完却没报 more —— 界面会说「已清空」而库里还剩 32 条");
+  assert.equal([...kv.store.keys()].filter((k) => k.startsWith("v1:run:qoder:")).length, 32, "剩下的应原样留着");
+});
+
+test("清空日志的按钮只在筛选到具体工具时出现，「全部」页不给危险操作", async () => {
+  const kv = fakeKv();
+  const env = envFor(kv);
+  const all = await hit(`/runs?pwd=${PASSWORD}`, { env });
+  assert.ok(!all.text.includes("清空日志"), "「全部」页不该出现清空按钮：那里没有「一个工具」可清，做成清空全库会误伤所有记录");
+  const one = await hit(`/runs?tool=qoder&pwd=${PASSWORD}`, { env });
+  assert.ok(one.text.includes("清空日志"), "筛选到具体工具时该有清空入口");
+  assert.ok(one.text.includes("/runs/qoder/clear"), "清空入口的地址不对");
+});
+
 test("[运行日志带 30 天 TTL", async () => {
   const kv = fakeKv();
   seedFull(kv, "LOGA2");
-  const ttls = [];
+    const ttls = [];
   const wrapped = {
     ...kv,
     async put(key, value, options) {

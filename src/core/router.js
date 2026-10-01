@@ -1,7 +1,7 @@
 import { coerceFields, countAccounts, deleteAccount, getAccount, listAccounts, loadSchedIndex, sanitizeUid, saveAccount } from "./accounts.js";
 import { isOff, loadFlags, setToolOff } from "./flags.js";
 import { getJson, putJson, requireKv, toolKey } from "./store.js";
-import { listRunLog, readRunLog, scrubSecrets } from "./logs.js";
+import { clearRunLog, listRunLog, readRunLog, scrubSecrets } from "./logs.js";
 import { truncate } from "./text.js";
 import { trackedFetch } from "./budget.js";
 import { htmlRes, jsonRes, redirectRes } from "./http.js";
@@ -10,7 +10,7 @@ import { link } from "../ui/layout.js";
 import { renderHome } from "../ui/pages/home.js";
 import { renderHelp } from "../ui/pages/help.js";
 import { renderAccountForm, renderTool, renderToolConfig } from "../ui/pages/tool.js";
-import { renderRunDetail, renderRuns } from "../ui/pages/runs.js";
+import { renderRunDetail, renderRuns, renderRunsClearConfirm } from "../ui/pages/runs.js";
 import { renderNotFound } from "../ui/pages/gate.js";
 import { runAccountNow, runTick, validateAccount } from "./runner.js";
 
@@ -24,6 +24,20 @@ function flashFrom(url) {
   const flag = url.searchParams.get("done");
   if (flag === "saved") return { kind: "info", text: "已保存。" };
   if (flag === "deleted") return { kind: "info", text: "已删除。" };
+  // 清空日志的回执必须报真实数字，且说清"没删完"这件事 —— 一次调用只有 50 个
+  // 子请求，删不完是常态。谎报"已清空"比删不掉更糟。
+  // 判据用 cleared 而不是 done：跳转参数里 cleared 是"确实删过"的信号，
+  // deleted/saved 那两个是固定文案、没有数字可带。
+  if (url.searchParams.get("cleared") !== null) {
+    const n = Number(url.searchParams.get("cleared")) || 0;
+    const more = url.searchParams.get("more") === "1";
+    return {
+      kind: more ? "warn" : "info",
+      text: more
+        ? `已删除 ${n} 条，这个预算只够删这么多（一次调用 50 个子请求）。再点一次「清空」继续删剩下的。`
+        : `已删除 ${n} 条运行日志。`,
+    };
+  }
   // 开关切换的回执要说清是哪一家、变成了什么状态。跳转参数里只放工具 id 与 0/1，
   // 名字现查注册表 —— 免得一个纯展示用的查询串成为第二个事实来源。
   const toggled = url.searchParams.get("toggled");
@@ -75,12 +89,27 @@ async function runsPage(ctx) {
   const toolId = wanted && wanted !== "all" ? wanted : null;
   // 不带 toolId 时要按注册表逐个工具取一页再归并（logs.js 里解释了为什么不能扫全量）
   const entries = await listRunLog(ctx.env, { limit: 30, toolId, toolIds: TOOLS.map((t) => t.id) });
-  return htmlRes(renderRuns({ pwd: ctx.pwd, tools: TOOLS, entries, active: { tool: toolId || "" } }));
+  return htmlRes(renderRuns({ pwd: ctx.pwd, tools: TOOLS, entries, active: { tool: toolId || "" }, flash: ctx.flash }));
 }
 
 async function runDetailPage(ctx, key) {
   const entry = await readRunLog(ctx.env, key);
   return htmlRes(renderRunDetail({ pwd: ctx.pwd, tools: TOOLS, entry, key, missing: !entry }));
+}
+
+// 清空日志的确认页。GET 只读，不改世界 —— 破坏性操作的入口页必须是 GET，
+// 真正的删除在下面的 POST 上。tool 由 router 按注册表校验过，非法 id 到不了这里。
+async function runsClearPage(ctx, tool) {
+  // 只读工具自己的那一页来估个数：清空范围与列表筛选范围一致，用户能对上数
+  const entries = await listRunLog(ctx.env, { limit: 30, toolId: tool.id, toolIds: [] });
+  return htmlRes(renderRunsClearConfirm({ pwd: ctx.pwd, tools: TOOLS, tool, count: entries.length }));
+}
+
+// 删除走 POST：GET 不该改变世界。执行完重定向回该工具的日志页，
+// cleared=N 让页面自己说出删了几条（真实数字，不猜）。
+async function runsClearDo(ctx, tool) {
+  const { deleted, more } = await clearRunLog(ctx.env, tool.id);
+  return redirectRes(link("/runs", ctx.pwd, { tool: tool.id, cleared: String(deleted), more: more ? "1" : "0" }));
 }
 
 function accountFields(tool) {
@@ -305,6 +334,10 @@ const ROUTES = [
   ["GET", /^\/$/, (ctx) => homePage(ctx.env, ctx.pwd, ctx.flash, ctx.budget)],
   ["GET", /^\/help$/, (ctx) => htmlRes(renderHelp({ pwd: ctx.pwd, tools: TOOLS }))],
   ["GET", /^\/runs$/, (ctx) => runsPage(ctx)],
+  // 路径必须是 /runs/<tool>/clear 而不是 /runs/clear：捕获组里的 tool 才会过注册表校验。
+  // 也因此不会与 RUN_DETAIL（/runs/([^/]+)$）抢路由 —— 后者只匹配单段。
+  ["GET", /^\/runs\/([^/]+)\/clear$/, (ctx, tool) => runsClearPage(ctx, tool)],
+  ["POST", /^\/runs\/([^/]+)\/clear$/, (ctx, tool) => runsClearDo(ctx, tool)],
   ["GET", RUN_DETAIL, (ctx, key) => runDetailPage(ctx, key)],
   ["GET", /^\/api\/state$/, (ctx) => apiState(ctx.env, ctx.budget)],
   ["GET", /^\/api\/tick$/, (ctx) => apiTick(ctx)],

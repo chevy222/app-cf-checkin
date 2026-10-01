@@ -1,7 +1,8 @@
 import { escapeHtml } from "../../core/text.js";
 import { fmtCST } from "../../core/time.js";
+import { CLEAR_BUDGET } from "../../core/logs.js";
 import { link, navHtml, pageShell } from "../layout.js";
-import { badge, button, emptyState, sectionHead } from "../components.js";
+import { alertBox, badge, button, emptyState, sectionHead } from "../components.js";
 
 // 这一行是谁、什么时候：uid 取自键名（listRunLog 已经解析好）；备注名取自 metadata，
 // 是**记录那一刻**的快照 —— 之后改过名，旧日志仍显示旧名，这是日志语义的一部分。
@@ -11,7 +12,17 @@ function filterBar(pwd, tools, active) {
   return `<div class="acts">${item("全部", "")}${tools.map((t) => item(t.name, t.id)).join("")}</div>`;
 }
 
-export function renderRuns({ pwd, tools, entries, active = {} }) {
+// 删除是 POST（GET 不该改变世界），所以这里内联一个表单而不是用 button()。
+// 只在筛选到具体工具时出现：「全部」页上没有"一个工具"可清，做成清空全库
+// 就是一个会误伤所有记录的操作，不该由筛选栏上的一个按钮提供。
+function clearForm(pwd, toolId) {
+  if (!toolId) return "";
+  return `<form method="post" action="${escapeHtml(link(`/runs/${encodeURIComponent(toolId)}/clear`, pwd))}" style="display:inline">
+    <button class="btn sm danger" type="submit">清空日志</button>
+  </form>`;
+}
+
+export function renderRuns({ pwd, tools, entries, active = {}, flash }) {
   const rows = entries.map((entry) => {
     const meta = entry.meta || {};
     const href = link(`/runs/${encodeURIComponent(entry.key)}`, pwd);
@@ -45,9 +56,29 @@ export function renderRuns({ pwd, tools, entries, active = {} }) {
   return pageShell({
     title: "运行日志",
     nav: navHtml(pwd, "runs", tools),
-    body: `${sectionHead("运行日志", "保留 30 天；列表只读一次 KV，正文点进详情才读", filterBar(pwd, tools, active))}
+    body: `${flash ? alertBox(flash.kind, escapeHtml(flash.text)) : ""}
+      ${sectionHead("运行日志", "保留 30 天；列表只读一次 KV，正文点进详情才读",
+        `<div class="acts">${clearForm(pwd, active.tool)}${filterBar(pwd, tools, active)}</div>`)}
       ${table}
       <p class="tiny" style="margin-top:12px">列表的摘要存在 KV 的 metadata 里，所以这一页的成本只与「已注册的工具数」有关，与记录条数无关。凭据与访问口令永不写入日志。</p>`,
+  });
+}
+
+// 清空确认页。破坏性操作值得一个专门的页面：按钮旁边就是筛选栏，
+// 点错了「清空」和点错了「Qoder」在同一个屏幕上，而后者只是换个筛选。
+export function renderRunsClearConfirm({ pwd, tools, tool, count }) {
+  const action = link(`/runs/${encodeURIComponent(tool.id)}/clear`, pwd);
+  return pageShell({
+    title: "清空运行日志",
+    nav: navHtml(pwd, "runs", tools),
+    body: sectionHead(`清空 ${tool.name} 的运行日志`, "", button(link("/runs", pwd, { tool: tool.id }), "‹ 返回列表"))
+      + alertBox("warn", `将删除 <b>${escapeHtml(tool.name)}</b> 名下全部运行日志${count ? `（当前一页能看到 ${count} 条）` : ""}。`
+        + `<br>只删这一个工具的记录，另外两个工具的日志、账号、凭据、当天进度全部不动。删掉之后不能恢复。`)
+      + `<div class="pane" style="margin-top:16px"><p class="sub" style="margin:0 0 14px">`
+      + `一次调用只有 50 个子请求，所以一次最多删 ${CLEAR_BUDGET} 条左右；条数更多时分几次点就行，每次删完会告诉你还剩多少。</p>`
+      + `<div class="acts"><form method="post" action="${escapeHtml(action)}" style="display:inline">`
+      + `<button class="btn danger" type="submit">确认清空</button></form>`
+      + `${button(link("/runs", pwd, { tool: tool.id }), "取消")}</div></div>`,
   });
 }
 

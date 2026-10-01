@@ -173,3 +173,37 @@ export async function readRunLog(env, key) {
   if (!isLogKey(text) || text.includes("..")) return null;
   return getJson(requireKv(env), text, null);
 }
+
+// 清空某个工具的运行日志。返回 { deleted, more }。
+//
+// 范围必须按工具前缀圈定，不能扫全库再删"看起来像日志"的键：
+// 全库扫要翻到页数上限（KV 每页 1000 键），而日志分布在 30 天里、条数无上界，
+// 扫不全就等于"删了一部分却说是全清"。按前缀 list 是完整的。
+//
+// toolId 必填且必须来自注册表（router 已校验）——不接受"清空全部"，
+// 那是一个会误伤全库的操作，不该由一个筛选按钮提供。
+//
+// more=true 表示这个预算里删不完，需要用户再点一次。KV 没有批量删除，
+// 每条日志一次 delete，而一次调用只有 50 个子请求：这是硬约束，不是设计取舍。
+// 假装一次能清完 8000 条，结果就是界面说"已清空"而库里还剩几千条。
+export const CLEAR_BUDGET = 28;   // 1 次 list + 28 次 delete，留出收尾写入的余量
+export async function clearRunLog(env, toolId) {
+  const kv = requireKv(env);
+  const prefix = `${RUN_PREFIX}${toolId}:`;
+  let deleted = 0;
+  // 每轮都从头 list：键在减少，下一次拿到的就是还没删的那批。
+  // 用游标翻页是错的 —— 刚删掉的键会让 cursor 指向的位置失效。
+  while (deleted < CLEAR_BUDGET) {
+    const page = await kv.list({ prefix, limit: CLEAR_BUDGET });
+    const keys = (page.keys || []).map((entry) => entry.name).filter(isLogKey);
+    if (keys.length === 0) return { deleted, more: false };
+    for (const key of keys) {
+      if (deleted >= CLEAR_BUDGET) return { deleted, more: true };
+      await kv.delete(key);
+      deleted += 1;
+    }
+  }
+  // 预算正好用完：再 list 一次确认还有没有剩的，这一次只花 1 个子请求。
+  const rest = await kv.list({ prefix, limit: 1 });
+  return { deleted, more: (rest.keys || []).length > 0 };
+}
