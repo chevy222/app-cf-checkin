@@ -31,14 +31,16 @@ export function renderRuns({ pwd, tools, entries, active = {}, flash }) {
       : `<span>${escapeHtml(entry.tool)}/${escapeHtml(meta.label || entry.uid)}</span>`;
     const budget = entry.kind === "tick" && meta.used !== undefined
       ? `<span class="num dim">${meta.used}/${meta.limit}</span>` : "";
+    // data-label 供窄屏卡片式排版用（见 layout.js 的 @media）：窄屏下 thead 隐藏，
+    // 字段名由 CSS 从 data-label 生成，宽屏上这个属性没有任何副作用。
     return `<tr>
-      <td class="mono dim">${escapeHtml(fmtCST(Math.floor(entry.at / 1000)))}</td>
-      <td>${who}</td>
-      <td>${badge(meta.status || "error")}</td>
-      <td class="dim">${escapeHtml(meta.message || "（无摘要）")}</td>
-      <td class="num dim">${escapeHtml(meta.credits ? `+${meta.credits}` : "")}</td>
-      <td>${budget}</td>
-      <td style="text-align:right"><a class="btn sm" href="${escapeHtml(href)}">详情</a></td>
+      <td class="mono dim" data-label="时间">${escapeHtml(fmtCST(Math.floor(entry.at / 1000)))}</td>
+      <td data-label="对象">${who}</td>
+      <td data-label="结果">${badge(meta.status || "error")}</td>
+      <td class="dim" data-label="摘要">${escapeHtml(meta.message || "（无摘要）")}</td>
+      <td class="num dim" data-label="积分">${escapeHtml(meta.credits ? `+${meta.credits}` : "")}</td>
+      <td data-label="子请求">${budget}</td>
+      <td data-label="" style="text-align:right"><a class="btn sm" href="${escapeHtml(href)}">详情</a></td>
     </tr>`;
   }).join("");
 
@@ -88,10 +90,10 @@ function stepRow(step) {
   if (step.over) notes.push(`超支 ${step.over}`);
   if (step.unreachable) notes.push("成本超上限");
   return `<tr>
-    <td class="mono dim">${escapeHtml(step.id)}</td>
-    <td>${badge(step.status)}</td>
-    <td class="dim">${escapeHtml(step.message || "")}</td>
-    <td class="num dim">${escapeHtml(notes.join(" · "))}</td>
+    <td class="mono dim" data-label="步骤">${escapeHtml(step.id)}</td>
+    <td data-label="结果">${badge(step.status)}</td>
+    <td class="dim" data-label="说明">${escapeHtml(step.message || "")}</td>
+    <td class="num dim" data-label="备注">${escapeHtml(notes.join(" · "))}</td>
   </tr>`;
 }
 
@@ -115,10 +117,10 @@ export function renderRunDetail({ pwd, tools, entry, key, missing }) {
 
   const steps = isTick
     ? (entry.plan || []).map((p) => `<tr>
-        <td class="mono dim">${escapeHtml(p.tool)}</td>
-        <td>${p.skipped ? badge("skipped", p.skipped) : badge("ok", `${p.accounts.length} 个账号`)}</td>
-        <td class="dim">${escapeHtml((p.accounts || []).map((a) => `${a.label || a.uid} ${a.status}`).join("；"))}</td>
-        <td></td></tr>`).join("")
+        <td class="mono dim" data-label="工具">${escapeHtml(p.tool)}</td>
+        <td data-label="处置">${p.skipped ? badge("skipped", p.skipped) : badge("ok", `${p.accounts.length} 个账号`)}</td>
+        <td class="dim" data-label="账号结果">${escapeHtml((p.accounts || []).map((a) => `${a.label || a.uid} ${a.status}`).join("；"))}</td>
+        <td data-label=""></td></tr>`).join("")
     : (entry.steps || []).map(stepRow).join("");
 
   const b = entry.budget || {};

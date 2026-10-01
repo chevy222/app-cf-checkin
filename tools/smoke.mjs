@@ -1134,6 +1134,40 @@ test("[全空转的轮什么都不写", async () => {
 
 // 清空日志：范围只限被点的那一个工具，且不能靠 GET 触发
 // 用真实注册表里的 qoder —— 路由只认注册表，夹具的 "fix" 会被 404 挡掉
+
+// 窄屏适配。2026-10-01 用户拿 390px 宽的手机截图反馈：导航折成两行（「总览」被拆成
+// 「总/览」），表格 640px 撑破屏幕（时间/对象/结果三列全在屏外）。
+// 这条守住两件事：窄屏媒体查询存在，且表格每格都带 data-label（卡片式排版的字段名来源）。
+test("窄屏适配：导航不折行、表格卡片化所需的 data-label 齐全", async () => {
+  const kv = fakeKv();
+  const env = envFor(kv);
+  // 手工造一条 qoder 日志：tickWith 传入的合成工具会顶掉整个注册表，造不出 qoder 的记录
+  kv.store.set("v1:run:qoder:0000000000123:qdr-m1", "{}");
+  const page = await hit(`/runs?pwd=${PASSWORD}`, { env });
+  const css = page.text.match(/<style>([\s\S]*?)<\/style>/)[1];
+
+  // 导航：窄屏下必须禁止折行（折行就是「总览」被拆成两字的原因）
+  const navBlock = css.match(/@media \(max-width:720px\)\{[^]*?\.nav\{([^}]*)\}/);
+  assert.ok(navBlock, "缺窄屏导航规则");
+  assert.match(navBlock[1], /flex-wrap:nowrap/, "窄屏导航必须 nowrap，否则「总览」会被折断");
+  assert.match(navBlock[1], /overflow-x:auto/, "窄屏导航要能横向滚，5 项在 360px 放不下");
+
+  // 表格：卡片式排版依赖 td[data-label] 生成字段名，缺一个就少一个字段名
+  assert.match(css, /table\.t\{min-width:0;display:block\}/, "窄屏表格没改成块级（仍在横向溢出）");
+  assert.match(css, /table\.t thead\{display:none\}/, "窄屏没隐藏表头");
+  assert.match(css, /content:attr\(data-label\)/, "缺 data-label 字段名生成规则");
+
+  // 每个数据格都要有 data-label（最后一个操作列允许为空串，它有专门规则隐藏）。
+  // 只在 <tbody> 片段里找：CSS 注释里写着 "<td>" 字面量，全页扫会把它当成一个缺属性的格。
+  const tbody = page.text.match(/<tbody>([\s\S]*?)<\/tbody>/)[1];
+  const tds = [...tbody.matchAll(/<td([^>]*)>/g)].map((m) => m[1]);
+  assert.equal(tds.length, 7, `列表页每行应是 7 格，实际 ${tds.length}`);
+  const missing = tds.filter((attrs) => !/data-label="/.test(attrs));
+  assert.equal(missing.length, 0, `有 ${missing.length} 个 <td> 缺 data-label：${JSON.stringify(missing)}`);
+  // 操作列是空串而不是缺属性 —— 两者在 CSS 里待遇不同（空串有 content:none 规则）
+  assert.match(tds[tds.length - 1], /data-label=""/, "最后一格（操作列）应带空 data-label");
+});
+
 test("清空日志只删被点的那个工具，别家与账号凭据原样留着", async () => {
   const kv = fakeKv();
   const env = envFor(kv);

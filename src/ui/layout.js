@@ -146,6 +146,61 @@ table.t tr:last-child td{border-bottom:0}
 .ft a{color:var(--faint);text-decoration:none}
 .ft a:hover{color:var(--accent)}
 .ft .sep{margin:0 7px}
+/* 窄屏适配。移动端的问题不是"缩小"，而是"换结构"：
+   · 导航横排 5 项在 360px 一定放不下 —— 折行会把「总览」拆成两字，
+     所以改成整条横向滚动，位置永远在第一项。
+   · 表格 min-width 640px 在窄屏必然横向溢出，滑动能看全但看不出"这是列表"，
+     所以窄屏下改成卡片式堆叠：每行一张卡，字段名靠 data-label 显示。
+   · 筛选按钮组与操作按钮组在窄屏占满整行，避免挤成两半。 */
+@media (max-width:720px){
+  .wrap{padding:14px 12px 56px}
+  .top{padding:10px 12px;gap:10px}
+  .brand{font-size:14.5px}
+  /* 整条可横向滚，且不换行 —— nav 自身不能 wrap，否则「总览」会被折断 */
+  .nav{flex:1 1 100%;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;
+    scrollbar-width:none;padding-bottom:1px}
+  .nav::-webkit-scrollbar{display:none}
+  .nav a{flex:none;padding:6px 10px;font-size:13px}
+  .top .right{flex:1 1 100%;margin-left:0;justify-content:flex-end}
+  .h{margin:18px 0 8px}
+  h2{font-size:16px}
+  .sub{font-size:12px}
+  /* 筛选栏在窄屏独占一行，.spacer 的 margin-left:auto 会把它推偏 */
+  .h .acts{width:100%;justify-content:flex-start}
+  .grid.cols3{grid-template-columns:1fr}
+  .tutbox{padding:12px 12px}
+  .tut-b,.tut-c,.tutbox .alert,.tutbox .tw{margin-left:0}
+  .field textarea{min-height:120px}
+  .card .hd,.card .bd,.pane{padding-left:13px;padding-right:13px}
+  .kv{flex-direction:column;gap:2px}
+  .kv .v{text-align:left}
+  .login{max-width:none;margin:36px 16px}
+}
+
+/* 窄屏表格 → 卡片。给每格加 data-label（见各页面的 <td>），
+   由 CSS 生成字段名，所以表格在宽屏上仍然是真表格（有语义、能横向滚）。 */
+@media (max-width:720px){
+  .tw{overflow-x:visible;border-radius:0}
+  table.t{min-width:0;display:block}
+  table.t thead{display:none}
+  table.t tbody{display:block}
+  table.t tr{display:block;background:var(--panel);border:1px solid var(--line);
+    border-radius:var(--radius);margin:0 0 8px;padding:2px 0}
+  table.t td{display:flex;align-items:baseline;gap:10px;border:0;padding:5px 12px;text-align:left}
+  table.t td::before{content:attr(data-label);flex:none;width:4.5em;color:var(--muted);
+    font-size:11.5px;font-weight:600}
+  table.t td:empty{display:none}
+  /* 操作列（详情/执行/删除）没有字段名，data-label 是空串。
+     宽度给 0 + 不显示 ::before，否则会留一块 4.5em 的空白，
+     而这一格里的按钮本来就是靠右对齐的独立操作区。 */
+  table.t td[data-label=""]{padding-left:12px;padding-right:12px}
+  table.t td[data-label=""]::before{content:none;width:0}
+  /* 窄屏下操作按钮独占一行靠右：挤在字段名后面会显得像某个字段的值 */
+  table.t td[data-label=""] .acts{width:100%;justify-content:flex-end}
+  /* 结果徽章与积分这类「值」跟在字段名后面，不再独占一行 */
+  table.t td .badge{font-size:11.5px}
+  .num{white-space:normal}
+}
 @media (max-width:860px){.split{grid-template-columns:1fr}}
 `;
 

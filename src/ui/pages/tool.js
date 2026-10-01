@@ -71,12 +71,12 @@ export function renderTool({ pwd, tool, accounts, total, sched = {}, flash, flag
     // 停用时隐藏「执行」，保留「测试」「编辑」「删除」。用户明确决定：执行是打上游的动作，
     // 测试只是看状态。服务端 runAccountNow 也会自己再判一次 —— 隐藏按钮不等于权限。
     return `<tr>
-    <td><div class="acc"><span class="nm">${escapeHtml(account.label || "（未命名）")}</span></div></td>
-    <td>${account.broken ? badge("error", "记录损坏") : badge(entry.lastStatus || "skipped", entry.lastStatus ? undefined : "尚未运行")}</td>
-    <td>${stepChips(tool, entry)}</td>
-    <td>${nonSecretSummary(tool, account)}</td>
-    <td class="mono dim">${escapeHtml(fmtCST(account.updatedAt))}</td>
-    <td><div class="acts">
+    <td data-label="账号"><div class="acc"><span class="nm">${escapeHtml(account.label || "（未命名）")}</span></div></td>
+    <td data-label="结果">${account.broken ? badge("error", "记录损坏") : badge(entry.lastStatus || "skipped", entry.lastStatus ? undefined : "尚未运行")}</td>
+    <td data-label="步骤">${stepChips(tool, entry)}</td>
+    <td data-label="字段">${nonSecretSummary(tool, account)}</td>
+    <td class="mono dim" data-label="更新">${escapeHtml(fmtCST(account.updatedAt))}</td>
+    <td data-label=""><div class="acts">
       ${account.broken || off ? "" : actionForm(pwd, `${base}/run`, "执行", "pri")}
       ${account.broken || typeof tool.validate !== "function" ? "" : actionForm(pwd, `${base}/validate`, "测试")}
       ${account.broken ? "" : button(link(`${base}/edit`, pwd), "编辑", "", true)}

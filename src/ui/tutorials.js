@@ -306,7 +306,7 @@ export function renderTutorial(tool) {
 
   const fields = (t.fields || []).length
     ? `<div class="tw"><table class="t"><thead><tr><th>值</th><th>从哪来</th><th>说明</th></tr></thead><tbody>${
-      t.fields.map(([a, b, c]) => `<tr><td>${rich(a)}</td><td>${rich(b)}</td><td>${rich(c || "—")}</td></tr>`).join("")
+      t.fields.map(([a, b, c]) => `<tr><td data-label="值">${rich(a)}</td><td data-label="从哪来">${rich(b)}</td><td data-label="说明">${rich(c || "—")}</td></tr>`).join("")
     }</tbody></table></div>`
     : "";
 
