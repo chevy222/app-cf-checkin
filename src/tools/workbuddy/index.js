@@ -266,7 +266,10 @@ export default {
         const days = api.num(api.dig(api.dig(streak.payload, "streak"), "days")) || 0;
         const unlocked = api.workbuddyRedeemTiers.filter((row) => days >= row.days);
         if (unlocked.length === 0) {
-          return { status: "inactive", message: `连签 ${days} 天，还没到任何兑换档`, credits: 0, cred: ctx.rotated };
+          // 报 ok（界面显示"正常"）而不是 inactive（"活动未开"）：活动本身开着，
+          // 只是连签天数没到 —— 一个月里绝大多数天都在 7 天以下，这是常态，
+          // 与"没有抽奖机会""没有待领的任务奖励"同类。使用者明确指出"活动未开"是误导。
+          return { status: "ok", message: `连签 ${days} 天，还没到任何兑换档`, credits: 0, cred: ctx.rotated };
         }
 
         let credits = 0;

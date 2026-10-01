@@ -2457,7 +2457,7 @@ test("[workbuddy] target:0 的「0/0」任务照样能领：不许把 target 用
   } finally { stub.restore(); }
 });
 
-test("[workbuddy] 连签兑换：409/403 是正常无事，天数不够就整步 inactive", async () => {
+test("[workbuddy] 连签兑换：409/403 是正常无事，天数不够报正常而不是活动未开", async () => {
   const kv = fakeKv();
   seedWorkbuddy(kv);
   const stub = stubUpstream(wbIdleRoutes({
@@ -2478,7 +2478,9 @@ test("[workbuddy] 连签兑换：409/403 是正常无事，天数不够就整步
     const stub2 = stubUpstream(wbIdleRoutes({ "GET /v2/activity/growth/streak": { payload: { streak: { days: 2 } } } }));
     try {
       const { summary: s2 } = await wbTick(cold);
-      assert.equal(wbView(s2).steps[6].status, "inactive");
+      // 天数没到任何兑换档是常态（活动开着，只是没到档），报"正常"而不是"活动未开"
+      assert.equal(wbView(s2).steps[6].status, "ok");
+      assert.match(wbView(s2).steps[6].message, /还没到任何兑换档/);
       assert.equal(stub2.seen.filter((r) => r.path.endsWith("/redeem")).length, 0);
     } finally { stub2.restore(); }
   } finally { stub.restore(); }
