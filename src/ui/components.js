@@ -13,7 +13,7 @@ export function badge(status, overrideLabel) {
 const CLASS_BY_STATUS = {
   claimed: "claimed", already: "already", ok: "ok", inactive: "inactive", pending: "pending",
   partial: "partial", skipped: "skipped", rate_limited: "rate", login_required: "login",
-  deferred: "defer", error: "error",
+  deferred: "defer", waiting: "wait", error: "error",
 };
 function infoClass(status) {
   return CLASS_BY_STATUS[status] || "error";

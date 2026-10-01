@@ -4,8 +4,8 @@ import { fmtCST, parseWindowEnd } from "../../core/time.js";
 // WorkBuddy 签到工具。
 //
 // 这一家的形状与另两家完全不同：不是一个"领取"动作，而是 7 件互相有顺序依赖的事。
-// 7 件事必须分轮跑：全塞进一次调用的话，单账号一轮最坏 32 次上游调用（7 步 cost 之和），
-// 2 个账号串在同一次调用里就 64 次，必然撞穿免费版 50 次外部请求/调用的硬顶。撞顶之后冒出来的
+// 7 件事必须分轮跑：全塞进一次调用的话，单账号一轮最坏 33 次上游调用（7 步 cost 之和），
+// 2 个账号串在同一次调用里就 66 次，必然撞穿免费版 50 次外部请求/调用的硬顶。撞顶之后冒出来的
 // 症状是假的「可能登录态失效，请重新登录」，很多人因此天天重贴凭据，
 // 而真正的原因是配额。
 //
@@ -14,6 +14,10 @@ import { fmtCST, parseWindowEnd } from "../../core/time.js";
 const DRAWS_PER_ROUND = 5;
 const OPENS_PER_ROUND = 5;
 const TASKS_PER_ROUND = 3;
+// 一次派发行程最多试几个地点：取 locations[0]，上游说它 "location not available" 就换下一个。
+// 固定用第一个的话，那个地点一被下线就会**每轮都失败** —— 而那本来是一次请求就能绕开的。
+// cost 里为这第二次尝试留了位置。
+const DEPART_ATTEMPTS = 2;
 
 // 这些任务**不走通用接领接口**。前端读任务列表前会先
 // GET /v2/activity/growth/subscribe-task/status 刷新它们的订阅状态，本工具不做那一步，
@@ -98,12 +102,13 @@ export default {
     {
       id: "travel",
       label: "旅行：领到站礼物并派新行程",
-      cost: 4,
+      // 最坏：1 读状态 + 1 领奖 + 1 读配置 + 2 派发（第一个地点不可用时换下一个再试）
+      cost: 5,
       async run(ctx) {
         const guarded = await guard(ctx);
         if (guarded) return guarded;
-        // 只读一次状态：state / record_id / daily_limit_reached 都在这份响应里。
-        // 分三次读会把这一步的 cost 从 4 顶到 6，而 cost 是预算判定的依据
+        // 只读一次状态：state / daily_limit_reached 都在这份响应里。分几次读会把 cost 顶上去，
+        // 而 cost 是预算判定的依据。
         const first = await api.readTravelStatus(ctx);
         if (api.isAuthFail(first)) return { status: "login_required", message: "旅行状态被拒", credits: 0, cred: ctx.rotated };
         const state = api.dig(first.payload, "state");
@@ -111,30 +116,34 @@ export default {
         if (state === "arrived") {
           const claimed = await api.claimTravel(ctx);
           const reward = api.num(api.dig(claimed.payload, "reward_credit"));
-          if (claimed.status < 400 && reward !== null) {
-            // 领到就 return，**不**在同一趟里接着派新行程 —— 这是有意的选择。
-            // 代价：该步最坏从 3 次请求涨到 4 次（cost 4），曾一度顶到单轮上限。
-            // 换来的是"派发最多晚一轮 cron（*/30，即 ≤30 分钟）"：领奖后 travel 变 idle，
-            // 下一轮读到 idle 会正常派出。行程周期以小时计，少掉的那一趟并不存在 ——
-            // 一天能派几趟由行程时长和 daily_limit 决定，与派发时刻无关。
-            // 若要恢复成同一趟里派发，必须先把这步的 cost 改对，否则账本算低。
-            //
-            // 注意"领失败也不派"是**必须保留**的：一失败就当 idle 会立刻派下一趟，
-            // 把这次已到站的礼物顶掉，等于白丢。
-            return { status: "claimed", message: `到站礼物 +${reward}`, credits: reward, cred: ctx.rotated };
+          if (claimed.status >= 400 || reward === null) {
+            // 领奖失败就**不派新行程**：一失败就当 idle 去派，会把这次已到站的礼物顶掉，等于白丢。
+            // claim 没成功就说明这趟行程还没结束（上游那边 state 仍是 arrived），下一轮会再试领。
+            return { status: "error", message: `到站礼物领取失败（HTTP ${claimed.status}），本次不派新行程`, credits: 0, cred: ctx.rotated };
           }
-          return { status: "error", message: `到站礼物领取失败（HTTP ${claimed.status}），本次不派新行程`, credits: 0, cred: ctx.rotated };
+          // 领到就**接着派下一趟**：礼物已经到手（积分已发），派新行程只是开下一程，顶不掉任何东西。
+          // 早派一轮就早到站一轮 —— 一趟行程以小时计，串行等一轮等于白丢小半天。
+          const departed = await departNext(ctx);
+          if (departed.error) return { status: "error", message: `到站礼物 +${reward}，但${departed.error}`, credits: reward, cred: ctx.rotated };
+          if (departed.limit) return { status: "inactive", message: `到站礼物 +${reward}，今日旅行次数已用尽`, credits: reward, cred: ctx.rotated };
+          if (departed.inflight) return { status: "waiting", message: `到站礼物 +${reward}，已在旅途中`, credits: reward, cred: ctx.rotated };
+          return { status: "waiting", message: `到站礼物 +${reward}，新行程已派 → ${departed.place}`, credits: reward, cred: ctx.rotated };
         }
-        if (state === "traveling") return { status: "ok", message: "旅行途中，等到站", credits: 0, cred: ctx.rotated };
+
+        // 上游正在走。到站时间由它决定，所以**不落已结**：下一轮再看。
+        // 落成 ok 会让这步当天不再重跑，到站礼物就得等第二天才领得到。
+        if (state === "traveling") return { status: "waiting", message: "旅行途中，等到站", credits: 0, cred: ctx.rotated };
+
+        // 今日趟数用尽 —— 这是这步**唯一**当天收工的情况。
         if (api.dig(first.payload, "daily_limit_reached")) {
           return { status: "inactive", message: "今日旅行次数已用尽", credits: 0, cred: ctx.rotated };
         }
-        const config = await api.readTravelConfig(ctx);
-        const locations = api.dig(config.payload, "locations") || [];
-        if (!locations.length) return { status: "error", message: "旅行配置里没有可选地点", credits: 0, cred: ctx.rotated };
-        const depart = await api.departTravel(ctx, locations[0].id);
-        if (depart.status >= 400) return { status: "error", message: `派新行程失败（HTTP ${depart.status}）`, credits: 0, cred: ctx.rotated };
-        return { status: "ok", message: `已派新行程 → ${locations[0].name || locations[0].id}`, credits: 0, cred: ctx.rotated };
+
+        const departed = await departNext(ctx);
+        if (departed.error) return { status: "error", message: departed.error, credits: 0, cred: ctx.rotated };
+        if (departed.limit) return { status: "inactive", message: "今日旅行次数已用尽", credits: 0, cred: ctx.rotated };
+        if (departed.inflight) return { status: "waiting", message: "已在旅途中", credits: 0, cred: ctx.rotated };
+        return { status: "waiting", message: `已派新行程 → ${departed.place}`, credits: 0, cred: ctx.rotated };
       },
     },
     {
@@ -453,6 +462,26 @@ export default {
     return { status: judged.verdict === "already" ? "ok" : judged.verdict, message: judged.message };
   },
 };
+
+// 派新行程。取 locations[0]，被拒就按上游的说法分流；"地点不可用"换下一个再试一次。
+// 返回四选一：{ place } 派成了 / { limit } 今日趟数用尽 / { inflight } 已在途中 / { error }。
+async function departNext(ctx) {
+  const config = await api.readTravelConfig(ctx);
+  const locations = api.dig(config.payload, "locations") || [];
+  if (!locations.length) return { error: "旅行配置里没有可选地点" };
+  const rejected = [];
+  for (const place of locations.slice(0, DEPART_ATTEMPTS)) {
+    const depart = await api.departTravel(ctx, place.id);
+    if (depart.status < 400) return { place: place.name || place.id };
+    const why = api.classifyDepartFailure(depart);
+    if (why.kind === "limit") return { limit: true };
+    // "already traveling" 是幂等应答：这一趟已经在走了，不是失败。
+    if (why.kind === "traveling") return { inflight: true };
+    if (why.kind === "location") { rejected.push(place.name || place.id); continue; }
+    return { error: `派新行程失败：${why.message}` };
+  }
+  return { error: `派新行程失败：${rejected.join("、")} 都不可用` };
+}
 
 // 动手之前先确认这把票还能用。换出来的新串挂在 ctx.rotated 上，
 // 由这一步的返回值带回内核当场落盘 —— 旧串已经被这次调用消耗掉了。

@@ -35,7 +35,9 @@ export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, b
     const last = runs.find((r) => r.kind === "run" && r.tool === tool.id);
     const segments = uids.map((uid) => {
       const s = entries[uid].lastStatus;
-      const cls = SETTLED.has(s) ? "done" : s === "rate_limited" || s === "deferred" ? "wait" : s ? "bad" : "";
+      // waiting（等待中）与 rate_limited / deferred 同类：还没结，但会自己好，不该标红。
+      const cls = SETTLED.has(s) ? "done"
+        : ["rate_limited", "deferred", "waiting"].includes(s) ? "wait" : s ? "bad" : "";
       return `<i class="${cls}"></i>`;
     }).join("");
 

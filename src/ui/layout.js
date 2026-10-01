@@ -78,7 +78,7 @@ h2{margin:0;font-size:17px;font-weight:650;letter-spacing:-.2px}
 .b-already{background:var(--teal-bg);color:var(--teal)}
 .b-inactive,.b-skipped{background:var(--neu-bg);color:var(--neu)}
 .b-pending,.b-partial,.b-rate{background:var(--warn-bg);color:var(--warn)}
-.b-defer{background:var(--info-bg);color:var(--info)}
+.b-defer,.b-wait{background:var(--info-bg);color:var(--info)}
 .b-login,.b-error{background:var(--bad-bg);color:var(--bad)}
 .btn{display:inline-flex;align-items:center;gap:6px;font:inherit;font-size:12.5px;padding:6px 13px;
   border-radius:var(--radius-sm);border:1px solid var(--line2);background:var(--panel);color:var(--text);
@@ -315,6 +315,7 @@ const SPRITE = `
 <symbol id="g-down" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.1" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 5v4.4M5.7 7.2L8 9.5l2.3-2.3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
 <symbol id="g-oct" viewBox="0 0 16 16"><path d="M5.5 1.9h5L14.1 5.5v5L10.5 14.1h-5L1.9 10.5v-5z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 4.8v3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="10.8" r=".95" fill="currentColor"/></symbol>
 <symbol id="g-key" viewBox="0 0 16 16"><circle cx="5.4" cy="5.4" r="3.1" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M7.6 7.6l5.1 5.1M10.4 9.6l1.6 1.6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+<symbol id="g-hour" viewBox="0 0 16 16"><path d="M4.6 2.2h6.8M4.6 13.8h6.8M5.4 2.2c0 2.5 2.6 3.4 2.6 5.8s-2.6 3.3-2.6 5.8M10.6 2.2c0 2.5-2.6 3.4-2.6 5.8s2.6 3.3 2.6 5.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
 </svg>`;
 
 // 全站唯一的状态词汇。形状 + 颜色 + 中文三重冗余，去掉颜色也读得懂。
@@ -324,6 +325,7 @@ export const STATUS = {
   ok: { label: "正常", glyph: "g-dot" },
   inactive: { label: "活动未开", glyph: "g-ring" },
   pending: { label: "待下发", glyph: "g-clock" },
+  waiting: { label: "等待中", glyph: "g-hour" },
   partial: { label: "部分完成", glyph: "g-half" },
   skipped: { label: "未开始", glyph: "g-skip" },
   rate_limited: { label: "限频", glyph: "g-tri" },

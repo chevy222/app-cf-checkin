@@ -20,7 +20,12 @@ const PENDING_RETRY_SEC = 3600;
 // pending 也在这一列：它是"上游还没把活动下发出来"（Qoder 每天 10 点前后就是这状态），
 // 属于正常等待，不是故障。把它当 error 会让红条在健康的日子里亮起来，
 // 而把它当 already 会让当天再也不重试 —— 两个方向都不对，只有"可接续"是对的。
-const CONTINUABLE = new Set(["deferred", "skipped", "pending"]);
+const CONTINUABLE = new Set(["deferred", "skipped", "pending", "waiting"]);
+// waiting 与 pending 必须分开，不能合并成一个词：
+//   pending —— **上游还没开始**（活动窗口没到）。它按账号被 PENDING_RETRY_SEC 拽慢一小时，
+//              那是给"纯查询"设的风控护栏（见上一段注释）。
+//   waiting —— **上游已经在推进**（旅行在途），只需要等它走完。不受任何节流，下一轮就看。
+// 两者都不是 SETTLED（当天不收工），差别只在"下一次什么时候看"，所以是两个词。
 
 // 这里不设任何"每轮固定开销"的预留量：KV 不占外部请求额度（见 budget.js 文件头），
 // 而"预留"最容易出错 —— KV 撞顶的表现只是那一次 KV 调用失败（safe()/catch 会吞掉），
@@ -47,6 +52,9 @@ export function aggregate(results) {
   // 步骤自己就能报 partial（一轮没做完、还剩一些），整体必须如实是 partial：
   // 报 claimed 会当天上闩、剩下的再也不领；报 error 又像是全失败。
   if (statuses.includes("partial")) return "partial";
+  // waiting 排在 pending 之前：它是"上游正在推进、下一轮就再看"，不该被 pending 那条
+  // 按账号设的一小时闸拽住（commitSched 只看账号状态）。有 waiting 就先报 waiting。
+  if (statuses.includes("waiting")) return errors.length ? "partial" : "waiting";
   if (statuses.includes("pending") && settled.length === 0 && errors.length === 0) return "pending";
 
   if (unfinished.length === 0) {
@@ -330,7 +338,7 @@ export async function runTick({ env, budget, tools, trigger = "cron", now = nowS
     const day = dayOf(tool, now);
     // 到期判定全部走内存里的调度索引：每工具固定 1 次 list + 1 次 get，与账号数无关。
     // 到期队列按"最久没被服务"排序，不是按 uid 字典序。
-    // 字典序配上全局预算闸 = 排在末尾的账号永远饿死：WorkBuddy 一个账号最坏 32 次外部请求，
+    // 字典序配上全局预算闸 = 排在末尾的账号永远饿死：WorkBuddy 一个账号最坏 33 次外部请求，
     // 上限 45 只装得下 1 个，而前两个每轮都以 partial 收（resumable 豁免节流，立刻再来），
     // 于是它们每轮把额度吃干、第三个永远排在闸外 —— 它连一条调度索引都拿不到，
     // 表现是红条不亮、首页进度不计入、/runs 里查无此人，用户只能逐个点进工具页才发现。

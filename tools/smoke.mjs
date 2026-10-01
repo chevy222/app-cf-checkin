@@ -3251,16 +3251,133 @@ test("[workbuddy] 顶层字段是 null 时要能穿透到包装层取到真值",
   const stub = stubUpstream(wbIdleRoutes({
     "GET /v2/activity/growth/buddy/travel/status": { payload: { state: null, data: { state: "arrived", record_id: "rec-n" } } },
     "POST /v2/activity/growth/buddy/travel/claim": { payload: { reward_credit: 8 } },
+    "GET /v2/activity/growth/buddy/travel/config": { payload: { locations: [{ id: "loc-1", name: "甲" }] } },
+    "POST /v2/activity/growth/buddy/travel/depart": { payload: { ok: true } },
   }));
   try {
     const { summary } = await wbTick(kv);
     const travel = wbView(summary).steps[1];
-    assert.equal(travel.status, "claimed", `顶层 null 让到站礼物没领到（实际 ${travel.status}：${travel.message}）`);
-    assert.match(travel.message, /\+8/);
+    assert.match(travel.message, /\+8/, `顶层 null 让到站礼物没领到（${travel.status}：${travel.message}）`);
     assert.equal(stub.seen.filter((r) => r.path.endsWith("/buddy/travel/claim")).length, 1, "到站了却没发领取请求");
     // 实测形状：到站领取不带任何参数，多传 record_id 属于自作多情
     const claimReq = stub.seen.find((r) => r.path.endsWith("/buddy/travel/claim"));
     assert.equal(claimReq.body, undefined, `到站领取不该带请求体，实际 ${claimReq.body}`);
+  } finally { stub.restore(); }
+});
+
+test("[workbuddy] 到站领完礼物就接着派下一趟，不等下一轮", async () => {
+  // 礼物已经到手（积分已发），派新行程只是开下一程，顶不掉任何东西；
+  // 而串行等一轮等于白丢小半天（一趟行程以小时计）。这条锁住"同趟派发"。
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  const stub = stubUpstream(wbIdleRoutes({
+    "GET /v2/activity/growth/buddy/travel/status": { payload: { state: "arrived" } },
+    "POST /v2/activity/growth/buddy/travel/claim": { payload: { reward_credit: 8 } },
+    "GET /v2/activity/growth/buddy/travel/config": { payload: { locations: [{ id: "loc-1", name: "甲" }] } },
+    "POST /v2/activity/growth/buddy/travel/depart": { payload: { ok: true } },
+  }));
+  try {
+    const { summary } = await wbTick(kv);
+    const travel = wbView(summary).steps[1];
+    assert.equal(travel.status, "waiting", `领完该接着派、并报"等待中"（${travel.status}：${travel.message}）`);
+    assert.match(travel.message, /\+8/, travel.message);
+    assert.match(travel.message, /甲/, `没报出派到哪：${travel.message}`);
+    const seq = stub.seen.filter((r) => r.path.includes("/travel/")).map((r) => r.path.split("/").pop());
+    assert.deepEqual(seq, ["status", "claim", "config", "depart"], `顺序不对：${seq.join(" → ")}`);
+    assert.equal(wbView(summary).credits, 8, "礼物积分要记上");
+  } finally { stub.restore(); }
+});
+
+test("[workbuddy] 旅行在途不落已结：同一天下一轮仍会重读状态", async () => {
+  // 这条是那个 bug 的回归锁：travel 一旦返回 SETTLED 里的词（原来是 ok / claimed），
+  // 账号当天就被判成"已结"、再也不会排队，到站礼物要等第二天才领得到。
+  // traveling 必须报 waiting（非已结、且不受节流）。
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  const stub = stubUpstream(wbIdleRoutes());     // travel/status 默认就是 traveling
+  try {
+    const first = await wbTick(kv, cst(10));
+    assert.equal(wbView(first.summary).steps[1].status, "waiting");
+
+    const before = stub.seen.filter((r) => r.path.endsWith("/travel/status")).length;
+    const lock = [...kv.store.keys()].find((k) => k.startsWith("v1:lock:workbuddy:"));
+    if (lock) kv.store.delete(lock);
+    const second = await wbTick(kv, cst(10, 31));
+
+    assert.ok(stub.seen.filter((r) => r.path.endsWith("/travel/status")).length > before,
+      "同一天的下一轮没有再读旅行状态 —— 这就是那个 bug");
+    assert.equal(wbView(second.summary).steps[1].status, "waiting");
+    // 其余六步都已结、被复用，所以这一轮只该花 1 次外部请求
+    assert.equal(wbView(second.summary).http, 1, `在途期间每轮该只花 1 次请求，实际 ${wbView(second.summary).http}`);
+  } finally { stub.restore(); }
+});
+
+test("[workbuddy] daily_limit_reached 是 travel 唯一当天收工的情况", async () => {
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  const stub = stubUpstream(wbIdleRoutes({
+    "GET /v2/activity/growth/buddy/travel/status": { payload: { state: "idle", daily_limit_reached: true } },
+  }));
+  try {
+    const first = await wbTick(kv, cst(10));
+    assert.equal(wbView(first.summary).steps[1].status, "inactive");
+
+    const before = stub.seen.length;
+    const lock = [...kv.store.keys()].find((k) => k.startsWith("v1:lock:workbuddy:"));
+    if (lock) kv.store.delete(lock);
+    const second = await wbTick(kv, cst(10, 31));
+    assert.equal(second.summary.ran, 0, "收工之后账号当天不该再排队");
+    assert.equal(stub.seen.length, before, "收工之后当天不该再打上游");
+  } finally { stub.restore(); }
+});
+
+test("[workbuddy] depart 被拒按上游的说法分流：趟数用尽是收工、已在途不是失败", async () => {
+  // 上游对 depart 的拒绝只有消息文本（前端也是按这几条英文短语给用户提示的）。
+  // 把"限流"和"幂等应答"读成失败，就是 accept 那次的同一个毛病。
+  const cases = [
+    { name: "429 + daily limit → 活动未开（今天真的完了）", reject: { status: 429, payload: { msg: "daily limit reached" } }, expect: "inactive" },
+    { name: "already traveling → 等待中（幂等应答，不是失败）", reject: { status: 400, payload: { msg: "already traveling" } }, expect: "waiting" },
+  ];
+  for (const c of cases) {
+    const kv = fakeKv();
+    seedWorkbuddy(kv);
+    const stub = stubUpstream(wbIdleRoutes({
+      "GET /v2/activity/growth/buddy/travel/status": { payload: { state: "idle" } },
+      "GET /v2/activity/growth/buddy/travel/config": { payload: { locations: [{ id: "loc-1", name: "甲" }] } },
+      "POST /v2/activity/growth/buddy/travel/depart": c.reject,
+    }));
+    try {
+      const { summary } = await wbTick(kv);
+      const travel = wbView(summary).steps[1];
+      assert.equal(travel.status, c.expect, `${c.name} —— 实际 ${travel.status}：${travel.message}`);
+    } finally { stub.restore(); }
+  }
+});
+
+test("[workbuddy] 地点不可用就换下一个；最坏形态恰好花掉声明的 cost 5", async () => {
+  // 固定拿 locations[0] 去撞，那个地点一被下线就会每轮都失败。
+  // 顺带把 cost 钉住：1 读状态 + 1 领奖 + 1 读配置 + 2 派发 = 5，低估会让账本真的花超。
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  let departs = 0;
+  const stub = stubUpstream(wbIdleRoutes({
+    "GET /v2/activity/growth/buddy/travel/status": { payload: { state: "arrived" } },
+    "POST /v2/activity/growth/buddy/travel/claim": { payload: { reward_credit: 8 } },
+    "GET /v2/activity/growth/buddy/travel/config": { payload: { locations: [{ id: "loc-1", name: "甲" }, { id: "loc-2", name: "乙" }] } },
+    "POST /v2/activity/growth/buddy/travel/depart": () => {
+      departs += 1;
+      return departs === 1 ? { status: 400, payload: { msg: "location not available" } } : { payload: { ok: true } };
+    },
+  }));
+  try {
+    const { summary } = await wbTick(kv);
+    const travel = wbView(summary).steps[1];
+    const tried = stub.seen.filter((r) => r.path.endsWith("/travel/depart")).map((r) => JSON.parse(r.body).location_id);
+    assert.deepEqual(tried, ["loc-1", "loc-2"], `没换地点：${JSON.stringify(tried)}`);
+    assert.equal(travel.status, "waiting", travel.message);
+    assert.match(travel.message, /乙/, `没报出换到了哪个地点：${travel.message}`);
+    assert.equal(travel.over, 0, `实际请求数超出声明的 cost：超支 ${travel.over}`);
+    assert.equal(stub.seen.filter((r) => r.path.includes("/travel/")).length, 5, "最坏形态该是 5 次请求");
   } finally { stub.restore(); }
 });
 
@@ -3431,7 +3548,7 @@ test("[jwt] subjectOf 与 expiresAtOf 收的都是 JWT 原文", async () => {
 // 断言全部写成不变量，而不是写成某一次探针的输出。
 
 test("[审核P0-1] 预算只够一个账号时，排在后面的账号不许饿死", async () => {
-  // 形状：WorkBuddy 单账号一轮 32 次（7 步 cost 之和），上限 45 → 每个 tick 只装得下 1 个。
+  // 形状：WorkBuddy 单账号一轮 33 次（7 步 cost 之和），上限 45 → 每个 tick 只装得下 1 个。
   // 上游的机会/额度/任务都远多于一轮的上限，于是三个账号永远以 partial 收，
   // 永远 resumable（豁免 minIntervalSec 与 maxDaily）→ 谁在队首谁永远占满额度。
   const kv = fakeKv();

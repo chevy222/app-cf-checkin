@@ -1,4 +1,5 @@
 import { expiresAtOf, subjectOf } from "../../core/jwt.js";
+import { truncate } from "../../core/text.js";
 
 // WorkBuddy 请求层。
 //
@@ -214,6 +215,22 @@ export async function openBlindbox(ctx) {
 // 多传 record_id 属于自作多情：上游没报错不代表它认这个字段。
 export const claimTravel = (ctx) => call(ctx, TRAVEL_CLAIM, { method: "POST", body: undefined });
 export const departTravel = (ctx, locationId) => call(ctx, TRAVEL_DEPART, { body: { location_id: locationId } });
+
+// depart 被拒时上游给的是**消息文本**而不是业务码，所以只能按短语判 ——
+// 这不是我们猜的：前端的 depart 分支就是匹配这几条英文短语给用户提示的，属既有契约。
+// 翻成四种处置：
+//   limit     —— 429 或 "daily limit"：今日趟数已用尽，正常无事，按"活动未开"收工
+//   traveling —— "already traveling"：**幂等应答**，说明这一趟已经在走了，不是失败
+//   location  —— "location not available"：这个地点用不了，换下一个就好
+//   unknown   —— 判不出来就原样带出来，不吞掉上游的话
+export function classifyDepartFailure(depart) {
+  const raw = (depart.payload && (depart.payload.msg ?? depart.payload.message)) ?? depart.text ?? "";
+  const msg = String(raw);
+  if (depart.status === 429 || /daily limit/i.test(msg)) return { kind: "limit" };
+  if (/already traveling/i.test(msg)) return { kind: "traveling" };
+  if (/location not available/i.test(msg)) return { kind: "location" };
+  return { kind: "unknown", message: `HTTP ${depart.status}${msg ? ` ${truncate(msg, 100)}` : ""}` };
+}
 // 接领是**批量**接口：体是数组不是单值。发单数会被上游判成非法请求（400 invalid request）。
 export const acceptTasks = (ctx, taskCodes) => call(ctx, TASK_ACCEPT, { body: { task_codes: taskCodes } });
 
