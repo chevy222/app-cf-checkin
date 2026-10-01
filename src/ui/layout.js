@@ -110,6 +110,26 @@ table.t tr:last-child td{border-bottom:0}
 .chip{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:1.5px 7px;border-radius:99px;
   background:var(--accent-weak);color:var(--accent);font-weight:600}
 .chip.off{background:var(--warn-bg);color:var(--warn)}
+/* 工具卡片的账号进度条。一格一个账号：done 已结、bad 待处理、wait 顺延/限频。
+   <i> 是空元素，没有显式宽高就是 0×0 —— 整条进度条会什么都不剩。 */
+.prog{display:flex;gap:3px;align-items:center;margin:2px 0 9px;flex-wrap:wrap}
+.prog i{width:16px;height:5px;border-radius:99px;background:var(--panel3);flex:none}
+.prog i.done{background:var(--ok)}
+.prog i.bad{background:var(--bad)}
+.prog i.wait{background:var(--warn)}
+.prog .n{font-size:12px;color:var(--muted);margin-left:6px}
+/* 最近运行流。显式 flex 不是为了好看：<a> 默认是行内元素，不写这一条
+   N 条记录会首尾相连成一段文字。who 固定宽 + 省略号，m 吃掉剩余空间，
+   时间戳因此在每一行的同一列对齐。 */
+.flowitem{display:flex;gap:9px;align-items:center;padding:8px 0;
+  border-top:1px solid var(--line);font-size:13px}
+.flowitem:first-child{border-top:0}
+.flowitem:hover{background:var(--panel2)}
+.flowitem .who{flex:none;width:96px;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;font-size:12px;color:var(--muted)}
+.flowitem .m{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:12.5px;color:var(--muted)}
+.flowitem .when{flex:none;font-size:11.5px;color:var(--faint);white-space:nowrap}
 /* 参数获取教程。内容来自 tools 侧的数据，排版只这一份（见 tutorials.js 的说明）。 */
 .tutbox{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel2);
   padding:14px 16px;margin-bottom:16px}

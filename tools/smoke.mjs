@@ -1604,6 +1604,37 @@ fixtureTest("[首页有最近运行流", async () => {
   assert.ok(home.text.includes("FEED1"));
 });
 
+// 2026-10-01 用户拿线上截图反馈：最近运行里 N 条记录首尾相连成一段文字。
+// 根因是 layout.js 的内联 CSS 里从来没有 .flowitem / .prog 这两条规则 ——
+// 它们只存在于当年的设计稿 ui-preview.html 里，没跟着搬进代码。
+// 后果比"不好看"严重：<a> 保持行内元素，多条记录连成一行；而 <i> 是空元素，
+// 没有显式宽高就是 0×0，卡片上的账号进度条会什么都不剩。
+test("总览的运行流与进度条有布局规则：<a> 必须显式 flex，色块必须显式宽高", async () => {
+  const kv = fakeKv();
+  seedFull(kv, "FLOW1");
+  await tickWith(kv, [leakyTool(okStep())]);
+  const page = await authed("/", envFor(kv));
+  const css = page.text.match(/<style>([\s\S]*?)<\/style>/)[1];
+
+  // 运行流的每一行：<a class="flowitem"> 里挨着放 who / 徽章 / 摘要 / 时间。
+  // 不写 display:flex 就还是行内元素，多条记录会连成一段。
+  assert.match(css, /\.flowitem\{[^}]*display:flex/, "运行流没显式 flex，多条记录会连成一行");
+  // .who 固定宽 + 省略号：不给固定宽，每行的摘要起点都不一样，时间戳也就参差不齐
+  assert.match(css, /\.flowitem \.who\{[^}]*width:96px/, "运行流的账号列没有固定宽，时间戳会参差不齐");
+  assert.match(css, /\.flowitem \.m\{[^}]*flex:1/, "摘要列不吃掉剩余空间，右边的时间戳会被顶走");
+  // 首行不该有分隔线（:first-child 命中的是第一条记录，不是容器）
+  assert.match(css, /\.flowitem:first-child\{[^}]*border-top:0/, "运行流首行不该有分隔线");
+
+  // 进度条：<i> 是空元素，必须有显式宽高，否则 0×0
+  assert.match(css, /\.prog i\{[^}]*width:16px[^}]*height:5px/, "进度条的色块没有尺寸，卡片上什么都看不到");
+  assert.match(css, /\.prog i\.done\{/, "进度条缺「已结」配色");
+  assert.match(css, /\.prog i\.bad\{/, "进度条缺「待处理」配色");
+  assert.match(css, /\.prog i\.wait\{/, "进度条缺「顺延/限频」配色");
+
+  // 也不能反过来变成多行：账号多的时候色块该换行，不该把卡片撑成长长一条
+  assert.match(css, /\.prog\{[^}]*flex-wrap:wrap/, "进度条不该把色块挤在一行");
+});
+
 test("[?tool= 筛选日志，且成本与日志总量无关", async () => {
   const kv = fakeKv();
   seedFull(kv, "FILT1");
