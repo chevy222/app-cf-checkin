@@ -3067,6 +3067,55 @@ test("[workbuddy] not_accepted 的任务批量接领：体是 task_codes 数组�
   } finally { stub.restore(); }
 });
 
+test("[workbuddy] wb_wechat_oa_subscribe_task 不走接领：过期的 not_accepted 不能拿去 accept", async () => {
+  // 前端读任务列表前会先 GET /v2/activity/growth/subscribe-task/status 刷新订阅状态，
+  // 本工具不做那一步，所以这个任务的 not_accepted 是过期的（页面上它已显示「进行中」）。
+  // 拿它去 accept 会被上游逐项判不通过，产出「接领部分失败：… 未登记」这种假警报。
+  // 2026-10-02 决定：只排除这一个，别的 not_accepted 照常接领 —— 也要断言这一点，
+  // 否则"整段接领被误删"这种改法也会让本条通过。
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  const stub = stubUpstream(wbIdleRoutes({
+    "GET /v2/activity/growth/tasks": { payload: { tasks: [
+      { task_code: "wb_wechat_oa_subscribe_task", progress: { current: 0, target: 1 }, accept_status: "not_accepted", has_reward: true, reward_credit: 100 },
+      { task_code: "t-normal", progress: { current: 0, target: 1 }, accept_status: "not_accepted", has_reward: true, reward_credit: 10 },
+    ] } },
+    "POST /activity/growth/tasks/accept": { payload: { code: 0, data: { results: [{ task_code: "t-normal", status: "ok" }] } } },
+  }));
+  try {
+    const { summary } = await wbTick(kv);
+    const msg = wbView(summary).steps[4].message;
+    const accepts = stub.seen.filter((r) => r.path.endsWith("/tasks/accept"));
+    assert.equal(accepts.length, 1, "该恰好发一次接领（只带没被排除的那个）");
+    assert.deepEqual(JSON.parse(accepts[0].body).task_codes, ["t-normal"], `接领体里混进了被排除的任务：${accepts[0].body}`);
+    assert.match(msg, /已接领 1 个/, `没被排除的任务该照常接领：${msg}`);
+    // 排除必须如实说出来：静默消失会让人以为它已经被处理过了
+    assert.match(msg, /不走接领：wb_wechat_oa_subscribe_task/, `被排除的任务没进日志：${msg}`);
+  } finally { stub.restore(); }
+});
+
+test("[workbuddy] acceptResults 是三态：认不出的形状不许被当成失败", () => {
+  // 这条守的是 2026-10-02 那条假警报的根：`!row.ok` 把"明确失败"与"认不出形状"混成一种，
+  // 于是「上游返回了一个我们不认识的形状」被报成了「xxx 未登记」。
+  const rows = wbApi.acceptResults({ code: 0, data: { results: [
+    { task_code: "a", status: "ok" },                        // 明确成功（status）
+    { task_code: "b", code: 0 },                             // 明确成功（code 数字）
+    { task_code: "c", code: "0" },                           // 明确成功（code 字符串）
+    { task_code: "d", status: "failed", message: "boom" },   // 明确失败
+    { task_code: "e" },                                      // 认不出：既没说成功也没说失败
+  ] } });
+  const by = Object.fromEntries(rows.map((r) => [r.code, r]));
+  assert.equal(by.a.ok, true);
+  assert.equal(by.b.ok, true);
+  assert.equal(by.c.ok, true, "字符串 \"0\" 被当成了失败");
+  assert.equal(by.d.ok, false);
+  assert.equal(by.d.known, true, "明确失败却被标成了「无法判定」");
+  assert.equal(by.e.ok, false);
+  assert.equal(by.e.known, false, "认不出的形状被当成了明确失败 —— 假警报就是这么来的");
+  // 整个 results 缺失时返回 null：调用方据此走"回读确认"，而不是逐项判定
+  assert.equal(wbApi.acceptResults({ code: 0 }), null);
+});
+
 test("[workbuddy] 任务领取失败要把原因写进日志：只记「全部失败」查不出是谁拒的", async () => {
   const kv = fakeKv();
   seedWorkbuddy(kv);

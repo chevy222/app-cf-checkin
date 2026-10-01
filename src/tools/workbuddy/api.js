@@ -217,20 +217,35 @@ export const departTravel = (ctx, locationId) => call(ctx, TRAVEL_DEPART, { body
 // 接领是**批量**接口：体是数组不是单值。发单数会被上游判成非法请求（400 invalid request）。
 export const acceptTasks = (ctx, taskCodes) => call(ctx, TASK_ACCEPT, { body: { task_codes: taskCodes } });
 
-// 批量接领的逐项结果。顶层 code=0 只说明这个请求被接受，不代表每个任务都登记成功 ——
-// 真实结果在 data.results[].status 里逐条给（这是从 L0NE-6/WorkBuddy-Daily 的实测结论，
-// 本项目尚未实测到这一层，故按"读不到就当全成"处理，见 index.js 的用法）。
+// 批量接领的逐项结果。
 //
-// 返回 { code, message } 形状的对象；results 缺失时返回 null，调用方据此走"不逐项判定"的分支。
+// 判据是**三态**，不是"成功/失败"两态：
+//   ok=true      逐项明确说成功（status / result 为 "ok"，或 code 为 0）
+//   ok=false     逐项明确说失败（认得出形状，但不是成功值）
+//   known=false  **认不出形状** —— 这既不是成功也不是失败，调用方必须说"无法判定"，
+//                绝不能当成失败。原来的写法 `.filter((row) => !row.ok)` 把后两种混成一种，
+//                于是 2026-10-02 的日志里出现了
+//                「接领部分失败：wb_wechat_oa_subscribe_task 未登记」——
+//                把一个**认不出来**的形状报成了"上游没登记"。
+// 另外 `code` 用 num() 比而不是 `=== 0`：上游完全可能给字符串 "0"，严格相等会把
+// 一个成功值判成失败。
+//
+// 返回数组；整个 results 缺失时返回 null，调用方据此走"回读确认"而不是逐项判定。
 export function acceptResults(payload) {
   const rows = dig(payload, "results");
   if (!Array.isArray(rows)) return null;
-  return rows.map((row) => ({
-    code: typeof row?.task_code === "string" ? row.task_code : String(row?.code ?? ""),
-    // 逐项状态可能是 status 或 result，两种形状都收
-    ok: (row?.status ?? row?.result) === "ok" || dig(row, "code") === 0,
-    message: String(row?.message ?? row?.msg ?? ""),
-  }));
+  return rows.map((row) => {
+    const taskCode = typeof row?.task_code === "string" ? row.task_code : String(row?.code ?? "");
+    const flag = row?.status ?? row?.result;   // 已知的两种形状
+    // ⚠️ 必须先挡 null：`dig` 取不到字段时返回 null，而 `Number(null) === 0` ——
+    // 直接 `num(dig(row,"code"))` 会让"这一行根本没给 code"变成"code = 0 = 成功"。
+    // 这正是 codeOf() 里那句 `body.code !== null && ...` 存在的原因。
+    const rawCode = dig(row, "code");
+    const code = rawCode === null || rawCode === undefined ? null : num(rawCode);
+    const ok = flag === "ok" || code === 0;
+    const known = ok || (flag !== undefined && flag !== null) || code !== null;
+    return { code: taskCode, ok, known, message: String(row?.message ?? row?.msg ?? "") };
+  });
 }
 // 上游拒绝接领时会点明缺哪个前置："prerequisite not met: first_buddy (no buddy instance)"。
 // 把它翻成一句能照着做的话 —— 只有 task_code 的原文对使用者没有行动价值。

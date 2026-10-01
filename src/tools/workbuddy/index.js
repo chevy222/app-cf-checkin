@@ -15,6 +15,14 @@ const DRAWS_PER_ROUND = 5;
 const OPENS_PER_ROUND = 5;
 const TASKS_PER_ROUND = 3;
 
+// 这些任务**不走通用接领接口**。前端读任务列表前会先
+// GET /v2/activity/growth/subscribe-task/status 刷新它们的订阅状态，本工具不做那一步，
+// 于是读到的 not_accepted 是过期的（页面上它其实已经显示「进行中」），
+// 据此去 accept 会被上游逐项判不通过 —— 2026-10-02 的日志就是
+// 「接领部分失败：wb_wechat_oa_subscribe_task 未登记」。
+// 它有自己的状态接口，等把正确流程量清楚再接；在那之前只跳过并如实说明，不猜。
+const NO_ACCEPT_TASKS = new Set(["wb_wechat_oa_subscribe_task"]);
+
 export default {
   id: "workbuddy",
   name: "WorkBuddy",
@@ -245,7 +253,7 @@ export default {
         const tasks = api.dig(listed.payload, "tasks") || [];
 
         // 状态机按 accept_status 分流，页面上实测过 18 个任务的真实取值：
-        //   not_accepted 未接领 → accept
+        //   not_accepted 未接领 → accept（NO_ACCEPT_TASKS 里的除外，见那个常量的说明）
         //   in_progress / accepted  进行中或已接领但没做完 → 等，本轮什么都不做
         //   completed 已完成待领奖 → claim
         //   claimed 已领 → 跳过
@@ -276,8 +284,14 @@ export default {
         });
 
         const ready = usable.filter((task) => task.accept_status === "completed" && task.has_reward);
-        const pending = usable.filter((task) => task.accept_status === "not_accepted" && task.has_reward);
+        const notAccepted = usable.filter((task) => task.accept_status === "not_accepted" && task.has_reward);
+        const pending = notAccepted.filter((task) => !NO_ACCEPT_TASKS.has(task.task_code));
         const blockNote = blocked.length ? `，跳过 ${blocked.length} 个不可领的任务：${blocked.join("、")}` : "";
+        // 被排除的那几个必须如实说出来：静默消失比报错更坏，用户会以为它们已经被处理过了。
+        const skipAccept = notAccepted.filter((task) => NO_ACCEPT_TASKS.has(task.task_code)).map((task) => task.task_code);
+        const skipNote = skipAccept.length
+          ? `，不走接领：${skipAccept.join("、")}（要先刷新订阅状态，本工具不做那一步）`
+          : "";
 
         // 接领是"预告"性质的：领奖还要等任务真的完成，发 accept 只是开通。
         // 一次批量发完（有上界），不为它们记积分 —— 积分要等 claim 之后才有。
@@ -300,13 +314,23 @@ export default {
               + `${hint ? ` —— ${hint}` : msg ? ` ${msg}` : ""}`;
           } else {
             const perItem = api.acceptResults(accepted.payload);
-            const rejected = perItem ? perItem.filter((row) => !row.ok) : [];
-            if (rejected.length) {
-              const detail = rejected.map((row) => {
-                const hint = api.prerequisiteHint(row.message);
-                return `${row.code || "?"} ${hint || row.message || "未登记"}`;
-              }).join("、");
-              acceptedNote = `，接领部分失败：${detail}`;
+            // ok 与 known 要分开用：`known=false` 是"认不出上游给的这个形状"，
+            // **不是失败**。原来 `!row.ok` 把两者混成一种，于是认不出来被报成
+            // 「接领部分失败：xxx 未登记」—— 一个健康账号被说成上游没登记。
+            const rejected = perItem ? perItem.filter((row) => row.known && !row.ok) : [];
+            const unknown = perItem ? perItem.filter((row) => !row.known) : [];
+            if (rejected.length || unknown.length) {
+              const parts = [];
+              if (rejected.length) {
+                parts.push(`接领部分失败：${rejected.map((row) => {
+                  const hint = api.prerequisiteHint(row.message);
+                  return `${row.code || "?"} ${hint || row.message || "上游没给原因"}`;
+                }).join("、")}`);
+              }
+              if (unknown.length) {
+                parts.push(`接领结果无法判定（上游返回的形状不认识，不当作失败）：${unknown.map((row) => row.code || "?").join("、")}`);
+              }
+              acceptedNote = `，${parts.join("；")}`;
             } else if (perItem) {
               acceptedNote = `，已接领 ${perItem.length} 个新任务（等完成后才能领）`;
             } else {
@@ -323,7 +347,7 @@ export default {
         }
 
         if (ready.length === 0) {
-          return { status: "ok", message: `没有待领的任务奖励${blockNote}${acceptedNote}`, credits: 0, cred: ctx.rotated };
+          return { status: "ok", message: `没有待领的任务奖励${blockNote}${acceptedNote}${skipNote}`, credits: 0, cred: ctx.rotated };
         }
 
         // 可领数量必须有上界：不封顶的话一轮能打出 1 + T 次调用，T 由上游决定
@@ -357,7 +381,7 @@ export default {
         const left = ready.length - claimedCount;
         return {
           status: left > 0 ? "partial" : "claimed",
-          message: `领到 ${claimedCount} 个任务奖励 +${credits}${failNote}${blockNote}${acceptedNote}${left > 0 ? `，还有 ${left} 个下一轮领` : ""}`,
+          message: `领到 ${claimedCount} 个任务奖励 +${credits}${failNote}${blockNote}${acceptedNote}${skipNote}${left > 0 ? `，还有 ${left} 个下一轮领` : ""}`,
           credits,
           cred: ctx.rotated,
         };
