@@ -3319,7 +3319,7 @@ test("[jwt] subjectOf 与 expiresAtOf 收的都是 JWT 原文", async () => {
 // 断言全部写成不变量，而不是写成某一次探针的输出。
 
 test("[审核P0-1] 预算只够一个账号时，排在后面的账号不许饿死", async () => {
-  // 形状：WorkBuddy 单账号一轮 36 次，上限 45 → 每个 tick 只装得下 1 个。
+  // 形状：WorkBuddy 单账号一轮 32 次（7 步 cost 之和），上限 45 → 每个 tick 只装得下 1 个。
   // 上游的机会/额度/任务都远多于一轮的上限，于是三个账号永远以 partial 收，
   // 永远 resumable（豁免 minIntervalSec 与 maxDaily）→ 谁在队首谁永远占满额度。
   const kv = fakeKv();
