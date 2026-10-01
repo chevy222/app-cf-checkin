@@ -71,7 +71,7 @@ export function renderTool({ pwd, tool, accounts, total, sched = {}, flash, flag
     // 停用时隐藏「执行」，保留「测试」「编辑」「删除」。用户明确决定：执行是打上游的动作，
     // 测试只是看状态。服务端 runAccountNow 也会自己再判一次 —— 隐藏按钮不等于权限。
     return `<tr>
-    <td><div class="acc"><span class="nm">${escapeHtml(account.label || "（未命名）")}</span><span class="nm mono">${escapeHtml(account.uid)}</span></div></td>
+    <td><div class="acc"><span class="nm">${escapeHtml(account.label || "（未命名）")}</span></div></td>
     <td>${account.broken ? badge("error", "记录损坏") : badge(entry.lastStatus || "skipped", entry.lastStatus ? undefined : "尚未运行")}</td>
     <td>${stepChips(tool, entry)}</td>
     <td>${nonSecretSummary(tool, account)}</td>
