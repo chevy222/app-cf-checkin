@@ -1733,18 +1733,21 @@ test("总览的运行流与进度条有布局规则：<a> 必须显式 flex，�
   assert.match(css, /\.prog\{[^}]*flex-wrap:wrap/, "进度条不该把色块挤在一行");
 });
 
-test("拨动开关选中态有可见样式（轨道变绿 + 滑块右移）", async () => {
-  const kv = fakeKv();
-  seedFull(kv, "SW1");
-  await tickWith(kv, [leakyTool(okStep())]);
-  const page = await authed("/", envFor(kv));
+test("拨动开关是提交按钮：运行中亮绿滑块靠右、滑块居中、开关行窄屏不竖排", async () => {
+  const page = await authed("/", envFor(fakeKv()));
   const css = page.text.match(/<style>([\s\S]*?)<\/style>/)[1];
-  // 选中时轨道必须变绿，否则停用和运行中看起来一样
-  assert.match(css, /\.sw input:checked \+ label::before\{[^}]*background:var\(--ok\)/,
-    "选中态轨道没变绿，停用和运行中分不出来");
-  // 滑块必须右移，否则看不出开关状态
-  assert.match(css, /\.sw input:checked \+ label::after\{[^}]*transform:translateX\(17px\)/,
-    "选中态滑块没右移，开关状态看不出来");
+  // 拨杆必须是 type=submit 的按钮：checkbox 点了只会打勾，零 JS 下表单永远发不出去，
+  // 开关就成了摆设。aria-pressed 是状态给读屏软件的出口。
+  assert.match(page.text,
+    /<button type="submit" class="sw-b on" aria-pressed="true"><span class="sw-t">运行中<\/span><\/button>/,
+    "拨杆不是「提交按钮 + aria-pressed」：点了不会提交，开关是死的");
+  // 运行中（.on）轨道必须变绿、滑块必须靠右，否则停用和运行中看起来一样
+  assert.match(css, /\.sw-b\.on::before\{[^}]*background:var\(--ok\)/, "运行中轨道没变绿");
+  assert.match(css, /\.sw-b\.on::after\{[^}]*transform:translateX\(17px\)/, "运行中滑块没靠右");
+  // 滑块垂直居中：top:50% 配 margin-top:-7.5px（15px 的一半，写 -9 会偏上 1.5px）
+  assert.match(css, /\.sw-b::after\{[^}]*margin-top:-7\.5px/, "滑块没垂直居中");
+  // 窄屏 .kv 会上下堆叠，开关行必须保持横排：标签在左、拨杆靠右
+  assert.match(css, /\.kv:has\(\.sw\)\{[^}]*flex-direction:row/, "开关行在窄屏被竖排了");
 });
 
 test("[?tool= 筛选日志，且成本与日志总量无关", async () => {

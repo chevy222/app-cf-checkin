@@ -9,15 +9,15 @@ const SETTLED = new Set(["claimed", "already", "inactive", "ok"]);
 
 // 开关是个 POST 表单而不是链接：全站状态变更都走 POST，页面里没有一行 JS。
 //
-// 用 checkbox + label 做一个拨动开关，而不是按钮：窄屏下 .kv 会变成竖排
-// （见 layout.js 的 @media），按钮跟着标签上下堆叠，看起来像两件不相干的东西。
-// checkbox 的原生状态还能白送"当前是开是关"给读屏软件，label 上写清动作名。
-// 输入框本身要藏起来但**不能 display:none** —— 那样 label 点不到它，表单也不会提交。
+// 拨杆是个提交按钮而不是 checkbox：checkbox 点了只会打勾、不会提交表单，
+// 零 JS 的页面里它永远发不出请求（第一版就栽在这上面）。按钮把自己画成
+// 轨道 + 滑块，「运行中」亮绿、滑块靠右，「已停用」变灰、滑块靠左 ——
+// 状态由服务端渲染成 .on class，点一下 = 提交 = 翻转。
+// aria-pressed 把当前状态白送给读屏软件，文字再说一遍。
 function toggleForm(pwd, tool, off) {
   return `<form method="post" action="${escapeHtml(link(`/tool/${tool.id}/toggle`, pwd))}" class="sw">
     <input type="hidden" name="pwd" value="${escapeHtml(pwd)}">
-    <input type="checkbox" id="sw-${escapeHtml(tool.id)}" name="off" value="1"${off ? " checked" : ""}>
-    <label for="sw-${escapeHtml(tool.id)}"><span class="sw-t">${off ? "已停用" : "运行中"}</span></label>
+    <button type="submit" class="sw-b${off ? "" : " on"}" aria-pressed="${off ? "false" : "true"}"><span class="sw-t">${off ? "已停用" : "运行中"}</span></button>
   </form>`;
 }
 
