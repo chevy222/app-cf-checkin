@@ -133,7 +133,8 @@ if ($sess -and $sess.token) {
 }
 }`),
       step("把两段输出分别填到对应位置",
-        "**设备标识**（8 个 `COSY_*`）填到本工具的「工具配置」页；"
+        "**设备标识**（输出里的 8 行 `COSY_*`）填到本工具的「工具配置」页 —— "
+        + "照下面表格第一列的栏位名填，表格第二列告诉你是脚本输出的哪一行；"
         + "**TOKEN / REFRESH** 填到「新增账号」的表单里。到期时间不用填 —— "
         + "TOKEN 是 `eyJ` 开头的长串时平台自己解。"
         + "若 TOKEN 是 `dt--` 开头的短串（新版客户端的设备令牌），表单会多一个「账号标识」栏："
@@ -145,15 +146,17 @@ if ($sess -and $sess.token) {
       note("info", "活动列表变空的三个原因（上游分不开）：今天没下发活动、"
         + "这个账号不在资格范围内、设备标识过期。平台会把这三种都报成「活动未开」并在日志里列全。"),
     ],
+    // 第一列写「工具配置」页里能看到的栏位名。环境变量名（COSY_*）放在说明列里 ——
+    // 那是脚本的输出标签，用户是在表单里找栏位，照着 COSY_* 找会找不到。
     fields: [
-      ["`COSY_CLIENT_TYPE`", "固定值 `10`", "**缺这个活动列表直接为空**"],
-      ["`COSY_MACHINE_TOKEN`", "runtime-info.exe", "设备令牌（最可能过期的那个）"],
-      ["`COSY_MACHINE_CODE`", "runtime-info.exe", "设备编码"],
-      ["`COSY_MACHINE_TYPE`", "runtime-info.exe", "设备类型"],
-      ["`COSY_MACHINE_OS`", "系统架构", "如 `x86_64_windows`"],
-      ["`COSY_MACHINE_HOSTNAME`", "本机主机名", ""],
-      ["`COSY_MACHINE_ID`", "`auth.machine-id`", ""],
-      ["`COSY_VERSION`", "build-manifest.json", "Qoder 客户端的版本号"],
+      ["**Cosy-ClientType**", "固定值 `10`", "环境变量 `COSY_CLIENT_TYPE`。**缺这个活动列表直接为空**"],
+      ["**Cosy-MachineToken**", "runtime-info.exe", "环境变量 `COSY_MACHINE_TOKEN`。设备令牌（最可能过期的那个）"],
+      ["**Cosy-MachineCode**", "runtime-info.exe", "环境变量 `COSY_MACHINE_CODE`。设备编码"],
+      ["**Cosy-MachineType**", "runtime-info.exe", "环境变量 `COSY_MACHINE_TYPE`。设备类型"],
+      ["**Cosy-MachineOS**", "系统架构", "环境变量 `COSY_MACHINE_OS`，如 `x86_64_windows`"],
+      ["**Cosy-MachineHostname**", "本机主机名", "环境变量 `COSY_MACHINE_HOSTNAME`"],
+      ["**Cosy-MachineId**", "`auth.machine-id`", "环境变量 `COSY_MACHINE_ID`"],
+      ["**Cosy-Version**", "build-manifest.json", "环境变量 `COSY_VERSION`。Qoder 客户端的版本号"],
     ],
   },
 
@@ -222,8 +225,8 @@ Write-Host ""
 Write-Host "====== 填到「新增账号」======" -ForegroundColor Cyan
 Write-Host "Access Token : $($jwt.Token)"
 Write-Host "Refresh Token: $rt"
-Write-Host "Aha 设备号   : 填第 1 步拿到的那个"
 Write-Host "=================================" -ForegroundColor Cyan
+Write-Host "还有一栏「Aha 设备号」不在这里 —— 它填第 1 步从 storage.json 拿到的那个 8–16 位数字" -ForegroundColor DarkGray
 if (-not $rt) { Write-Host "（回调里没有 refreshToken —— 请确认整条 URL 都复制了）" -ForegroundColor Yellow }
 }`),
     ],
@@ -235,10 +238,14 @@ if (-not $rt) { Write-Host "（回调里没有 refreshToken —— 请确认整�
       note("info", "uid 不用你填：保存时平台会打一次 `GetUserInfo` 拿 `UserID` 当标识"
         + "（代价是花掉 1 次子请求，值得换来键名与上游认的那个号一致）。"),
     ],
+    // 第一列必须是**表单里能看到的字段名**，不能是平台内部的头名。
+    // 原来写 x-device-id，而表单里那一栏叫「Aha 设备号」—— 用户按头名去找字段找不到，
+    // 会以为少填了一项（这三个头与两个令牌框的关系本来就不直观）。
     fields: [
-      ["`x-device-id`", "客户端 `storage.json`", "8–16 位数字，签到风控按它判定"],
-      ["`x-cloudide-token`", "登录回调 URL", "换票与用户信息用这个头"],
-      ["`Cloud-IDE-JWT`", "登录回调 URL", "签到与额度用这个头（与上面**不是同一个**）"],
+      ["**Aha 设备号**", "第 1 步的客户端 `storage.json`", "填进表单的「Aha 设备号」那一栏。签到时它被放进 `x-device-id` 头，8–16 位数字，风控按它判定"],
+      ["**Access Token**", "登录回调 URL 里的 `userJwt`", "换票与查用户信息时它被放进 `x-cloudide-token` 头"],
+      ["**Refresh Token**", "登录回调 URL 里的 `refreshToken`", "续期时换新票；**签到用的不是它**"],
+      ["（不用填）`Cloud-IDE-JWT`", "同一个 `userJwt`", "签到与额度查询时它才是 `Authorization` 的值 —— 所以上面两个令牌里，只有 Access Token 参与签到"],
     ],
   },
 
@@ -278,9 +285,9 @@ Write-Host "=================================" -ForegroundColor Cyan
       note("info", "多账号时每个号都要走一遍这两步。"),
     ],
     fields: [
-      ["`Authorization: Bearer`", "第 2 步的 `Access Token`",
-        "到期时间平台自动从 `exp` 解。新版桌面端可能给的是包装格式 `{\"$wbEncrypted\":1,\"envelope\":\"…\"}`，原样粘进来即可，平台会自动展开"],
-      ["`X-Refresh-Token`", "第 2 步的 `Refresh Token`", "旧串用过一次即废，续期后平台当场写回"],
+      ["**Access Token**", "第 2 步的 `Access Token`",
+        "填进表单的 Access Token 那一栏，到期时间平台自动从 `exp` 解。新版桌面端可能给的是包装格式 `{\"$wbEncrypted\":1,\"envelope\":\"…\"}`，原样粘进来即可，平台会自动展开"],
+      ["**Refresh Token**", "第 2 步的 `Refresh Token`", "填进 Refresh Token 那一栏。旧串用过一次即废，续期后平台当场写回"],
     ],
   },
 };

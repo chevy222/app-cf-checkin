@@ -351,8 +351,8 @@ Write-Host ""
 Write-Host "====== 填到「新增账号」======" -ForegroundColor Cyan
 Write-Host "Access Token : $($jwt.Token)"
 Write-Host "Refresh Token: $rt"
-Write-Host "Aha 设备号   : 填第 1 步拿到的那个"
 Write-Host "=================================" -ForegroundColor Cyan
+Write-Host "还有一栏「Aha 设备号」不在上面 —— 它填第 1 步从 storage.json 拿到的那个 8–16 位数字" -ForegroundColor DarkGray
 if (-not $rt) { Write-Host "（回调里没有 refreshToken —— 请确认整条 URL 都复制了）" -ForegroundColor Yellow }
 }
 ```

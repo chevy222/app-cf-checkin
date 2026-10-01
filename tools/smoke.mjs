@@ -3689,6 +3689,26 @@ test("[三家的参数获取教程在「新增账号」页上，且步骤完整"
   }
 });
 
+// 表格第一列写的是「平台内部的头名」（x-device-id / x-cloudide-token / Cloud-IDE-JWT），
+// 而表单里那一栏叫「Aha 设备号」「Access Token」。用户按头名去找字段找不到，
+// 会以为少填了一项 —— 教程与表单对不上，比没有教程更容易让人误操作。
+test("[教程的字段表用表单里能看到的名字，不用平台内部的头名", () => {
+  // 字段名可能来自 creds（账号表单）或 config（工具配置，两处合起来才是用户要填的栏位）
+  for (const tool of TOOLS) {
+    const t = TUTORIALS[tool.id];
+    if (!t || !t.fields) continue;
+    const fieldNames = [...tool.creds, ...(tool.config || [])].map((f) => f.label);
+    const bad = [];
+    for (const [col] of t.fields) {
+      // 去掉 markdown 记号后，要么就是某个栏位名，要么明确标成"不用填"
+      const clean = col.replace(/\*\*/g, "").replace(/`/g, "").trim();
+      if (clean.startsWith("（不用填）")) continue;
+      if (!fieldNames.includes(clean)) bad.push(clean);
+    }
+    assert.deepEqual(bad, [], `${tool.name} 教程表格里这些名字在表单里找不到：${bad.join("、")}（表单只有：${fieldNames.join("、")}）`);
+  }
+});
+
 test("[教程里 PowerShell 脚本能真的抳出对应的凭据字段", async () => {
   // 这是本条最关键的地方：教程里的脚本是**真的会被人复制去跑**的，
   // 抳不出东西的教程比没有教程更坏（人会以为是自己弄错了）。
