@@ -1,4 +1,5 @@
 import * as api from "./api.js";
+import { fmtCST, parseWindowEnd } from "../../core/time.js";
 
 // WorkBuddy 签到工具。
 //
@@ -202,8 +203,8 @@ export default {
     {
       id: "tasks",
       label: "领任务奖励",
-      // 1 读列表 + 最多 1 次批量 accept + 最多 3 次 claim
-      cost: 2 + TASKS_PER_ROUND,
+      // 1 读列表 + 最多 1 次批量 accept + 最多 1 次回读确认 + 最多 3 次 claim
+      cost: 3 + TASKS_PER_ROUND,
       async run(ctx) {
         const guarded = await guard(ctx);
         if (guarded) return guarded;
@@ -221,25 +222,76 @@ export default {
         //
         // has_reward 仍要看：black_cat 这类任务是 in_progress 且 reward_credit=0，
         // 光看状态会把它算进来。
-        const ready = tasks.filter((task) => task.accept_status === "completed" && task.has_reward);
-        const pending = tasks.filter((task) => task.accept_status === "not_accepted" && task.has_reward);
+        //
+        // 时间窗与锁也要看（2026-10-01 实测：Buddy_App_QQ 到 10-10、Expert_lighthouse 到 11-13）：
+        // · locked=true 是"还没到上线时间"（链式任务每天零点解一环），打了也是白打；
+        // · valid_end 已过期的任务不该再去 claim —— 那是我们不想做的上游交互，
+        //   而且症状会是 400，用户看不出是"过期了"还是"任务坏了"。
+        // 这两种都只跳过、如实说明，不当成失败。
+        const nowMs = ctx.now * 1000;
+        const blocked = [];
+        const usable = tasks.filter((task) => {
+          if (task.locked === true) {
+            blocked.push(`${task.task_code}（未到上线时间${task.valid_start ? `，${String(task.valid_start).slice(0, 10)} 解锁` : ""}）`);
+            return false;
+          }
+          const endsAt = parseWindowEnd(task.valid_end);
+          if (endsAt !== null && endsAt < nowMs) {
+            blocked.push(`${task.task_code}（${fmtCST(Math.floor(endsAt / 1000))} 已过期）`);
+            return false;
+          }
+          return true;
+        });
+
+        const ready = usable.filter((task) => task.accept_status === "completed" && task.has_reward);
+        const pending = usable.filter((task) => task.accept_status === "not_accepted" && task.has_reward);
+        const blockNote = blocked.length ? `，跳过 ${blocked.length} 个不可领的任务：${blocked.join("、")}` : "";
 
         // 接领是"预告"性质的：领奖还要等任务真的完成，发 accept 只是开通。
         // 一次批量发完（有上界），不为它们记积分 —— 积分要等 claim 之后才有。
+        //
+        // 不信任 200：顶层 code=0 只说明这个请求被接受，逐项结果在 data.results[].status。
+        // 更要紧的是上游存在"请求成功但没登记"的形态，所以再回读一次任务列表，
+        // 用 accept_status 的真实变化来确认 —— 宁可报"可能没登记上"，也不谎报已接领：
+        // 谎报会让下一轮看不出该重试什么。
         let acceptedNote = "";
         if (pending.length > 0) {
-          const accepted = await api.acceptTasks(ctx, pending.slice(0, TASKS_PER_ROUND).map((task) => task.task_code));
+          const batch = pending.slice(0, TASKS_PER_ROUND);
+          const accepted = await api.acceptTasks(ctx, batch.map((task) => task.task_code));
           if (accepted.status >= 400) {
             const code = api.codeOf(accepted.payload);
             const msg = String((accepted.payload && (accepted.payload.msg ?? accepted.payload.message)) ?? "");
-            acceptedNote = `，接领失败 HTTP ${accepted.status}${code !== null ? ` code=${code}` : ""}${msg ? ` ${msg}` : ""}`;
+            // 缺前置是"新账号必撞"的形态：报错原文只有 task_code，对使用者没有行动价值。
+            // 不自动补 —— 领养 Buddy 是一整条业务链路，误操作上游状态的代价比说清代价大。
+            const hint = api.prerequisiteHint(msg);
+            acceptedNote = `，接领失败 HTTP ${accepted.status}${code !== null ? ` code=${code}` : ""}`
+              + `${hint ? ` —— ${hint}` : msg ? ` ${msg}` : ""}`;
           } else {
-            acceptedNote = `，已接领 ${Math.min(pending.length, TASKS_PER_ROUND)} 个新任务（等完成后才能领）`;
+            const perItem = api.acceptResults(accepted.payload);
+            const rejected = perItem ? perItem.filter((row) => !row.ok) : [];
+            if (rejected.length) {
+              const detail = rejected.map((row) => {
+                const hint = api.prerequisiteHint(row.message);
+                return `${row.code || "?"} ${hint || row.message || "未登记"}`;
+              }).join("、");
+              acceptedNote = `，接领部分失败：${detail}`;
+            } else if (perItem) {
+              acceptedNote = `，已接领 ${perItem.length} 个新任务（等完成后才能领）`;
+            } else {
+              // 上游没给逐项结果：只能靠回读确认，否则就如实说不确定
+              const after = await api.readTasks(ctx);
+              const nowCodes = new Set(batch.map((task) => task.task_code));
+              const landed = (api.dig(after.payload, "tasks") || [])
+                .filter((task) => nowCodes.has(task.task_code) && task.accept_status !== "not_accepted").length;
+              acceptedNote = landed === batch.length
+                ? `，已接领 ${landed} 个新任务（等完成后才能领）`
+                : `，接领后回读只确认了 ${landed}/${batch.length} 个，其余可能没登记上`;
+            }
           }
         }
 
         if (ready.length === 0) {
-          return { status: "ok", message: `没有待领的任务奖励${acceptedNote}`, credits: 0, cred: ctx.rotated };
+          return { status: "ok", message: `没有待领的任务奖励${blockNote}${acceptedNote}`, credits: 0, cred: ctx.rotated };
         }
 
         // 可领数量必须有上界：不封顶的话一轮能打出 1 + T 次调用，T 由上游决定
@@ -273,7 +325,7 @@ export default {
         const left = ready.length - claimedCount;
         return {
           status: left > 0 ? "partial" : "claimed",
-          message: `领到 ${claimedCount} 个任务奖励 +${credits}${failNote}${acceptedNote}${left > 0 ? `，还有 ${left} 个下一轮领` : ""}`,
+          message: `领到 ${claimedCount} 个任务奖励 +${credits}${failNote}${blockNote}${acceptedNote}${left > 0 ? `，还有 ${left} 个下一轮领` : ""}`,
           credits,
           cred: ctx.rotated,
         };

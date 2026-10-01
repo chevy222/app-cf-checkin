@@ -216,6 +216,37 @@ export const claimTravel = (ctx) => call(ctx, TRAVEL_CLAIM, { method: "POST", bo
 export const departTravel = (ctx, locationId) => call(ctx, TRAVEL_DEPART, { body: { location_id: locationId } });
 // 接领是**批量**接口：体是数组不是单值。发单数会被上游判成非法请求（400 invalid request）。
 export const acceptTasks = (ctx, taskCodes) => call(ctx, TASK_ACCEPT, { body: { task_codes: taskCodes } });
+
+// 批量接领的逐项结果。顶层 code=0 只说明这个请求被接受，不代表每个任务都登记成功 ——
+// 真实结果在 data.results[].status 里逐条给（这是从 L0NE-6/WorkBuddy-Daily 的实测结论，
+// 本项目 2026-10-01 尚未实测到这一层，故按"读不到就当全成"处理，见 index.js 的用法）。
+//
+// 返回 { code, message } 形状的对象；results 缺失时返回 null，调用方据此走"不逐项判定"的分支。
+export function acceptResults(payload) {
+  const rows = dig(payload, "results");
+  if (!Array.isArray(rows)) return null;
+  return rows.map((row) => ({
+    code: typeof row?.task_code === "string" ? row.task_code : String(row?.code ?? ""),
+    // 逐项状态可能是 status 或 result，两种形状都收
+    ok: (row?.status ?? row?.result) === "ok" || dig(row, "code") === 0,
+    message: String(row?.message ?? row?.msg ?? ""),
+  }));
+}
+// 上游拒绝接领时会点明缺哪个前置："prerequisite not met: first_buddy (no buddy instance)"。
+// 把它翻成一句能照着做的话 —— 只有 task_code 的原文对使用者没有行动价值。
+// 刻意**不自动补前置**：领养 Buddy 是一整条业务链路（真实业务调用），不是加一行就能补上的，
+// 而误接领/误操作上游状态的代价比"日志里说清要做什么"大得多。
+const PREREQ_CN = {
+  first_buddy: "需要先领养第一只 Buddy（在成长中心首页领养），领完这项任务才能接领",
+};
+export function prerequisiteHint(text) {
+  const raw = String(text ?? "");
+  const hit = raw.match(/prerequisite not met:\s*([A-Za-z0-9_.\-]+)/i);
+  if (!hit) return null;
+  const key = hit[1];
+  return PREREQ_CN[key] || `上游说缺前置：${key}（本平台暂不认识这项，先去成长中心页面手动确认）`;
+}
+
 // 领奖是另一个端点，路径里带 task_code。**不带任何请求体** —— 页面实测抓包是 body: null，
 // 传空对象会序列化成 "{}"，与实测形状不符（2026-10-01）。
 // 响应里积分与能量叫 credit / energy，不叫 *_granted。

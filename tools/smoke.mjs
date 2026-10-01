@@ -2606,6 +2606,131 @@ test("[workbuddy] already_claimed 的任务不算领到：上游说不发奖就�
   } finally { stub.restore(); }
 });
 
+// 2026-10-01 页面实测： Buddy_App_QQ 的 valid_end 是 2026-10-10、Expert_lighthouse 是 11-13。
+// 过期还去 claim 的症状是 400，而用户从界面上看不出"过期"与"任务坏了"的区别。
+test("[workbuddy] 过期与未上线的任务不领：打上游的只有还在窗口内的", async () => {
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  // 时钟必须落在 10-10 之后：DAY 固定在 2026-09-30，那时 t-expired 还没过期，测不到东西。
+  // 跨 11 天意味着令牌过期，会触发续期 —— 续期端点必须配好，否则 599（stub 的"没配这条路由"）
+  // 会让整步在 guard 里就返回，看不到要验的东西。
+  const afterExpiry = Date.UTC(2026, 9, 11, 2, 0) / 1000;   // CST 10:00
+  const stub = stubUpstream(wbIdleRoutes({
+    "POST /v2/plugin/auth/token/refresh": { payload: { access_token: mkJwt({ sub: "wb-u", exp: cst(200) }), refresh_token: "rt-rot", expires_in: 864000 } },
+    "GET /v2/activity/growth/tasks": { payload: { tasks: [
+      { task_code: "t-live", progress: { current: 1, target: 1 }, accept_status: "completed", has_reward: true, reward_credit: 10,
+        valid_start: null, valid_end: "2026-12-31T23:59:00+08:00" },
+      { task_code: "t-expired", progress: { current: 1, target: 1 }, accept_status: "completed", has_reward: true, reward_credit: 10,
+        valid_start: null, valid_end: "2026-10-10T23:59:00+08:00" },
+      { task_code: "t-locked", progress: { current: 0, target: 1 }, accept_status: "not_accepted", has_reward: true, reward_credit: 10,
+        locked: true, valid_start: "2026-12-01T10:00:00+08:00", valid_end: null },
+      { task_code: "t-forever", progress: { current: 1, target: 1 }, accept_status: "completed", has_reward: true, reward_credit: 10,
+        valid_start: null, valid_end: null },
+    ] } },
+    "POST /activity/growth/tasks/t-live/claim": { payload: { code: 0, already_claimed: false, credit: 10, energy: 5 } },
+    "POST /activity/growth/tasks/t-forever/claim": { payload: { code: 0, already_claimed: false, credit: 10, energy: 5 } },
+  }));
+  try {
+    const { summary } = await wbTick(kv, afterExpiry);
+    const claims = stub.seen.filter((r) => r.path.includes("/tasks/") && r.path.endsWith("/claim")).map((r) => r.path);
+    const msg = wbView(summary).steps[4].message;
+    assert.ok(claims.some((p) => p.includes("t-live")), `窗口内的 t-live 没领（${msg}）`);
+    assert.ok(claims.some((p) => p.includes("t-forever")), `没有 valid_end 的 t-forever 不该被当成过期（${msg}）`);
+    assert.ok(!claims.some((p) => p.includes("t-expired")), `过期任务被去 claim 了 —— 那是白打一次上游，可能被拒（${msg}）`);
+    assert.ok(!claims.some((p) => p.includes("t-locked")), `未上线的任务被接领了（${msg}）`);
+    assert.match(msg, /t-expired.*已过期/, `过期原因没进日志：${msg}`);
+    assert.match(msg, /t-locked.*未到上线时间/, `未上线原因没进日志：${msg}`);
+    // 无 valid_end 的不算"没有约束"，被误判成 1970 会把全部任务判成过期
+    assert.ok(!msg.includes("t-forever"), `valid_end 缺失被当成过期了：${msg}`);
+  } finally { stub.restore(); }
+});
+
+// 新账号必撞：没有 Buddy 实例时上游拒绝接领其余任务，报错原文只有 task_code。
+// 这里守的是"要翻成人能照着做的话"，不是自动补前置（那是另一条业务链路，见 api.js 的理由）。
+test("[workbuddy] 缺前置（first_buddy）要翻成可执行的话，不把上游原文抛给使用者", async () => {
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  const stub = stubUpstream(wbIdleRoutes({
+    "GET /v2/activity/growth/tasks": { payload: { tasks: [
+      { task_code: "chat_5", progress: { current: 0, target: 5 }, accept_status: "not_accepted", has_reward: true, reward_credit: 100 },
+    ] } },
+    "POST /activity/growth/tasks/accept": { status: 400, payload: { code: 400, msg: "prerequisite not met: first_buddy (no buddy instance)" } },
+  }));
+  try {
+    const { summary } = await wbTick(kv);
+    const msg = wbView(summary).steps[4].message;
+    assert.match(msg, /接领失败 HTTP 400/, msg);
+    assert.match(msg, /领养第一只 Buddy/, `没翻成可执行的话：${msg}`);
+    assert.ok(!msg.includes("no buddy instance"), `上游原文没被翻译：${msg}`);
+  } finally { stub.restore(); }
+});
+
+// 顶层 code=0 不等于每个任务都登记成功：逐项结果在 data.results[].status。
+// 谎报"已接领"会让下一轮看不出该重试什么 —— 症状是任务永远卡在 not_accepted。
+test("[workbuddy] 接领不信任 200：逐项结果与回读都要对上，不许谎报已接领", async () => {
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  let reads = 0;
+  const stub = stubUpstream(wbIdleRoutes({
+    "GET /v2/activity/growth/tasks": () => {
+      reads += 1;
+      // 第一次读：两个 not_accepted。第二次读（回读）：t-a 已登记，t-b 仍是 not_accepted
+      if (reads === 1) {
+        return { payload: { tasks: [
+          { task_code: "t-a", accept_status: "not_accepted", has_reward: true, progress: { current: 0, target: 1 } },
+          { task_code: "t-b", accept_status: "not_accepted", has_reward: true, progress: { current: 0, target: 1 } },
+        ] } };
+      }
+      return { payload: { tasks: [
+        { task_code: "t-a", accept_status: "accepted", has_reward: true, progress: { current: 0, target: 1 } },
+        { task_code: "t-b", accept_status: "not_accepted", has_reward: true, progress: { current: 0, target: 1 } },
+      ] } };
+    },
+    // 顶层成功，但逐项里 t-b 失败 —— 这正是"200 不等于都成"的形态
+    "POST /activity/growth/tasks/accept": { payload: { code: 0, data: { results: [
+      { task_code: "t-a", status: "ok" },
+      { task_code: "t-b", status: "failed", message: "prerequisite not met: first_buddy (no buddy instance)" },
+    ] } } },
+  }));
+  try {
+    const { summary } = await wbTick(kv);
+    const msg = wbView(summary).steps[4].message;
+    // 缺前置要翻成能照着做的话，不能只把上游原文 task_code 抛给使用者
+    assert.match(msg, /t-b.*领养第一只 Buddy/, `逐项失败没报出可执行的原因：${msg}`);
+    assert.ok(!msg.includes("prerequisite not met"), `上游原文没被翻译：${msg}`);
+    assert.ok(!/已接领 2 个/.test(msg), `把部分失败说成全成功了：${msg}`);
+  } finally { stub.restore(); }
+});
+
+test("[workbuddy] 上游不给逐项结果时靠回读确认：回读说没登记上就如实报", async () => {
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  let reads = 0;
+  const stub = stubUpstream(wbIdleRoutes({
+    "GET /v2/activity/growth/tasks": () => {
+      reads += 1;
+      if (reads === 1) {
+        return { payload: { tasks: [
+          { task_code: "t-x", accept_status: "not_accepted", has_reward: true, progress: { current: 0, target: 1 } },
+          { task_code: "t-y", accept_status: "not_accepted", has_reward: true, progress: { current: 0, target: 1 } },
+        ] } };
+      }
+      // 回读：只有 t-x 变了，t-y 还在 not_accepted —— 上游"请求成功但没登记"
+      return { payload: { tasks: [
+        { task_code: "t-x", accept_status: "accepted", has_reward: true, progress: { current: 0, target: 1 } },
+        { task_code: "t-y", accept_status: "not_accepted", has_reward: true, progress: { current: 0, target: 1 } },
+      ] } };
+    },
+    "POST /activity/growth/tasks/accept": { payload: { code: 0 } },   // 无 results
+  }));
+  try {
+    const { summary } = await wbTick(kv);
+    const msg = wbView(summary).steps[4].message;
+    assert.match(msg, /回读只确认了 1\/2/, `回读没确认住却没如实报：${msg}`);
+    assert.ok(!/已接领 2 个/.test(msg), `回读失败仍谎报全成：${msg}`);
+  } finally { stub.restore(); }
+});
+
 test("[workbuddy] not_accepted 的任务批量接领：体是 task_codes 数组，发单数会被判非法", async () => {
   const kv = fakeKv();
   seedWorkbuddy(kv);
@@ -2615,7 +2740,10 @@ test("[workbuddy] not_accepted 的任务批量接领：体是 task_codes 数组�
       { task_code: "t-new2", progress: { current: 0, target: 1 }, accept_status: "not_accepted", has_reward: true, reward_credit: 10 },
       { task_code: "t-done", progress: { current: 1, target: 1 }, accept_status: "completed", has_reward: true, reward_credit: 7 },
     ] } },
-    "POST /activity/growth/tasks/accept": { payload: { code: 0 } },
+    "POST /activity/growth/tasks/accept": { payload: { code: 0, data: { results: [
+      { task_code: "t-new1", status: "ok" },
+      { task_code: "t-new2", status: "ok" },
+    ] } } },
     "POST /activity/growth/tasks/t-done/claim": { payload: { code: 0, already_claimed: false, credit: 7, energy: 5 } },
   }));
   try {

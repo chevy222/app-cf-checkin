@@ -19,3 +19,12 @@ export function fmtCST(sec) {
 export function logicalDay(resetHour, sec) {
   return cstDate(sec - (Number(resetHour) || 0) * 3600);
 }
+
+// 上游的时间窗字段是带偏移的 ISO 串（"2026-10-10T23:59:00+08:00"），
+// 不能按字典序比较字符串：偏移量不同时那不是绝对时刻。
+// 解不出可用值就返回 null（当作"没有约束"），绝不返回 0 —— 0 会被当成 1970 而全部过期。
+export function parseWindowEnd(value) {
+  if (!value || typeof value !== "string") return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
