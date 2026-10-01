@@ -46,8 +46,8 @@ export function isDue(tool, entry, day, now) {
 // 属于 D 日的领取记到 D+1 日名下，第二天白丢一次。
 export async function loadProgress(env, tool, uid, day) {
   const saved = await getJson(requireKv(env), stepKey(tool.id, uid), null);
-  if (!saved || saved.day !== day) return { day, done: {}, order: [] };
-  return { day: saved.day, done: saved.done && typeof saved.done === "object" ? saved.done : {}, order: saved.order || [] };
+  if (!saved || saved.day !== day) return { day, done: {} };
+  return { day: saved.day, done: saved.done && typeof saved.done === "object" ? saved.done : {} };
 }
 
 export function saveProgress(env, tool, uid, progress) {

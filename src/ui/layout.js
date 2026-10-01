@@ -154,6 +154,20 @@ table.t tr:last-child td{border-bottom:0}
 .prog i.bad{background:var(--bad)}
 .prog i.wait{background:var(--warn)}
 .prog .n{font-size:12px;color:var(--muted);margin-left:6px}
+/* 工具管理页「步骤」列的色块。这套类一直在 pages/tool.js 里被渲染，却从没进过本文件 ——
+   <i> 是空元素，没有显式宽高就是 0×0，整列什么都看不见，而且挂在 0×0 元素上的
+   title 也没有悬停面积，等于"悬停看每一步处置"这句话是假的。
+   与 .prog 同一个形状，只是多两种状态（skip=未开始、bad=失败）。 */
+.steps{display:flex;gap:3px;align-items:center;flex-wrap:wrap}
+.steps i{width:14px;height:5px;border-radius:99px;background:var(--panel3);flex:none;cursor:help}
+.steps i.ok{background:var(--ok)}
+.steps i.wait{background:var(--warn)}
+.steps i.skip{background:var(--neu)}
+.steps i.bad{background:var(--bad)}
+.note{font-size:11.5px;color:var(--muted);margin-top:4px}
+/* 账号列：名字与备注名左右排布；min-width:0 是 flex 子项能省略号收窄的前提 */
+.acc{display:flex;align-items:center;gap:6px;min-width:0}
+.acc .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
 /* 最近运行流。显式 flex 不是为了好看：<a> 默认是行内元素，不写这一条
    N 条记录会首尾相连成一段文字。who 固定宽 + 省略号，m 吃掉剩余空间，
    时间戳因此在每一行的同一列对齐。 */
@@ -176,10 +190,14 @@ table.t tr:last-child td{border-bottom:0}
 .tut-n{flex:none;width:18px;height:18px;border-radius:50%;background:var(--accent-weak);
   color:var(--accent);font-size:11px;display:grid;place-items:center;margin-top:1px}
 .tut-b{font-size:12.5px;line-height:1.6;color:var(--muted);margin:6px 0 0 26px}
+/* user-select:all = **点一下整段全选**。这是零 JS 下能做到的最接近"一键复制"的形态：
+   script 被 CSP 的 default-src 'none' 挡死，复制按钮做不出来，而这几个脚本都是
+   整段粘进 PowerShell 用的，本来也不需要只选其中几行。 */
 .tut-c{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:11.5px;line-height:1.5;
   background:var(--panel3);border:1px solid var(--line);border-radius:var(--radius-sm);
   padding:10px 12px;margin:8px 0 0 26px;overflow-x:auto;white-space:pre;
-  color:var(--text);max-height:340px;overflow-y:auto}
+  color:var(--text);max-height:340px;overflow-y:auto;
+  user-select:all;-webkit-user-select:all;cursor:text}
 .tut-c code{background:none;padding:0;font-size:inherit}
 .tutbox .alert{margin:8px 0 0 26px;font-size:12px}
 .tutbox .tw{margin:8px 0 0 26px}

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
-import { TOOLS, findTool } from "../src/tools/index.js";
+import { TOOLS, findTool, checkToolContract } from "../src/tools/index.js";
 import { maskSecret } from "../src/core/text.js";
 import { coerceFields, saveAccount, schedOf } from "../src/core/accounts.js";
 import { listUids } from "../src/core/store.js";
@@ -605,6 +605,35 @@ test("出口域名白名单：不在名单里的域名直接抛错", async () =>
   const fetchTracked = trackedFetch(budget, ["copilot.tencent.com"]);
   await assert.rejects(() => fetchTracked("https://evil.example.com/x"), /禁止的请求域名/);
   assert.equal(budget.used, 0, "被拦下的请求不该记账，它根本没发出去");
+});
+
+// 白名单为空时必须**拒绝一切**，而不是"没有名单就等于全放行"。
+// 这个方向不能反：fail-open 的表现是部署成功、测试全绿、运行时静默把凭据
+// 交给任意域名 —— 没有任何一处会响。
+test("出口白名单为空时拒绝一切出站（fail-closed，不是放行）", async () => {
+  const budget = makeBudget(45);
+  const blocked = trackedFetch(budget, []);
+  await assert.rejects(() => blocked("https://anything.example/x"), /白名单/);
+  assert.equal(budget.used, 0, "被拒绝的请求根本没发出去，不该记账");
+});
+
+// "忘了写 hosts"这个形态不报错、也不会让任何测试变红，只会静默摘掉上面那道闸。
+// 所以守住它的那条自检，本身必须被测试咬住 —— 否则它也是个摆设。
+test("注册表自检：没声明 hosts 或 hosts 为空一律挡住", () => {
+  const ok = {
+    id: "demo", name: "示例", config: [], creds: [],
+    hosts: ["a.example"],
+    schedule: { backoff: [] },
+    uidOf: () => "u",
+    steps: [{ id: "s", label: "步", cost: 1, async run() { return { status: "ok" }; } }],
+  };
+  assert.doesNotThrow(() => checkToolContract(ok), "合规的工具不该被自检挡住");
+  assert.throws(() => checkToolContract({ ...ok, hosts: [] }), /hosts/, "空 hosts 必须挡住");
+  assert.throws(() => checkToolContract({ ...ok, hosts: undefined }), /hosts/, "没声明 hosts 必须挡住");
+  // schedule 整块缺失时要报"必须声明 schedule"，而不是一个读不到 backoff 的 TypeError
+  const noSched = { ...ok };
+  delete noSched.schedule;
+  assert.throws(() => checkToolContract(noSched), /必须声明 schedule/);
 });
 
 // 账本分成两本（外部 HTTP / KV），官方给的是两个独立上限
@@ -3571,7 +3600,7 @@ test("[关掉一个工具：连跑 5 轮它一条记录都不留，且一个 KV 
   seedFor(base, "trae", "SEATT1");
   await tickWith(base, [qoder, trae], 45, cst(10));
   const qoderKeysWhenOn = base.countKeys("v1:acct:qoder:") + base.countKeys("v1:tool:qoder") + base.countKeys("v1:schedidx:qoder")
-    + base.countKeys("v1:step:qoder:") + base.countKeys("v1:heartbeat:qoder") + base.countKeys("v1:run:qoder:");
+    + base.countKeys("v1:step:qoder:") + base.countKeys("v1:run:qoder:");
   assert.ok(qoderKeysWhenOn > 0, "基准无效：开着的时候本来就没碰 qoder 的键，这套断言测不出东西");
 
   offFlags(kv, ["qoder"]);
@@ -3587,7 +3616,6 @@ test("[关掉一个工具：连跑 5 轮它一条记录都不留，且一个 KV 
     assert.equal(kv.countKeys("v1:tool:qoder", mark), 0, `第 ${round + 1} 轮：停用期间仍读了 qoder 的配置`);
     assert.equal(kv.countKeys("v1:acct:qoder:", mark), 0, `第 ${round + 1} 轮：停用期间仍列了 qoder 的账号`);
     assert.equal(kv.countKeys("v1:schedidx:qoder", mark), 0, `第 ${round + 1} 轮：停用期间仍读了 qoder 的调度索引`);
-    assert.equal(kv.countKeys("v1:heartbeat:qoder", mark), 0, `第 ${round + 1} 轮：停用期间仍写了 qoder 的心跳`);
   }
   assert.equal(logKeys(kv).filter((k) => k.includes("qoder")).length, 0, "/runs 里不该出现任何 qoder 新记录");
   // 判据 5：关 A 不影响 B/C 的调度与计数

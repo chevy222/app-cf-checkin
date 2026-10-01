@@ -68,8 +68,11 @@ export function trackedFetch(budget, hosts) {
   const allowed = hosts && hosts.length ? new Set(hosts) : null;
   return async function fetchTracked(input, init) {
     const url = new URL(typeof input === "string" ? input : input.url);
-    // 出口白名单：合并成一个 Worker 之后最大的风险是凭据串味，这里做最后一道硬拦截
-    if (allowed && !allowed.has(url.hostname)) {
+    // 出口白名单：合并成一个 Worker 之后最大的风险是凭据串味，这里做最后一道硬拦截。
+    // 白名单缺失时**拒绝一切**（fail-closed），不是放行：注册表自检已保证每个工具都会
+    // 声明它，真走到这里说明有人绕过了自检 —— 那种情况下放行等于把三家凭据开放给任意域名。
+    if (!allowed) throw new Error("该工具的出口白名单是空的，已拒绝一切出站请求");
+    if (!allowed.has(url.hostname)) {
       throw new Error(`禁止的请求域名 ${url.hostname}（该工具只允许 ${[...allowed].join(", ")}）`);
     }
     if (!budget.fits(1)) throw new Error("本轮外部请求额度已用尽，停止发起请求");

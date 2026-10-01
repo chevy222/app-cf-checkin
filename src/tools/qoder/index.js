@@ -52,6 +52,9 @@ export default {
     { key: "machineOS", label: "Cosy-MachineOS", type: "text", placeholder: "如 10.0.26100" },
     { key: "machineHostname", label: "Cosy-MachineHostname", type: "text" },
     { key: "version", label: "Cosy-Version", type: "text", placeholder: "如 0.1.43" },
+    // 请求超时。留空即用 30000（api.js 里兜底），与另两家的同名配置口径一致。
+    // 不设超时时，上游挂起会一直占着调用，而账号锁 90 秒就过期了。
+    { key: "timeoutMs", label: "请求超时（毫秒）", type: "text", placeholder: "30000" },
   ],
 
   // 账号级。两个 token 都是 secret。

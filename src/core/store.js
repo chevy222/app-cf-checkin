@@ -16,7 +16,8 @@ export const toolKey = (tool) => `${SCHEMA}:tool:${tool}`;
 export const schedIdxKey = (tool) => `${SCHEMA}:schedidx:${tool}`;
 export const stepKey = (tool, uid) => `${SCHEMA}:step:${tool}:${uid}`;
 export const lockKey = (tool, uid) => `${SCHEMA}:lock:${tool}:${uid}`;
-export const heartbeatKey = (tool) => `${SCHEMA}:heartbeat:${tool}`;
+// 曾经有 v1:heartbeat:<tool>（每轮写"这轮跑了几个账号"），但全站没有任何读取点，
+// 纯粹白烧 KV 额度 —— 2026-10-02 连同写入一起删除。
 // 工具停用标记。**单键存全部工具**，不是每工具一个键：后者读一次要 N 次 get，
 // 而首页与每一轮都只需要"哪些工具停着"这一个事实
 export const flagsKey = () => `${SCHEMA}:flags`;

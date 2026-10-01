@@ -1,5 +1,5 @@
 import { truncate } from "./text.js";
-import { getJson, heartbeatKey, listUids, lockKey, putJson, requireKv, toolKey } from "./store.js";
+import { getJson, listUids, lockKey, requireKv, toolKey } from "./store.js";
 import { applyCredPatch, getAccount, loadSchedIndex, commitSchedEntries, schedOf } from "./accounts.js";
 import { isOff, loadFlags } from "./flags.js";
 import { trackedFetch } from "./budget.js";
@@ -198,10 +198,8 @@ async function runOneAccount({ env, budget, tool, uid, config, day, now, trigger
 
     // 只有真正做完的步骤才进进度表。rate_limited / error / deferred 都是瞬时的，
     // 记成"已完成"会让下一轮直接复用、永远不再重试。
-    if (SETTLED.has(record.status)) {
-      progress.done[step.id] = record;
-      progress.order.push(step.id);
-    }
+    // （曾经还顺手 push 一个 progress.order 数组，但全站没有任何消费者 —— 2026-10-02 删除。）
+    if (SETTLED.has(record.status)) progress.done[step.id] = record;
     if (record.status === "login_required") stopped = true;
   }
 
@@ -367,8 +365,6 @@ export async function runTick({ env, budget, tools, trigger = "cron", now = nowS
     }
 
     await safe(() => commitSchedEntries(env, tool.id, picked(index, touched)));
-    // 心跳在账号循环之后写：它该记录"真的跑了什么"，而不是"打算跑什么"
-    await safe(() => putJson(kv, heartbeatKey(tool.id), { at: now, trigger, due: due.length, ran: results.length }));
 
     plan.push({ tool: tool.id, accounts: results });
   }
@@ -376,7 +372,9 @@ export async function runTick({ env, budget, tools, trigger = "cron", now = nowS
   const summary = { now, trigger, ran, budget: { used: budget.used, limit: budget.limit, left: budget.left(), over: budget.over }, plan };
   // 不写整轮汇总日志（使用者明确决定）：账号级日志每条都在，汇总只是重复视图；
   // cron 每 30 分钟一轮，汇总记录只会把列表刷屏。要把握"这轮整体情况"，
-  // 看心跳（每工具写了"这轮跑了什么"）与 /api/tick 的返回值（手动触发时）。
+  // 看 /api/tick 的返回值（手动触发时）与每账号的运行日志。
+  // （曾每工具每轮写一个 v1:heartbeat:<tool> 心跳键，但全站没有任何读取点 —— 纯白烧
+  //   KV 额度，2026-10-02 删除。）
   // 旧版本写的 v1:tick: 键在 30 天内仍会出现在日志列表里，读侧保留它们的渲染。
   return summary;
 }

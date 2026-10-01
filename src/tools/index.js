@@ -10,8 +10,11 @@ import workbuddy from "./workbuddy/index.js";
 // 顺序由 order 决定（界面与调度都按它排），这里的书写顺序不作为依据。
 const REGISTERED = [qoder, trae, workbuddy];
 
-// 启动期自检：宁可部署时直接报错，也不要等到有人打开首页才 500 且信息毫无指向
-for (const tool of REGISTERED) {
+// 启动期自检：宁可部署时直接报错，也不要等到有人打开首页才 500 且信息毫无指向。
+//
+// 抽成导出函数而不是内联在模块体里：内联的话"少写一个字段"这条守卫**本身没人守** ——
+// 测试没法把它拿出来调。导出之后测试可以拿一个残缺的工具去调它，确认它真的会抛。
+export function checkToolContract(tool) {
   const bad = (msg) => {
     throw new Error(`工具注册表不完整：${tool && tool.id} — ${msg}`);
   };
@@ -20,19 +23,27 @@ for (const tool of REGISTERED) {
   if (tool.steps.some((s) => !s.id || !Number.isFinite(s.cost) || s.cost <= 0)) bad("每个步骤必须有 id 与正数 cost");
   // 缺了这条，忘记写 run 的工具要等到第一次调度才炸，而且报错信息毫无指向
   if (tool.steps.some((s) => typeof s.run !== "function")) bad("每个步骤必须实现 run()");
+  // schedule 的存在性必须先判：下一句要读 tool.schedule.backoff，缺声明时那里会先抛
+  // TypeError（"读取 undefined 的 backoff"），把"你没声明 schedule"这条真正的信息盖掉。
+  if (!tool.schedule) bad("必须声明 schedule");
   if (!Array.isArray(tool.schedule.backoff)) bad("schedule.backoff 必须是数组");
   if (!Array.isArray(tool.creds)) bad("必须声明 creds 数组");
+  // 出口白名单必须是非空数组：trackedFetch 在它为空时**拒绝一切出站请求**（fail-closed，
+  // 见 budget.js）。少了这条自检，忘记写 hosts 的工具会一路通过部署与全部测试，
+  // 然后在运行时静默失去"凭据只能打到自己家"这道硬闸 —— 而那正是合并部署后最大的风险。
+  if (!Array.isArray(tool.hosts) || tool.hosts.length === 0) bad("必须声明非空 hosts 数组（出口域名白名单）");
   // 账号标识只有一个来源：uidOf —— 一个"拿到表单值、算出账号身份"的函数。
   // 内核不认识任何具体站点，没法凭空知道"这个工具的账号叫什么"，所以只能由工具回答。
   // 三家在用的都是 uidOf：Qoder 与 WorkBuddy 解 JWT 的 sub（0 次子请求），
   // Trae 问一次 GetUserInfo（1 次子请求）。
   if (!tool.uidOf) bad("必须声明 uidOf（函数：拿到表单值，返回账号标识）");
   if (typeof tool.uidOf !== "function") bad("uidOf 必须是函数");
-  if (!tool.schedule) bad("必须声明 schedule");
   if ([...tool.config || [], ...tool.creds].some((f) => f.key === "pwd" || f.key === "label")) {
     bad("字段 key 不得使用保留字 pwd / label");
   }
 }
+
+for (const tool of REGISTERED) checkToolContract(tool);
 
 export const TOOLS = [...REGISTERED].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 

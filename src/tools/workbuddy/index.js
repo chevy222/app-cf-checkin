@@ -146,7 +146,14 @@ export default {
         let credits = 0;
         for (let i = 0; i < want; i += 1) {
           const drawn = await api.drawOnce(ctx, i);
-          if (drawn.status >= 400) break;
+          // HTTP 层失败与业务层失败都要停手。只看 status 会把"上游 200 + code=非0
+          // （机会已被别的端用掉 / 活动关闭 / 被风控）"读成"抽了一次但没中奖"：
+          // 日志里报的次数是假的，后面的 left = balance - drew 也跟着算错，
+          // 而 left 正是 partial 判定的基础。
+          // code 缺失（null）不算失败 —— 那是"上游没给这个字段"，不是"给了个错值"，
+          // 与 codeOf 的语义一致。（blindbox 那边写成 !== 0，是因为它的桩与上游都稳定给 code。）
+          const code = api.codeOf(drawn.payload);
+          if (drawn.status >= 400 || (code !== null && code !== 0)) break;
           const granted = api.firstCredit(drawn.payload, null);
           credits += api.num(granted) || 0;
           drew += 1;
@@ -164,8 +171,9 @@ export default {
     {
       id: "blindbox",
       label: "开盲盒",
-      // 上界用本地常量，不跟着 max_open_count 变：预约必须是最坏情况的上界，
-      // 而上游给的上限我们无法预知（cost 是准入判据，算低会让账本真的花超）
+      // cost 是**预约**：这一步向预算申请的外部请求上界 = 1 次读额度 + OPENS_PER_ROUND 次开盒。
+      // 本意是不跟着上游的 max_open_count 变（预约要取最坏情况的上界，算低就会真的花超），
+      // 但函数里的 want 目前确实跟着它变 —— 那是已知的不一致，见下面那段说明。
       cost: 1 + OPENS_PER_ROUND,
       async run(ctx) {
         const guarded = await guard(ctx);
@@ -177,6 +185,28 @@ export default {
         // 一轮开几个由上游的 max_open_count 决定（前端读的就是这个字段，不是 affordable）。
         // 缺失时回落到本地常量：宁可少开几个，也不能因为读不到上限就放开手——
         // 这个接口没有幂等键，每调一次服务端真扣 10 点能量，多开就是白花。
+        //
+        // ⚠️ 这一步的变量逐个说明（读代码时最容易看岔的地方）：
+        //   affordable      —— 上游说"你现在付得起几次"。是**余额**口径，可能远大于本轮该开的数。
+        //   max_open_count  —— 上游说"一次最多允许开几个"。是**单次上限**口径。
+        //   OPENS_PER_ROUND —— 本地常量 5。本平台自己给自己定的每轮上限。
+        //   cap             —— 真正采用了谁：用的是 max_open_count，读不到才回落到 OPENS_PER_ROUND。
+        //   want            —— 本轮打算开几次 = min(affordable, cap)，同时就是下面的循环次数。
+        //   opened          —— 真正开成功的次数（循环里每成功一发才 +1），用来算 left。
+        //   left            —— affordable - opened。> 0 就报 partial，下一轮接着开。
+        //   cost（在步骤声明上，不在这里）—— 本步向预算**预约**的外部请求上界 = 1 + OPENS_PER_ROUND = 6。
+        //
+        // ⚠️ 已知不一致（**本次只记不改**）：上面声明的 cost 是 1 + OPENS_PER_ROUND = 6，
+        //    而 want 跟着上游的 max_open_count 走 —— 上游若返回 50，want 就是 50，
+        //    这一轮会朝上游连打 1 + 50 次请求，远超预约的 6 次。
+        //    后果不是"报错"：撞上自限 45 之后 trackedFetch 会拒答，这一步被 catch 成
+        //    「失败」（红条亮起，看着像账号坏了，真因是预算），而且**同轮排在后面的账号
+        //    全部拿不到额度**。
+        //    修法（只动 want 这一行，不动 cost）：
+        //        const want = Math.min(affordable, cap, OPENS_PER_ROUND);
+        //    上游说"只许开 2 个"就开 2 个（不放宽），说"许 50 个"则开 5 个（不超预约）。
+        //    不能写成 `const cap = OPENS_PER_ROUND` —— 那会打红下面这条测试：
+        //    「一轮开几个盲盒由上游 max_open_count 决定，不是本地写死的 5」。
         const cap = api.num(api.dig(quota.payload, "max_open_count")) || OPENS_PER_ROUND;
         const want = Math.min(affordable, cap);
         let opened = 0;

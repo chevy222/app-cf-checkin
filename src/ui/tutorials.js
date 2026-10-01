@@ -313,6 +313,12 @@ export function renderTutorial(tool) {
       ${s.code ? `<pre class="tut-c">${esc(s.code)}</pre>` : ""}
     </div>`).join("");
 
+  // 代码块用 CSS 的 user-select:all 做到"点一下整段全选"。本站零 JS（CSP default-src
+  // 'none'），复制按钮做不出来 —— 所以需要这一句话告诉用户怎么用。只在真有代码块时出现。
+  const copyHint = t.steps.some((s) => s.code)
+    ? `<p class="tiny m0">下面每段脚本：点一下即整段选中，再按 Ctrl/Cmd + C 复制。</p>`
+    : "";
+
   const notes = (t.notes || []).map((n) => `<div class="alert ${n.kind === "warn" ? "warn" : "info"}">${rich(n.text)}</div>`).join("");
 
   const fields = (t.fields || []).length
@@ -323,6 +329,7 @@ export function renderTutorial(tool) {
 
   return `<div class="tutbox">
     <div class="tut-intro">${rich(t.intro)}</div>
+    ${copyHint}
     ${steps}
     ${fields}
     ${notes}

@@ -12,6 +12,14 @@ const CAMPAIGNS = "/sash/api/v1/me/campaigns";
 const REFRESH = "/api/v1/deviceToken/refresh";
 const USER_AGENT = "Qoder/claim";
 
+// 请求超时。不设的话，上游挂起会一直占着这次调用，而账号锁（LOCK_TTL，90 秒）早已过期 ——
+// 下一次触发就会并发重入同一个账号。另两家一直都有这一层，这里补齐。
+// 配置里留空即用 30000；config 里声明了同名字段，界面上能改。
+const timeoutMs = (config) => {
+  const raw = Number(config.timeoutMs);
+  return Number.isFinite(raw) && raw > 0 ? raw : 30000;
+};
+
 // 设备身份头：这是"一台机器"的身份，不是"一个账号"的，所以它是工具级配置而不是凭据。
 // 少发或过期时上游不报错，只是 campaigns 返回空列表 —— 所以空列表必须单独认出来，
 // 不能报成"今日已领取"，那种报法让设备身份失效看起来像一切正常。
@@ -37,7 +45,12 @@ async function call(ctx, { path, method = "GET", body, token }) {
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const response = await ctx.fetch(BASE + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const response = await ctx.fetch(BASE + path, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs(ctx.config)),
+  });
   const text = await response.text();
   let payload = null;
   try {
