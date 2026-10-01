@@ -29,8 +29,13 @@ export function renderRuns({ pwd, tools, entries, active = {}, flash }) {
     const who = entry.kind === "tick"
       ? '<span class="mono dim">整轮调度</span>'
       : `<span>${escapeHtml(entry.tool)}/${escapeHtml(meta.label || entry.uid)}</span>`;
-    const budget = entry.kind === "tick" && meta.used !== undefined
-      ? `<span class="num dim">${meta.used}/${meta.limit}</span>` : "";
+    // 「请求」列：这一条记录自己花了多少外部请求 + 多少次 KV（2026-10-01 起两者
+    // 各走各的额度，所以并排列出）。旧实现读 meta.used 并要求 kind === "tick"，
+    // 而整轮汇总日志早已停写、meta 里也没有 used —— 那个条件永远不成立，
+    // 于是这一列一直是空的。现在直接读 metadata 里的账号级读数。
+    const usage = meta.http !== undefined || meta.kv !== undefined
+      ? `<span class="num dim" title="外部请求 / KV 操作">${meta.http || 0} / ${meta.kv || 0}</span>`
+      : "";
     // data-label 供窄屏卡片式排版用（见 layout.js 的 @media）：窄屏下 thead 隐藏，
     // 字段名由 CSS 从 data-label 生成，宽屏上这个属性没有任何副作用。
     return `<tr>
@@ -39,7 +44,7 @@ export function renderRuns({ pwd, tools, entries, active = {}, flash }) {
       <td data-label="结果">${badge(meta.status || "error")}</td>
       <td class="dim" data-label="摘要">${escapeHtml(meta.message || "（无摘要）")}</td>
       <td class="num dim" data-label="积分">${escapeHtml(meta.credits ? `+${meta.credits}` : "")}</td>
-      <td data-label="子请求">${budget}</td>
+      <td data-label="请求">${usage}</td>
       <td data-label="" style="text-align:right"><a class="btn sm" href="${escapeHtml(href)}">详情</a></td>
     </tr>`;
   }).join("");
@@ -52,7 +57,7 @@ export function renderRuns({ pwd, tools, entries, active = {}, flash }) {
         : ["调度每 30 分钟醒一次，跑过的账号会在这里留下痕迹。"],
     })
     : `<div class="tw"><table class="t"><thead><tr>
-        <th>时间</th><th>对象</th><th>结果</th><th>摘要</th><th>积分</th><th>子请求</th><th></th>
+        <th>时间</th><th>对象</th><th>结果</th><th>摘要</th><th>积分</th><th>请求</th><th></th>
       </tr></thead><tbody>${rows}</tbody></table></div>`;
 
   return pageShell({
@@ -77,7 +82,7 @@ export function renderRunsClearConfirm({ pwd, tools, tool, count }) {
       + alertBox("warn", `将删除 <b>${escapeHtml(tool.name)}</b> 名下全部运行日志${count ? `（当前一页能看到 ${count} 条）` : ""}。`
         + `<br>只删这一个工具的记录，另外两个工具的日志、账号、凭据、当天进度全部不动。删掉之后不能恢复。`)
       + `<div class="pane" style="margin-top:16px"><p class="sub" style="margin:0 0 14px">`
-      + `一次调用只有 50 个子请求，所以一次最多删 ${CLEAR_BUDGET} 条左右；条数更多时分几次点就行，每次删完会告诉你还剩多少。</p>`
+      + `一次最多删 ${CLEAR_BUDGET} 条左右；条数更多时分几次点就行，每次删完会告诉你还剩多少。</p>`
       + `<div class="acts"><form method="post" action="${escapeHtml(action)}" style="display:inline">`
       + `<button class="btn danger" type="submit">确认清空</button></form>`
       + `${button(link("/runs", pwd, { tool: tool.id }), "取消")}</div></div>`,
@@ -124,6 +129,7 @@ export function renderRunDetail({ pwd, tools, entry, key, missing }) {
     : (entry.steps || []).map(stepRow).join("");
 
   const b = entry.budget || {};
+  const u = entry.usage || {};
   const heads = isTick ? ["工具", "处置", "账号结果", ""] : ["步骤", "结果", "说明", "备注"];
   return pageShell({
     title: isTick ? "本轮调度详情" : `${entry.tool} · ${entry.label || entry.uid}`,
@@ -133,7 +139,8 @@ export function renderRunDetail({ pwd, tools, entry, key, missing }) {
         <div class="bd" style="padding-top:0">
           <p class="sub" style="margin:0">${escapeHtml(entry.message || "")}</p>
           ${entry.credits ? `<div class="kv"><span class="k">本次积分</span><span class="v">+${escapeHtml(String(entry.credits))}</span></div>` : ""}
-          <div class="kv"><span class="k">子请求</span><span class="v">用 ${escapeHtml(String(b.used ?? "—"))} / 上限 ${escapeHtml(String(b.limit ?? "—"))}${b.over ? ` · <span style="color:var(--bad)">超出 ${escapeHtml(String(b.over))}</span>` : ""}</span></div>
+          <div class="kv"><span class="k">本账号外部请求</span><span class="v">${escapeHtml(String(u.http ?? "—"))} / 上限 ${escapeHtml(String(b.limit ?? "—"))}${b.over ? ` · <span style="color:var(--bad)">超出 ${escapeHtml(String(b.over))}</span>` : ""}</span></div>
+          <div class="kv"><span class="k">本次调用 KV</span><span class="v">${escapeHtml(String(b.kv ?? "—"))} 次（KV 另有 1000 次额度，不占上面那个 50）</span></div>
           <div class="kv"><span class="k">键名</span><span class="v dim">${escapeHtml(key)}（时间那段是反转毫秒，所以键序就是时间倒序）</span></div>
         </div></div>
       ${isTick ? "" : sectionHead("步骤", "「复用」表示这一步在之前的轮次已完成，本轮没有再打上游")}

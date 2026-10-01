@@ -8,11 +8,16 @@ import { isOff } from "../../core/flags.js";
 const SETTLED = new Set(["claimed", "already", "inactive", "ok"]);
 
 // 开关是个 POST 表单而不是链接：全站状态变更都走 POST，页面里没有一行 JS。
-// 「开启」是常态操作、「停用」是例外，所以默认呈现"停用"这个动作。
+//
+// 用 checkbox + label 做一个拨动开关，而不是按钮：窄屏下 .kv 会变成竖排
+// （见 layout.js 的 @media），按钮跟着标签上下堆叠，看起来像两件不相干的东西。
+// checkbox 的原生状态还能白送"当前是开是关"给读屏软件，label 上写清动作名。
+// 输入框本身要藏起来但**不能 display:none** —— 那样 label 点不到它，表单也不会提交。
 function toggleForm(pwd, tool, off) {
-  return `<form method="post" action="${escapeHtml(link(`/tool/${tool.id}/toggle`, pwd))}">
+  return `<form method="post" action="${escapeHtml(link(`/tool/${tool.id}/toggle`, pwd))}" class="sw">
     <input type="hidden" name="pwd" value="${escapeHtml(pwd)}">
-    <button class="btn sm${off ? "" : " ghost"}" type="submit">${off ? "开启" : "停用"}</button>
+    <input type="checkbox" id="sw-${escapeHtml(tool.id)}" name="off" value="1"${off ? " checked" : ""}>
+    <label for="sw-${escapeHtml(tool.id)}"><span class="sw-t">${off ? "已停用" : "运行中"}</span></label>
   </form>`;
 }
 
@@ -75,6 +80,6 @@ export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, b
       + (tools.length === 0 ? emptyState({ title: "还没有接入任何工具", lines: ["注册表是空的。"] }) : `<div class="grid cols3">${cards.join("")}</div>`)
       + sectionHead("最近运行", "", button(link("/runs", pwd), "全部日志 ›"))
       + `<div class="card"><div class="bd">${feed || '<span class="dim">还没有运行记录。</span>'}</div></div>
-      ${budget ? `<p class="tiny" style="margin-top:12px">本次页面读取用了 ${budget.used} / ${budget.limit} 子请求。</p>` : ""}`,
+      ${budget ? `<p class="tiny" style="margin-top:12px">本次页面读取：外部请求 ${budget.used} / ${budget.limit}（KV 操作另计 ${budget.kv} 次，走 KV 自己那份额度）。</p>` : ""}`,
   });
 }

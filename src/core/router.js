@@ -34,7 +34,7 @@ function flashFrom(url) {
     return {
       kind: more ? "warn" : "info",
       text: more
-        ? `已删除 ${n} 条，这个预算只够删这么多（一次调用 50 个子请求）。再点一次「清空」继续删剩下的。`
+        ? `已删除 ${n} 条，这个预算只够删这么多（KV 每天 1000 次写/删/list）。再点一次「清空」继续删剩下的。`
         : `已删除 ${n} 条运行日志。`,
     };
   }
@@ -257,7 +257,7 @@ async function accountDelete(ctx, tool, uid) {
   return redirectRes(link(`/tool/${tool.id}`, ctx.pwd, { done: "deleted" }));
 }
 
-// 手动执行与测试共用页面那本账：手动连点不该把整次调用撞穿 50 的硬顶。
+// 手动执行与测试共用页面那本账：手动连点不该把整次调用撞穿外部请求的 50 硬顶。
 // 结果里的 message 已在内核侧洗掉凭据（runner 的 runOneAccount），这里可以直接显示。
 async function runNowHandler(ctx, tool, uid) {
   const result = await runAccountNow({ env: ctx.env, budget: ctx.budget, tool, uid, trigger: "manual" });
@@ -310,7 +310,7 @@ async function apiState(env, budget) {
   return jsonRes({
     ok: true,
     stage: 5,
-    budget: budget ? { used: budget.used, limit: budget.limit, left: budget.left() } : null,
+    budget: budget ? { used: budget.used, kv: budget.kv, limit: budget.limit, left: budget.left() } : null,
     tools: TOOLS.map((tool) => ({
       id: tool.id, name: tool.name, steps: tool.steps.length, accounts: counts[tool.id],
       off: isOff(flags, tool.id),

@@ -6,7 +6,7 @@ import { maskSecret } from "../src/core/text.js";
 import { coerceFields, saveAccount, schedOf } from "../src/core/accounts.js";
 import { listUids } from "../src/core/store.js";
 import { commitSchedEntries, loadSchedIndex } from "../src/core/accounts.js";
-import { ACCOUNT_FRAME, FLAGS_FRAME, TOOL_FRAME, aggregate, runAccountNow, runTick } from "../src/core/runner.js";
+import { aggregate, runAccountNow, runTick } from "../src/core/runner.js";
 import { makeBudget, trackedFetch, trackedKv } from "../src/core/budget.js";
 import { listRunLog, readRunLog, scrubSecrets, writeRunLog } from "../src/core/logs.js";
 import { logicalDay, cstDate } from "../src/core/time.js";
@@ -434,26 +434,38 @@ test("跑完即闩锁：同一逻辑日内不再重复排队", async () => {
 test("预算装不下的步骤单独顺延，不影响已完成的部分", async () => {
   const kv = fakeKv(); const env = envFor(kv);
   seedAccount(kv, "SEATA3");
-  const summary = await tick(env, { limit: 30 }).run();
-  const result = firstAccount(summary);
-  assert.equal(result.status, "deferred");
-  assert.deepEqual(result.steps.map((s) => s.status), ["claimed", "deferred"]);
-  assert.ok(result.steps[1].message.includes("预算不足"), "顺延理由要写清楚");
-  assert.equal(kv.store.has("v1:step:fix:SEATA3"), true, "未完成时进度要落盘");
+  // 第一步 4 笔、第二步 20 笔。额度给 22：够付任一步单独的 cost（20 < 22），
+  // 但付不起第二步（4 + 20 = 24 > 22）→ 第一步跑完、第二步整步顺延。
+  // 边界靠 httpStep 真发请求来造：账本只算外部 HTTP（2026-10-01 起），
+  // 夹具 run() 里不调 ctx.fetch 就不再消耗额度，limit 给小也触发不了顺延。
+  const tools = [httpTool([httpStep("claim", 4), httpStep("survey", 20)])];
+  const stub = stubUpstream({ "GET /claim/0": { payload: { ok: true } } });
+  try {
+    const summary = await tick(env, { limit: 22, tools }).run();
+    const result = firstAccount(summary);
+    assert.equal(result.status, "deferred");
+    assert.deepEqual(result.steps.map((s) => s.status), ["claimed", "deferred"]);
+    assert.ok(result.steps[1].message.includes("预算不足"), "顺延理由要写清楚");
+    assert.equal(kv.store.has("v1:step:fix:SEATA3"), true, "未完成时进度要落盘");
+  } finally { stub.restore(); }
 });
 
 test("断点续跑：第二轮跳过已完成步骤，只补剩下的", async () => {
   const kv = fakeKv(); const env = envFor(kv);
   seedAccount(kv, "SEATA4");
-  const round1 = firstAccount(await tick(env, { limit: 30 }).run());
-  assert.equal(round1.status, "deferred");
+  const tools = [httpTool([httpStep("claim", 4), httpStep("survey", 20)])];
+  const stub = stubUpstream({ "GET /claim/0": { payload: { ok: true } } });
+  try {
+    const round1 = firstAccount(await tick(env, { limit: 5, tools }).run());
+    assert.equal(round1.status, "deferred");
 
-  // 隔过 minIntervalSec，模拟下一轮
-  const round2 = firstAccount(await tick(env, { now: cst(10, 31), limit: 45 }).run());
-  assert.equal(round2.status, "claimed");
-  assert.equal(round2.steps[0].reused, true, "claim 不该重跑");
-  assert.equal(round2.steps[1].status, "claimed");
-  assert.equal(kv.store.has("v1:step:fix:SEATA4"), false, "全部完成后进度键应被清掉");
+    // 隔过 minIntervalSec，模拟下一轮；额度这次给足
+    const round2 = firstAccount(await tick(env, { now: cst(10, 31), limit: 45, tools }).run());
+    assert.equal(round2.status, "claimed");
+    assert.equal(round2.steps[0].reused, true, "claim 不该重跑");
+    assert.equal(round2.steps[1].status, "claimed");
+    assert.equal(kv.store.has("v1:step:fix:SEATA4"), false, "全部完成后进度键应被清掉");
+  } finally { stub.restore(); }
 });
 
 test("进度只在停止点写一次，不是每步都写", async () => {
@@ -471,11 +483,15 @@ test("进度只在停止点写一次，不是每步都写", async () => {
 test("跨逻辑日：进度重置，账号重新到期", async () => {
   const kv = fakeKv(); const env = envFor(kv);
   seedAccount(kv, "SEATA6");
-  await tick(env, { limit: 30 }).run();
-  assert.equal(progress(kv, "SEATA6") !== null, true);
-  const nextDay = firstAccount(await tick(env, { now: cst(10) + 86400, limit: 45 }).run());
-  assert.equal(nextDay.status, "claimed", "新的一天 claim 应重跑并全部完成");
-  assert.equal(nextDay.steps[0].reused, undefined || false, "昨天的进度不该被今天复用");
+  const tools = [httpTool([httpStep("claim", 4), httpStep("survey", 20)])];
+  const stub = stubUpstream({ "GET /claim/0": { payload: { ok: true } } });
+  try {
+    await tick(env, { limit: 5, tools }).run();
+    assert.equal(progress(kv, "SEATA6") !== null, true);
+    const nextDay = firstAccount(await tick(env, { now: cst(10) + 86400, limit: 45, tools }).run());
+    assert.equal(nextDay.status, "claimed", "新的一天 claim 应重跑并全部完成");
+    assert.equal(nextDay.steps[0].reused, undefined || false, "昨天的进度不该被今天复用");
+  } finally { stub.restore(); }
 });
 
 test("minIntervalSec 闸：刚跑过的不重复排队", async () => {
@@ -588,7 +604,9 @@ test("出口域名白名单：不在名单里的域名直接抛错", async () =>
   assert.equal(budget.used, 0, "被拦下的请求不该记账，它根本没发出去");
 });
 
-test("一次调用一本账：预算用量等于真实子请求数", async () => {
+// 2026-10-01：账本分成两本（外部 HTTP / KV），官方给的是两个独立上限
+// （50 外部子请求 + 1000 Cloudflare 内部服务）。所以这里分别对齐两个读数。
+test("一次调用两本账：KV 次数等于实际调用数，外部请求单独记", async () => {
   const kv = fakeKv(); const env = envFor(kv);
   seedAccount(kv, "SEATB3");
   seedAccount(kv, "SEATB4");
@@ -596,8 +614,11 @@ test("一次调用一本账：预算用量等于真实子请求数", async () =>
   const scoped = { ...env, CHECKIN_KV: trackedKv(kv, budget) };
   kv.calls.length = 0;
   await runTick({ env: scoped, budget, tools: TOOLS, trigger: "manual", now: cst(10) });
-  assert.equal(budget.used, kv.calls.length, "账本与 KV 实际调用数必须一致");
-  assert.ok(budget.used > 0);
+  assert.equal(budget.kv, kv.calls.length, "KV 账本与实际 KV 调用数必须一致");
+  assert.ok(budget.kv > 0, "这轮确实该碰 KV");
+  // 夹具工具 hosts 为空、不打上游，所以外部请求必须是 0 —— 而 KV 次数远大于它。
+  // 这正是"两个池子"的直接证据：旧口径下 used 会被 KV 抬到几十。
+  assert.equal(budget.used, 0, "不联网的夹具不该产生任何外部请求");
 });
 
 test("配置未完成的工具被整体跳过；补齐后同一年号即可执行", async () => {
@@ -634,9 +655,9 @@ test("真·空转的轮次（一步都没跑成）不刷新 lastAt、不计入�
   seedAccount(kv, "SEATE1");
   const now = cst(10);
 
-  // 预算刚好够付每工具的固定开销、不够付一个账号的固定开销 → 账号在进管线前就被拦掉。
-  // 用 TOOL_FRAME 表达而不是写死数字：那笔开销随内核改动，测试不该记魔法数。
-  const round1 = firstAccount(await tick(env, { now, limit: TOOL_FRAME + 1 }).run());
+  // 额度只够第一步（cost 4）的一半 → 账号在进管线前就被拦掉。
+  // 旧口径下这里靠"KV 帧"构造边界，现在 KV 不占额度，所以只能用外部请求额度。
+  const round1 = firstAccount(await tick(env, { now, limit: 2 }).run());
   assert.equal(round1.status, "deferred");
   const after = schedOf(schedEntry(kv, "SEATE1"));
   assert.equal(after.attempts, 0, "空转不该烧掉当日次数");
@@ -652,18 +673,21 @@ test("部分完成的轮次计入次数，剩余步骤在下一个 tick 间隔�
   const kv = fakeKv(); const env = envFor(kv);
   seedAccount(kv, "SEATE4");
   const now = cst(10);
+  const tools = [httpTool([httpStep("claim", 4), httpStep("survey", 20)])];
+  const stub = stubUpstream({ "GET /claim/0": { payload: { ok: true } } });
+  try {
+    const round1 = firstAccount(await tick(env, { now, limit: 5, tools }).run());
+    assert.equal(round1.status, "deferred");
+    assert.equal(round1.steps[0].status, "claimed");
+    assert.equal(schedEntry(kv, "SEATE4").attempts, 1, "跑成了一步就算一次");
+    assert.equal(schedEntry(kv, "SEATE4").lastAt, now);
 
-  const round1 = firstAccount(await tick(env, { now, limit: 30 }).run());
-  assert.equal(round1.status, "deferred");
-  assert.equal(round1.steps[0].status, "claimed");
-  assert.equal(schedEntry(kv, "SEATE4").attempts, 1, "跑成了一步就算一次");
-  assert.equal(schedEntry(kv, "SEATE4").lastAt, now);
-
-  // 生产里 tick 间隔就是 30 分钟，正好等于 minIntervalSec
-  const round2 = firstAccount(await tick(env, { now: now + 1800, limit: 45 }).run());
-  assert.equal(round2.status, "claimed");
-  assert.equal(round2.steps[0].reused, true, "已完成的 claim 不该重跑");
-  assert.equal(round2.steps[1].status, "claimed");
+    // 生产里 tick 间隔就是 30 分钟，正好等于 minIntervalSec
+    const round2 = firstAccount(await tick(env, { now: now + 1800, limit: 45, tools }).run());
+    assert.equal(round2.status, "claimed");
+    assert.equal(round2.steps[0].reused, true, "已完成的 claim 不该重跑");
+    assert.equal(round2.steps[1].status, "claimed");
+  } finally { stub.restore(); }
 });
 
 test("顺延的剩余步骤在下一轮立即接续，不被 minIntervalSec 挡住", async () => {
@@ -672,16 +696,19 @@ test("顺延的剩余步骤在下一轮立即接续，不被 minIntervalSec 挡�
   const kv = fakeKv(); const env = envFor(kv);
   seedAccount(kv, "SEATR1");
   const now = cst(10);
+  const tools = [httpTool([httpStep("claim", 4), httpStep("survey", 20)])];
+  const stub = stubUpstream({ "GET /claim/0": { payload: { ok: true } } });
+  try {
+    const round1 = firstAccount(await tick(env, { now, limit: 5, tools }).run());
+    assert.equal(round1.status, "deferred");
+    assert.equal(schedOf(schedEntry(kv, "SEATR1")).resumable, true, "有剩余步骤就该标记可接续");
 
-  const round1 = firstAccount(await tick(env, { now, limit: 30 }).run());
-  assert.equal(round1.status, "deferred");
-  assert.equal(schedOf(schedEntry(kv, "SEATR1")).resumable, true, "有剩余步骤就该标记可接续");
-
-  // 只过 2 分钟 —— 远小于 minIntervalSec 的 30 分钟
-  const round2 = firstAccount(await tick(env, { now: now + 120, limit: 45 }).run());
-  assert.equal(round2.status, "claimed", "剩余步骤应被接续，而不是报「无到期账号」");
-  assert.equal(round2.steps[0].reused, true);
-  assert.equal(schedOf(schedEntry(kv, "SEATR1")).resumable, false, "全部做完后清除接续标记");
+    // 只过 2 分钟 —— 远小于 minIntervalSec 的 30 分钟
+    const round2 = firstAccount(await tick(env, { now: now + 120, limit: 45, tools }).run());
+    assert.equal(round2.status, "claimed", "剩余步骤应被接续，而不是报「无到期账号」");
+    assert.equal(round2.steps[0].reused, true);
+    assert.equal(schedOf(schedEntry(kv, "SEATR1")).resumable, false, "全部做完后清除接续标记");
+  } finally { stub.restore(); }
 });
 
 test("登录失效不标记为可接续，避免每轮白打", async () => {
@@ -722,11 +749,17 @@ test("多账号：预算耗尽时后面的账号顺延，不报错", async () =>
   seedAccount(kv, "SEATD1");
   seedAccount(kv, "SEATD2");
   seedAccount(kv, "SEATD3");
-  const summary = await tick(env, { limit: 40 }).run();
-  const statuses = summary.plan[0].accounts.map((a) => a.status);
-  assert.equal(statuses[0], "claimed");
-  assert.ok(statuses.slice(1).includes("deferred"), `应至少有一个被顺延，实际 ${statuses.join(",")}`);
-  assert.equal(summary.budget.used <= 40, true, "绝不能超预算");
+  // 额度只够两个账号各 6 笔 → 第三个必须顺延。账本只算外部 HTTP（2026-10-01 起），
+  // 所以边界要靠 httpStep 真发请求来造，不能再靠 KV 写入把 used 抬起来。
+  const tools = [httpTool([httpStep("claim", 6)])];
+  const stub = stubUpstream({ "GET /claim/0": { payload: { ok: true } } });
+  try {
+    const summary = await tick(env, { limit: 13, tools }).run();
+    const statuses = summary.plan[0].accounts.map((a) => a.status);
+    assert.equal(statuses[0], "claimed");
+    assert.ok(statuses.slice(1).includes("deferred"), `应至少有一个被顺延，实际 ${statuses.join(",")}`);
+    assert.ok(summary.budget.used <= 13, `绝不能超预算，实际 ${summary.budget.used}`);
+  } finally { stub.restore(); }
 });
 
 // ═══════════ 审核结论的回归断言 ═══════════
@@ -853,29 +886,41 @@ fixtureTest("[P1-6] 首页子请求数与账号数无关", async () => {
   assert.equal(many.status, 200);
   // 真正的不变量是"成本不随账号数增长"，而不是某个魔法数字
   assert.equal(many.calls, one.calls, `41 账号花 ${many.calls} 次，1 账号花 ${one.calls} 次 —— 又变成线性了`);
-  // 界是每工具 3 次 + 汇总键 1 次 + 停用标记 1 次（FLAGS_FRAME）。
-  // 写死数字会让"接第 3 家工具"变成一次假红，正如它曾经让"接第 3 家"没人注意到成本在长。
-  const bound = TOOLS.length * 3 + 1 + FLAGS_FRAME;
+  // 上界 = 每工具 3 次（列账号 1 + 读调度索引 1 + 日志那页归并 1）+ 停用标记 1 次
+  // = TOOLS.length * 3 + 1。写死数字会让"接第 3 家工具"变成一次假红，
+  // 正如它曾经让"接第 3 家"没人注意到成本在长。
+  const bound = TOOLS.length * 3 + 2;   // +2：停用标记 1 + 首页预算读数 1
   assert.ok(one.calls <= bound, `首页成本 ${one.calls} 次，超过按工具数算的上界 ${bound}`);
-  assert.ok(one.calls < 30, `首页 ${one.calls} 次必须远低于 50 硬顶，还要留给点开卡片的空间`);
+  // 这些全是 KV 操作，各走 1000 那份额度；不再要求"远低于 50"。
+  // 50 是外部 HTTP 的硬顶，首页一次都不发。
+  assert.ok(one.calls < 100, `首页 ${one.calls} 次 KV 偏高，离 1000 的额度太近`);
   assert.ok(many.text.includes("0/41"), `卡片应显示今日完成进度 0/41，实际片段：${many.text.match(/今日完成[^<]*/)?.[0] ?? "未找到"}`);
 });
 
 fixtureTest("[P1-6] 调度索引读取也不随账号数增长", async () => {
-  const costWith = async (n) => {
+  // 2026-10-01：账本分成两本后要盯的是 **KV 次数**，而它分两部分：
+  //   · 枚举（列账号 + 读调度索引）= 每工具常数笔，**不随账号数变** ← 本条守这个
+  //   · 每账号的固定开销（取锁、进度、凭据、收尾）= 随账号数线性增长，那是设计
+  // 所以不能断言总额不变（旧口径下总额被 45 卡住，碰巧过了），
+  // 要断言**每新增一个账号的边际成本是常数**，而不是随 N 变大。
+  const kvCostWith = async (n) => {
     const kv = fakeKv(); const env = envFor(kv);
     seedConfig(kv);
     for (let i = 0; i < n; i += 1) {
       kv.store.set(`v1:acct:fix:S${i}`, JSON.stringify({ label: "x", cred: { seatId: `S${i}` }, updatedAt: 1 }));
     }
-    const budget = makeBudget(45);
+    const budget = makeBudget(1000);
     await runTick({ env: { ...env, CHECKIN_KV: trackedKv(kv, budget) }, budget, tools: TOOLS, trigger: "manual", now: cst(10) });
-    return budget.used;
+    return budget.kv;
   };
-  const one = await costWith(1);
-  const many = await costWith(41);
-  assert.ok(many < 50, `41 账号的一轮花了 ${many} 次子请求，撞穿 50 硬顶`);
-  assert.ok(many > one, "账号多时应当真的做了更多工作");
+  const one = await kvCostWith(1);
+  const many = await kvCostWith(41);
+  assert.ok(many > one, "账号多时确实要花更多 KV");
+  // 每账号固定开销：取锁 2 + 读进度 1 + 读凭据 1 + 存/删进度 1 + 写运行日志 1 = 6
+  // 加上枚举的常数笔。若这个斜率超过 6，说明某个账号读出了 O(N) 次记录。
+  const per = (many - one) / 40;
+  assert.ok(per <= 6,
+    `每新增一个账号要多花 ${per.toFixed(1)} 次 KV，超过 6 —— 某个环节在按账号数放大`);
 });
 
 fixtureTest("[P1-6] 工具页按 list+get 取明细，但坏数据不炸", async () => {
@@ -951,8 +996,11 @@ test("[P0-1] 调度枚举与账号数无关：3 工具 × 16 账号不撞 50 硬
       kv.store.set(`v1:acct:${t.id}:S${i}`, JSON.stringify({ label: `S${i}`, cred: { seatId: `S${i}` }, createdAt: 1, updatedAt: 1 }));
     }
   }
-  const { summary } = await tickWith(kv, tools);
-  assert.ok(kv.count < 50, `真实子请求 ${kv.count} 次，必须留在硬顶内`);
+  const { budget, summary } = await tickWith(kv, tools);
+  // 2026-10-01：KV 不再占 50 那份额度，所以这里盯 KV 次数（它有 1000/天）
+  // 与外部请求次数（夹具不联网，应为 0）两个读数，而不是混一个数字比 50。
+  assert.ok(budget.kv < 1000, `真实 KV 操作 ${budget.kv} 次，超过 1000 的额度`);
+  assert.equal(budget.used, 0, "夹具不联网，不该产生外部请求");
   assert.ok(summary.ran > 0, "一个账号都没跑到，说明枚举把整轮炸了");
 });
 
@@ -990,16 +1038,21 @@ test("[P0-3] 损坏记录不参与调度，也不会被写回成僵尸", async (
 test("[P1-4] 步骤实际消耗超过 cost 会被显式记下，不静默吸收", async () => {
   const kv = fakeKv();
   seedAccount(kv, "SEATD8");
+  // cost 2、实际发 3 次外部请求 → 超支 1，必须被记下来而不是静默吸收。
+  // 2026-10-01 起要拿 ctx.fetch 造超支：写 KV 不再计入 used（那是另一个池子），
+  // 用 ctx.kv.put 造出来的"超支"在新口径下根本不存在。
   const greedy = [{
     id: "greedy", label: "贪婪步骤", cost: 2,
     async run(ctx) {
-      await ctx.kv.put("j1", "1"); await ctx.kv.put("j2", "1"); await ctx.kv.put("j3", "1");
+      for (let i = 0; i < 3; i += 1) await ctx.fetch(`https://${HOST_FIX}/greedy/${i}`, {});
       return { status: "claimed", message: "ok" };
     },
   }];
-  const { summary } = await tickWith(kv, [syntheticTool("fix", greedy)]);
-  // cost 2、实际 3 次 → 超支 1，必须被记下来而不是静默吸收
-  assert.equal(summary.plan[0].accounts[0].steps[0].over, 1, "超支未被记录");
+  const stub = stubUpstream({ "GET /greedy/0": { payload: { ok: true } } });
+  try {
+    const { summary } = await tickWith(kv, [httpTool(greedy)]);
+    assert.equal(summary.plan[0].accounts[0].steps[0].over, 1, "超支未被记录");
+  } finally { stub.restore(); }
 });
 
 test("[加固] 空 uid 不会静默造出畸形键", async () => {
@@ -1014,16 +1067,32 @@ test("[加固] 空 uid 不会静默造出畸形键", async () => {
 test("[P1-4] 账本耗尽时 ctx.fetch 拒答，而不是让第 51 次请求炸掉整轮", async () => {
   const budget = makeBudget(1);
   budget.charge(1);
-  await assert.rejects(() => trackedFetch(budget, ["ok.example.com"])("https://ok.example.com/x"), /预算已用尽/);
+  await assert.rejects(
+    () => trackedFetch(budget, ["ok.example.com"])("https://ok.example.com/x"),
+    /额度已用尽/,
+    "拒答文案要说清是「外部请求额度」，不是笼统的「预算」—— 现在有两个池子",
+  );
+  // KV 花掉不影响外部请求额度：这才是"两个池子"的关键行为
+  const b2 = makeBudget(2);
+  b2.chargeKv(99);
+  assert.equal(b2.fits(1), true, "KV 用量不该吃掉外部请求额度");
 });
 
-test("[P1-5] 账号框架开销纳入预约，账本不会一路花过上限", async () => {
+// 2026-10-01：账号级 KV 帧（取锁 2 + 进度 + 凭据 + 收尾）已从闸门里拿掉，
+// 所以「账号框架开销纳入预约」这个机制不存在了。留下的不变量是：
+// **额度耗尽时后面的账号顺延，且账本不越限** —— 用真发外部请求的夹具来造边界。
+test("[P1-5] 额度耗尽时后面的账号顺延，账本不越限", async () => {
   const kv = fakeKv();
   seedConfig(kv);
   for (let i = 0; i < 12; i += 1) seedAccount(kv, `SEATE${i}`);
-  const { budget, summary } = await tickWith(kv, [syntheticTool("fix")], 20);
-  assert.ok(budget.used <= 20, `账本花到 ${budget.used}，越过了自设上限 20`);
-  assert.ok(summary.plan[0].accounts.some((a) => a.status === "deferred"), "后面的账号应被顺延");
+  const tools = [httpTool([httpStep("claim", 6)])];
+  const stub = stubUpstream({ "GET /claim/0": { payload: { ok: true } } });
+  try {
+    // 额度只够两个账号（12 < 13 < 18）→ 第三个起必须顺延
+    const { budget, summary } = await tickWith(kv, tools, 13);
+    assert.ok(budget.used <= 13, `账本花到 ${budget.used}，越过了自设上限 13`);
+    assert.ok(summary.plan[0].accounts.some((a) => a.status === "deferred"), "后面的账号应被顺延");
+  } finally { stub.restore(); }
 });
 
 test("[P1-7] 有步骤没打上游时就标记可接续", async () => {
@@ -1126,6 +1195,28 @@ const okStep = (message = "ok", credits = 1) => [{
   id: "claim", label: "领取", cost: 4, async run() { return { status: "claimed", message, credits }; },
 }];
 const leakyTool = (steps) => ({ ...syntheticTool("fix", steps), creds: credsFull });
+
+// 2026-10-01 起账本分成两本：只有外部 HTTP 参与 fits() 闸门，KV 只计数。
+// 于是"预算耗尽"这个场景**只能靠真的发外部请求来造** —— 过去那些测试是靠
+// KV 写入把 used 抬起来才构造出边界的（夹具 hosts 为空、run() 里不调 fetch，
+// 旧口径下 used 却等于 KV 次数，于是 limit 给小一点就能触发顺延）。
+//
+// 现在给夹具一个会真发请求的步骤：它打上游需要 hosts 放行，所以配套的测试
+// 要用 stubUpstream 挂上路由，否则 trackedFetch 的白名单会先拒掉。
+const HOST_FIX = "fixture.example.com";
+// 真花 n 笔外部请求的步骤
+const httpStep = (id, n, label) => ({
+  id, label: label || id, cost: n,
+  async run(ctx) {
+    for (let i = 0; i < n; i += 1) await ctx.fetch(`https://${HOST_FIX}/${id}/${i}`, {});
+    return { status: "claimed", message: `${id} 发了 ${n} 次` };
+  },
+});
+const httpTool = (steps, creds) => ({
+  ...syntheticTool("fix", steps),
+  hosts: [HOST_FIX],
+  creds: creds || credsFull,
+});
 const logKeys = (kv) => [...kv.store.keys()].filter((k) => k.startsWith("v1:run:") || k.startsWith("v1:tick:"));
 // 日志的可见面 = 正文 + metadata（列表页只读 metadata，正文没写全也不代表干净）
 const everyLogText = (kv) => logKeys(kv).map((k) => `${k}\n${kv.store.get(k)}\n${JSON.stringify(kv.metas.get(k) || {})}`).join("\n");
@@ -1307,7 +1398,12 @@ test("[详情页展示步骤与预算", async () => {
   assert.equal(res.status, 200);
   // 断言要盯住表格单元：.b-claimed 这类 CSS 名在每一页的 <style> 里都有，只 includes("claim") 会假通过
   assert.ok(res.text.includes(">claim</td>"), "应列出步骤");
-  assert.ok(res.text.includes("子请求"), "应显示预算");
+  // 2026-10-01：详情页把原来那一行「子请求」拆成两个读数 —— 外部请求与 KV 各走各的额度，
+  // 混在一起会让人以为 KV 也在那 50 里面。
+  assert.ok(res.text.includes("本账号外部请求"), "应显示这一条记录自己花掉的外部请求");
+  assert.ok(res.text.includes("本次调用 KV"), "应单独显示 KV 次数");
+  // 旧标签不许留着：它只出现在"两者混算"的口径下
+  assert.ok(!/>子请求</.test(res.text), "不该再出现笼统的「子请求」标签");
 });
 
 test("[键名不合法或指向别的命名空间时返回未找到页，不是 500", async () => {
@@ -1471,7 +1567,9 @@ fixtureTest("[工具配置未完成时「执行」被拒绝，不拿残缺配置
   assert.equal(view.status, "error");
   assert.match(view.message, /工具配置未完成/, "要如实说是被配置闸挡住的");
   assert.match(view.message, /接入点/, "要说出缺哪一项");
-  assert.ok(kv.count - callsBefore <= 1 + FLAGS_FRAME, `拒绝路径只该花一次读 + 一次停用标记，实际 ${kv.count - callsBefore} 次`);
+  // 拒绝路径只该读一次停用标记 + 一次配置，不该逐账号读（KV 走自己的额度，
+  // 但"读多少"仍是要守的不变量 —— 多读就是线性成本）
+  assert.ok(kv.count - callsBefore <= 2, `拒绝路径只该花一次读 + 一次停用标记，实际 ${kv.count - callsBefore} 次`);
   assert.ok(!kv.store.has("v1:step:fix:CFG1"), "被拒绝的执行不该留下进度");
   const page = await hit("/account/fix/CFG1/run", { method: "POST", body: form({ pwd: PASSWORD }), env: envFor(kv) });
   assert.ok(page.text.includes("工具配置未完成"), "页面上要看得出的原因");
@@ -1635,6 +1733,20 @@ test("总览的运行流与进度条有布局规则：<a> 必须显式 flex，�
   assert.match(css, /\.prog\{[^}]*flex-wrap:wrap/, "进度条不该把色块挤在一行");
 });
 
+test("拨动开关选中态有可见样式（轨道变绿 + 滑块右移）", async () => {
+  const kv = fakeKv();
+  seedFull(kv, "SW1");
+  await tickWith(kv, [leakyTool(okStep())]);
+  const page = await authed("/", envFor(kv));
+  const css = page.text.match(/<style>([\s\S]*?)<\/style>/)[1];
+  // 选中时轨道必须变绿，否则停用和运行中看起来一样
+  assert.match(css, /\.sw input:checked \+ label::before\{[^}]*background:var\(--ok\)/,
+    "选中态轨道没变绿，停用和运行中分不出来");
+  // 滑块必须右移，否则看不出开关状态
+  assert.match(css, /\.sw input:checked \+ label::after\{[^}]*transform:translateX\(17px\)/,
+    "选中态滑块没右移，开关状态看不出来");
+});
+
 test("[?tool= 筛选日志，且成本与日志总量无关", async () => {
   const kv = fakeKv();
   seedFull(kv, "FILT1");
@@ -1672,14 +1784,16 @@ test("[归并后的日志列表按时间倒序，身份取自键名而不是 met
   assert.ok(Number.isFinite(recent[0].at));
 });
 
+// 2026-10-01：KV 帧常量（TOOL_FRAME / ACCOUNT_FRAME / FLAGS_FRAME）已删 —— 它们是
+// 纯 KV 笔数，不该占外部请求的额度。这条守的是剩下那个真正的不变量：
+// **一轮跑完（含全部收尾写入）外部请求仍未越限**，且没有超支。
 test("[预约的上界不小于真实用量", async () => {
   const kv = fakeKv();
   seedFull(kv, "FRAME1");
   const { budget } = await tickWith(kv, [leakyTool(okStep())]);
-  // 账本靠 TOOL_FRAME / ACCOUNT_FRAME 预约来判"这一步装不装得下"。
   // 预约小于真实用量就等于给出一张比生产环境乐观的假票：第 51 次请求会把整轮炸掉。
-  const reserved = TOOL_FRAME + ACCOUNT_FRAME + FLAGS_FRAME;
-  assert.ok(budget.used <= reserved, `一轮一号真实用了 ${budget.used}，超过预约的 ${reserved}`);
+  assert.ok(budget.used <= budget.limit,
+    `一轮一号真实用了 ${budget.used} 外部请求，越过自限 ${budget.limit}`);
   assert.equal(budget.over, 0, "一轮一号不该超支");
 });
 
@@ -2065,7 +2179,7 @@ test("[qoder] 白名单：模块想打到别的域名会被内核直接拒掉", 
   } finally { stub.restore(); }
 });
 
-test("[qoder] 一轮一号的真实用量不超过预约（TOOL_FRAME + 步骤 cost）", async () => {
+test("[qoder] 一轮一号的真实用量不超过预约（步骤 cost 是纯 HTTP 上界）", async () => {
   const kv = fakeKv();
   seedQoder(kv);
   const stub = stubUpstream({
@@ -2075,10 +2189,16 @@ test("[qoder] 一轮一号的真实用量不超过预约（TOOL_FRAME + 步骤 c
     "POST /sash/api/v1/me/campaigns/cmp-2/claim": { payload: { data: { status: "CLAIMED", benefit: { amount: 20 } } } },
   });
   try {
+    // steps[].cost 是这一步的**外部请求**上界（读列表 1 + 领 3 + 最坏情况的换票重读 2），
+    // 2026-10-01 起账本只数外部请求，所以真实用量就该落在这个上界之内 ——
+    // 越界说明 cost 估低了，而估低会让 fits() 给出一张乐观的假票。
     const stepCost = findTool("qoder").steps[0].cost;
     const { budget } = await qoderTick(kv);
-    assert.ok(budget.used <= TOOL_FRAME + ACCOUNT_FRAME + stepCost, `真实 ${budget.used} 超过预约 ${TOOL_FRAME + ACCOUNT_FRAME + stepCost}`);
+    assert.ok(budget.used <= stepCost, `真实 ${budget.used} 超过步骤 cost 上界 ${stepCost}`);
     assert.equal(budget.over, 0);
+    // 顺带确认账本没把 KV 混进来：这个夹具一轮要碰十几次 KV，
+    // 若旧口径还在跑，used 会是 KV+HTTP 的和、远超 stepCost。
+    assert.ok(budget.kv > 0, "这轮确实碰了 KV");
   } finally { stub.restore(); }
 });
 
@@ -3008,9 +3128,11 @@ test("[workbuddy] 一轮装不下 7 步时整步顺延，下一轮接着做而�
     "POST /v2/billing/meter/daily-checkin": { payload: { credit: 100 } },
   }));
   try {
-    // 19 = 够付停用标记 1 + 每工具 3 + 账号闸（框架 6 + 收尾余量 5）+ 签到那一步的 4，
-    // 但下一步就装不下了。停用标记那 1 笔（FLAGS_FRAME）也在账上：调这个数字前先确认它还在。
-    const first = await wbTick(kv, cst(10), 19);
+    // 2026-10-01：账本只数外部请求（KV 走自己的 1000 额度，不再占这个池子）。
+    // 额度给 4：够付签到那一步（cost 4，实际花 2 次请求：读状态 + 领取），
+    // 但付不起 travel（cost 4，2+4=6 > 4）→ 后 6 步整步顺延。
+    // 19 那个数字原来含 6 笔账号 KV 帧与 7 笔收尾预留 —— 那些都不再占额度了。
+    const first = await wbTick(kv, cst(10), 4);
     const view = wbView(first.summary);
     assert.equal(view.steps[0].status, "claimed");
     const deferred = view.steps.filter((s) => s.status === "deferred" || s.status === "skipped");
@@ -3239,12 +3361,15 @@ test("[审核P0-2b] 收尾写入不许把 used 顶过自限上限（预约不占
     for (let i = 0; i < 8; i += 1) {
       const kvBefore = kv.count; const netBefore = stub.seen.length;
       const { budget } = await wbTick(kv, cst(8) + i * 1800);
-      assert.equal(budget.over, 0, `t${i}：used=${budget.used} 越过了自限 ${budget.limit}，收尾写入无处可付`);
-      assert.equal(budget.used <= budget.limit, true, `t${i}：used=${budget.used}`);
-      // 账本必须与真实发生的一致：这一轮的 KV 笔数 + 上游笔数 = used。
-      // 少记一笔，45 的自限就是假的，平台 50 的硬顶会在没人预料的时候出现
-      const real = (kv.count - kvBefore) + (stub.seen.length - netBefore);
-      assert.equal(budget.used, real, `t${i}：账本记了 ${budget.used} 笔，实际发生 ${real} 笔`);
+      assert.equal(budget.over, 0, `t${i}：used=${budget.used} 越过了自限 ${budget.limit}`);
+      assert.ok(budget.used <= budget.limit, `t${i}：used=${budget.used}`);
+      // 账本必须与真实发生的一致 —— 但 2026-10-01 起是两个池子，要分别对齐：
+      // used 只数外部 fetch（会撞平台 50 硬顶、抛异常作废整轮），kv 只数 KV 操作
+      // （各有 1000 额度，撞了只是那一次失败）。把两者相加去比 used 会差 KV 那一半。
+      const net = stub.seen.length - netBefore;
+      const kvOps = kv.count - kvBefore;
+      assert.equal(budget.used, net, `t${i}：账本记了 ${budget.used} 笔外部请求，实际发生 ${net} 笔`);
+      assert.equal(budget.kv, kvOps, `t${i}：账本记了 ${budget.kv} 次 KV，实际发生 ${kvOps} 次`);
     }
     // 就地顺延不许花钱：被账号闸挡下的账号不该留下锁、进度、日志三笔写
     const logs = [...kv.store.keys()].filter((k) => k.startsWith("v1:run:workbuddy:"));
@@ -3280,11 +3405,15 @@ test("[审核P0-2b] 收尾写入不许把 used 顶过自限上限（预约不占
 });
 
 
-test("[审核P0-2c] 收尾最坏 7 笔没预约住时，宁可整步顺延也不许把 used 顶过自限", async () => {
-  // 这一步如实花掉它预约的笔数，所以单看步骤本身没有"低估"。
-  // 越界来自它做完之后的 7 笔：凭据写回 2 + 存进度 1 + 运行日志 1 + 索引合并写回 2 + 心跳 1。
-  // cost=32 是挑出来的判别值：预约 7 笔时它整步顺延（used 停在 12），
-  // 只预约 5 笔时它被放行，做完之后 used 冲到 46 —— over=1，而平台硬顶是 50。
+// 2026-10-01 重写。原先这条守的是 TAIL_RESERVE：「一步做完之后的 7 笔收尾写入
+// 没被预约住，于是账本越过自限、整次调用抛异常」。
+// 那 7 笔全是 KV（凭据写回 2、进度 1、运行日志 1、索引写回 2、心跳 1），
+// 而 KV 走独立的 1000 额度、撞了只会是那一次调用失败（safe() 吞掉），不会作废整轮。
+// 所以那个预留机制已删除（见 runner.js 的说明）。
+//
+// 留下来的不变量是它想守的那件事本身：**一轮跑完，外部请求仍未越限** ——
+// 包括所有收尾动作在内。这是"不会撞平台 50 硬顶"的直接断言，比钉死某个预留数字有用。
+test("[审核P0-2c] 一轮跑完（含收尾）外部请求仍未越限", async () => {
   const kv = fakeKv();
   kv.store.set("v1:tool:rot", "{}");
   kv.store.set("v1:acct:rot:R1", JSON.stringify({
@@ -3295,20 +3424,32 @@ test("[审核P0-2c] 收尾最坏 7 笔没预约住时，宁可整步顺延也不
     id: "rot", name: "轮换夹具", order: 1, summary: "", config: [],
     creds: [{ key: "seatId", label: "席位", required: true }, { key: "session", label: "会话", secret: true }],
     schedule: { resetHour: 0, notBeforeHour: 0, minIntervalSec: 1800, maxDaily: 10, backoff: [] },
-    hosts: [], uidOf: (ctx) => String(ctx.values.seatId || "").trim(),
+    hosts: [HOST_FIX], uidOf: (ctx) => String(ctx.values.seatId || "").trim(),
     steps: [{
-      id: "big", label: "大步骤", cost: 32,
+      id: "big", label: "大步骤", cost: 40,
+      // 如实花掉它预约的 40 笔外部请求，且带回一个要写回的新凭据
+      // （写回是 2 笔 **KV**，不占外部请求额度 —— 这正是改动的要点）
       async run(ctx) {
-        for (let i = 0; i < 32; i += 1) await ctx.kv.get(`v1:pad:${i}`);   // 如实花掉预约的 32 笔
+        for (let i = 0; i < 40; i += 1) await ctx.fetch(`https://${HOST_FIX}/big/${i}`, {});
         return { status: "claimed", message: "ok", credits: 1, cred: { session: "NEW-SESSION-STRING" } };
       },
     }],
   };
-  const { budget, summary } = await tickWith(kv, [tool], 45, cst(10));
-  const view = planOf(summary, "rot").accounts[0];
-  assert.equal(budget.over, 0, `used=${budget.used} 越过自限 ${budget.limit}：收尾那 7 笔没被预约住，真实平台上这是整次调用抛异常`);
-  assert.equal(budget.used <= budget.limit, true, `used=${budget.used}`);
-  assert.equal(view.steps[0].status, "deferred", "装不下收尾余量的步骤必须整步顺延，而不是做完再把账本顶穿");
+  const stub = stubUpstream({ "GET /big/0": { payload: { ok: true } } });
+  try {
+    const { budget, summary } = await tickWith(kv, [tool], 45, cst(10));
+    const view = planOf(summary, "rot").accounts[0];
+    assert.equal(budget.over, 0,
+      `used=${budget.used} 越过自限 ${budget.limit} —— 平台上这是整次调用抛异常、已跑完的账号作废`);
+    assert.ok(budget.used <= budget.limit, `used=${budget.used}`);
+    assert.equal(view.status, "claimed", "额度够 40 笔就该做完");
+    // 这一轮的收尾动作确实发生了（凭据换了新串并落盘），而它们没把账本顶穿：
+    // 收尾全是 KV，所以 budget.used 停在 40（那 40 笔外部请求），KV 另记十几笔。
+    const saved = JSON.parse(kv.store.get("v1:acct:rot:R1")).cred.session;
+    assert.equal(saved, "NEW-SESSION-STRING", "凭据轮换本该写回");
+    assert.ok(budget.kv > 0, `收尾的 KV 写入该照常发生，实际 ${budget.kv}`);
+    assert.equal(budget.used, 40, `外部请求账本不该被 KV 污染，实际 ${budget.used}`);
+  } finally { stub.restore(); }
 });
 
 test("[审核P0-3] 成功路径（HTTP 200 + code:0）必须有断言：blindbox 与 redeem 不许报 error", async () => {

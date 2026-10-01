@@ -1,7 +1,27 @@
-// 免费版硬顶：50 子请求 / 单次调用，且 KV 的 get/put/list/delete 也算子请求
-// （官方定义："any request a Worker makes using the Fetch API or to Cloudflare
-//   services like R2, KV, or D1"）。
-// 留 5 次余量：撞上限不是"这次请求失败"，是整次调用抛异常，代价远大于少跑一步。
+// 一次调用一本账，但账本是**两本**。
+//
+// 为什么分开（2026-10-01 查证官方文档后改的）：
+// Cloudflare 免费版对一次调用给**两个独立上限**，不是一个大池子：
+//   · 50 次「外部子请求」= fetch() 打到你家上游站点
+//   · 1000 次「内部服务子请求」= KV / R2 / D1 这类 Cloudflare 自家服务
+// 见 https://developers.cloudflare.com/workers/platform/limits/#subrequests
+// 与 2026-02-11 的 changelog（原文："free plan remain limited to 50 external
+// subrequests and 1000 subrequests to Cloudflare services per invocation"）。
+//
+// 旧实现把 KV 的 get/put/list/delete 和 fetch 记进同一个 used，共享一个 45 的自限值。
+// 那个口径下三处判断都是错的：
+//   1. steps[].cost 是纯 HTTP 上界（Qoder 3+N、Trae 6、WorkBuddy 1+N），却要跟
+//      一堆 KV 帧相加去比一个混合池子，加出来的数没有物理意义；
+//   2. TAIL_RESERVE 那 7 笔全是 KV 写入，把它算进 HTTP 闸门等于"为 KV 预留 HTTP 额度"；
+//   3. 最严重的是 trackedFetch 的拒答闸 —— KV 先把 used 抬到 40，剩下 5 笔就留给
+//      HTTP。WorkBuddy 单账号最坏 31 笔上游请求，**哪怕一笔 KV 都不花也会被挡下来**。
+//
+// 现在：http 是唯一参与 fits() 闸门的口径（它才是会抛异常的那个），
+// kv 只计数、不参与判定 —— 它有自己的 1000 额度，而且真撞了也只是那一次 KV
+// 调用失败，不是整轮作废。
+
+// 免费版硬顶。留 5 次余量：撞上限不是"这次请求失败"，是整次调用抛异常，
+// 代价（本轮已跑完账号的日志与进度一起丢）远大于少跑一步。
 export const DEFAULT_LIMIT = 45;
 
 export function budgetFrom(env) {
@@ -9,19 +29,20 @@ export function budgetFrom(env) {
   return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_LIMIT;
 }
 
-// 模型：used 只统计**已经真实发生**的子请求；fits() 是纯判定、不改状态。
-// 早期版本让 reserve 往 used 里预付、charge 再加一次，等于双重计数，
-// 会把预算算得比实际更满、又挡不住真正超支的步骤。
+// 模型：used 只统计**已经真实发生**的外部 HTTP 次数；kv 单独记，只用于展示与排查。
+// fits() 是纯判定、不改状态。
 //
 // 也不要试图用"预约 + charge 冲抵"来占位：冲抵不分对象，步骤的 fetch 会把
-// 账号帧里留给收尾写入的那几笔一起吃掉，used 照样越限。真正的闸门在准入侧 ——
-// 见 runner.js 的 TAIL_RESERVE：允许一步开跑之前，必须连"这步做完之后还要写的几笔"
-// 一起装得下。
+// 留给下一步的额度一起吃掉，used 照样越限。闸门就在准入侧 ——
+// 见 runner.js：一步开跑之前要确认它自己的 cost 装得下。
 export function makeBudget(limit) {
-  const state = { used: 0, over: 0 };
+  const state = { used: 0, over: 0, kv: 0 };
   return {
     limit,
+    // 外部 HTTP 次数（唯一参与 fits 闸门的口径）
     get used() { return state.used; },
+    // KV 操作次数（只计数，不参与判定 —— 理由见文件头）
+    get kv() { return state.kv; },
     // 实际超出自设上限多少（步骤 cost 估偏低时才会发生），供上层报警
     get over() { return state.over; },
     left() { return limit - state.used; },
@@ -32,18 +53,20 @@ export function makeBudget(limit) {
       if (state.used > limit) state.over = state.used - limit;
       return state.used <= limit;
     },
+    // KV 单独记一笔。它有自己的 1000 额度，且撞了不会让整轮抛异常。
+    chargeKv(n = 1) { state.kv += n; },
   };
 }
 
-// 把 KV 包一层：所有读写自动记账。这样"打开首页花了多少"和"这轮调度花了多少"是同一本账，
-// 不会出现只给定时任务记账、页面渲染却随便花的情况。
+// 把 KV 包一层：所有读写自动记账（只计数，不参与闸门 —— 见文件头）。
+// 这样"打开首页花了多少"和"这轮调度花了多少"仍是同一本账，只是分成两个读数。
 export function trackedKv(kv, budget) {
   if (!kv || !budget) return kv;
   return {
-    async get(key) { budget.charge(1); return kv.get(key); },
-    async put(key, value, options) { budget.charge(1); return kv.put(key, value, options); },
-    async delete(key) { budget.charge(1); return kv.delete(key); },
-    async list(options) { budget.charge(1); return kv.list(options); },
+    async get(key) { budget.chargeKv(1); return kv.get(key); },
+    async put(key, value, options) { budget.chargeKv(1); return kv.put(key, value, options); },
+    async delete(key) { budget.chargeKv(1); return kv.delete(key); },
+    async list(options) { budget.chargeKv(1); return kv.list(options); },
   };
 }
 
@@ -57,7 +80,7 @@ export function trackedFetch(budget, hosts) {
     if (allowed && !allowed.has(url.hostname)) {
       throw new Error(`禁止的请求域名 ${url.hostname}（该工具只允许 ${[...allowed].join(", ")}）`);
     }
-    if (!budget.fits(1)) throw new Error("本轮子请求预算已用尽，停止发起请求");
+    if (!budget.fits(1)) throw new Error("本轮外部请求额度已用尽，停止发起请求");
     budget.charge(1);
     return fetch(input, init);
   };

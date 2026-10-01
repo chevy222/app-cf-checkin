@@ -113,6 +113,27 @@ table.t tr:last-child td{border-bottom:0}
 .chip{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:1.5px 7px;border-radius:99px;
   background:var(--accent-weak);color:var(--accent);font-weight:600}
 .chip.off{background:var(--warn-bg);color:var(--warn)}
+/* 工具开关（拨动式）。
+   零 JS 下 checkbox 是唯一能白送"当前状态"的东西：:checked 直接驱动外观，
+   点 label 就切换，表单照常 POST —— 不需要任何脚本。
+   input 不能 display:none（那样 label 点不到、也不提交），所以缩到 1px 藏进轨道里。 */
+.sw{display:inline-flex;align-items:center;gap:9px;margin:0}
+.sw input{position:absolute;opacity:0;width:1px;height:1px;margin:0}
+.sw label{display:inline-flex;align-items:center;gap:8px;cursor:pointer;
+  font-size:12.5px;color:var(--muted);user-select:none}
+.sw label::before{content:"";width:38px;height:21px;border-radius:99px;flex:none;
+  background:var(--panel3);border:1px solid var(--line2);position:relative;transition:background .15s}
+.sw label::after{content:"";position:absolute;left:3px;top:50%;margin-top:-9px;
+  width:15px;height:15px;border-radius:99px;background:var(--panel);
+  box-shadow:0 1px 2px rgba(0,0,0,.22);transition:transform .15s}
+/* 轨道要 relative 承载滑块 —— 但 ::before 是轨道自身，
+   所以滑块挂在 label 上时用 left 偏移，两者的坐标原点都在 label 的 padding box。 */
+.sw label{position:relative;padding-left:0}
+.sw input:checked + label::before{background:var(--ok);border-color:var(--ok)}
+.sw input:checked + label::after{transform:translateX(17px)}
+.sw input:checked + label .sw-t{color:var(--ok);font-weight:600}
+.sw input:focus-visible + label::before{box-shadow:0 0 0 3px var(--accent-weak)}
+.sw-t{white-space:nowrap}
 /* 工具卡片的账号进度条。一格一个账号：done 已结、bad 待处理、wait 顺延/限频。
    <i> 是空元素，没有显式宽高就是 0×0 —— 整条进度条会什么都不剩。 */
 .prog{display:flex;gap:3px;align-items:center;margin:2px 0 9px;flex-wrap:wrap}

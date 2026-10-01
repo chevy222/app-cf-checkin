@@ -108,7 +108,7 @@ export function renderTool({ pwd, tool, accounts, total, sched = {}, flash, flag
         <div class="bd" style="padding-top:0"><p class="tiny" style="margin:0">字段来自该工具的声明，界面不认具体工具。改动下一轮起生效。</p></div>
       </div>
       ${table}
-      ${hidden > 0 ? `<div style="margin-top:12px">${alertBox("warn", `共 ${total} 个账号，这里只列出前 ${accounts.length} 个。这一页要逐个读记录才能显示字段值，而一次调用只有 50 个子请求，所以列表是有上界的；要管更多请先把账号删到有意义的规模。`)}</div>` : ""}
+      ${hidden > 0 ? `<div style="margin-top:12px">${alertBox("warn", `共 ${total} 个账号，这里只列出前 ${accounts.length} 个。这一页要逐个读记录才能显示字段值，而 KV 的写/删/list 每天只有 1000 次，所以列表是有上界的；要管更多请先把账号删到有意义的规模。`)}</div>` : ""}
       <p class="tiny" style="margin-top:12px">「执行」跳过到期判定的时间闸，立刻跑这一个账号（预算、并发锁、进度复用照旧，工具配置没填或工具已停用时会被拒绝）。
         注意它真的会再打一次上游：今天已经领过的账号被点「执行」，上游会收到第二次领取请求。步骤色块悬停可看每一步的处置。</p>`,
   });

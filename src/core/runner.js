@@ -22,31 +22,18 @@ const PENDING_RETRY_SEC = 3600;
 // 而把它当 already 会让当天再也不重试 —— 两个方向都不对，只有"可接续"是对的。
 const CONTINUABLE = new Set(["deferred", "skipped", "pending"]);
 
-// 每工具每轮的固定 KV 开销：读配置 + 列账号 + 读调度索引 + 读一份新鲜索引并写回 + 心跳
-// 导出是为了测试能按"刚好不够付一个账号"来构造预算，而不是记住一个魔法数字
-export const TOOL_FRAME = 6;
-// 每账号每轮的固定 KV 开销：取锁 2 + 读进度 + 读凭据 + 收尾写或删进度 + 写运行日志
-export const ACCOUNT_FRAME = 6;
-// 读一次 v1:flags 的开销。单键存全部工具，所以是 1 笔而不是"工具数"笔。
-// 漏记这一笔的后果不是"多花一次"：TOOL_FRAME / ACCOUNT_FRAME / TAIL_RESERVE
-// 全都是按 45 这个自限算的，账本实际比预约多 1 笔时，整轮会在 46 才停 ——
-// 而 TAIL_RESERVE 正是靠"准入时预留"才保证收尾那几笔无处可付的。
-export const FLAGS_FRAME = 1;
-
-// 一步做完之后还可能要写的笔数（最坏路径，逐笔数出来的，不是估的）：
-//   2  凭据轮换当场写回（读新鲜记录 + 写）—— 只有续期了才有，但续期恰恰发生在最贵的那几轮
-//   1  存/删步骤进度
-//   1  写运行日志
-//   2  调度索引合并写回（读新鲜 + 写）
-//   1  心跳
-// = 7。
-// 这 7 笔没有任何 fits() 挡在前面 —— 它们是 safe()/catch 包着的直写，
-// 而 fits(ACCOUNT_FRAME) 只是"开跑前确认还剩 6 笔"、并不占位，
-// 步骤把这 6 笔吃掉之后，收尾写入就只能越过自限的 45 去撞平台的 50。
-// 撞硬顶的代价不是"少写一条日志"，是整次调用抛异常、把本轮已经跑完的账号的收尾写入一起作废。
-// 所以允许一步开跑之前，必须连这 7 笔一起装得下。偏保守（其中几笔多数轮次根本不会发生），
-// 但预算账本宁可贵不可便宜 —— 估低一次的后果查不出是谁多花的。
-const TAIL_RESERVE = 7;
+// 曾经这里有四个常量：TOOL_FRAME / ACCOUNT_FRAME / FLAGS_FRAME（每轮固定 KV 开销的
+// 逐笔计数）与 TAIL_RESERVE（收尾写入的预留量）。2026-10-01 全部删掉了 ——
+// 它们只被用来加进 fits()，而 KV 不该占外部请求的额度（见 budget.js 文件头）。
+//
+// TAIL_RESERVE 的消失理由值得留在这里，它是"预留量"这种设计最容易出错的地方：
+// 它原本是 7 笔**收尾 KV 写入**（凭据轮换写回 2、进度 1、运行日志 1、调度索引 2、心跳 1），
+// 被算进 HTTP 额度里预留。曾经的担心是"不预留，收尾就无处可付、越过自限撞平台硬顶"。
+// 但那 7 笔全是 KV，各走 1000 那份额度；而 KV 撞顶的表现是**那一次 KV 调用失败**
+// （日志里的 safe()/catch 会吞掉），不是整次调用抛异常把整轮作废。
+// 真正会抛异常作废整轮的只有外部 fetch，而 fetch 全部发生在步骤内部、由 step.cost 预约。
+//
+// 需要知道某轮碰了多少次 KV 时直接读 budget.kv，不必再维护一份"理论值"。
 
 // 总体状态由步骤结果推导，工具不参与。
 // rate_limited 必须显式列出，否则会掉进 already —— 界面把"被频控"报成"今天已领过"，
@@ -124,6 +111,9 @@ async function runOneAccount({ env, budget, tool, uid, config, day, now, trigger
   const ctx = { account, config, tool, env, kv, budget, now, day, trigger, fetch: trackedFetch(budget, tool.hosts) };
   const results = [];
   let stopped = false;
+  // 收尾时要报"这个账号花了多少"，所以先拍下起点。后面的差值才是它的用量
+  const httpBefore = budget.used;
+  const kvBefore = budget.kv;
 
   for (const step of tool.steps) {
     if (progress.done[step.id]) {
@@ -140,9 +130,9 @@ async function runOneAccount({ env, budget, tool, uid, config, day, now, trigger
       continue;
     }
     // 装不下就整步顺延：半途被掐断比不跑更糟，因为上游可能已部分生效。
-    // 判据要连收尾写入的 TAIL_RESERVE 一起算，理由见那处注释 —— 只算 step.cost
-    // 等于允许最后几笔无处可付。
-    if (!budget.fits(step.cost + TAIL_RESERVE)) {
+    // 判据是纯外部 HTTP：step.cost 就是这一步的上游请求上界。
+    // 不要在这里为"收尾写入"预留什么 —— 收尾全是 KV，各走 1000 那份额度（常量已删，理由见文件头）。
+    if (!budget.fits(step.cost)) {
       // 不可达只有一种：单步成本超过整个上限，任何一轮都装不下。
       // 判据不能加余量 —— 那会把"本轮装不下、下轮装得下"的正常顺延误报成配置错误。
       const unreachable = step.cost > budget.limit;
@@ -196,8 +186,8 @@ async function runOneAccount({ env, budget, tool, uid, config, day, now, trigger
     };
     if (rotated) {
       // 同一个新串可能被后续每一步重复带回来（WorkBuddy 就是这样：续期发生在第一步，
-      // 而每一步都把 ctx.rotated 附上）。不去重的话 7 个步骤会写 7 次同样的 KV，
-      // 一次续期白烧 12 个子请求 —— 预约的 ACCOUNT_FRAME 根本不是这个量级
+      // 而每一步都把 ctx.rotated 附上）。不去重的话 7 个步骤会写 7 次同样的 KV ——
+      // 单步 2 笔，7 步就是 14 笔，全是 KV 配额（不再占外部请求额度，但仍值得省）
       const fresh = Object.fromEntries(Object.entries(rotated).filter(([field, value]) => persistedCred[field] !== value));
       if (Object.keys(fresh).length) {
         let saved = false;
@@ -225,11 +215,10 @@ async function runOneAccount({ env, budget, tool, uid, config, day, now, trigger
   const allDone = results.length > 0 && results.every((r) => SETTLED.has(r.status));
 
   // 进度只在「本轮要停下的那一刻」写一次，不是每步都写：每步都写会让一个账号多花
-  // 7 个子请求，把省下来的预算吃回去。代价是这一轮被意外掐死时进度是旧的，
+  // 6 笔 KV。代价是这一轮被意外掐死时进度是旧的，
   // 下一轮重复跑几步 —— 靠"每步必须可安全重入"兜住，方向是宁可重复、不可跳过。
-  // 进度写入由账号帧的预约兜着（见 runTick 里的 reserve(ACCOUNT_FRAME)），
-  // 这里不再自己问账本 —— 调度索引是系统的记忆，写不进去会把"谁做过什么"整轮抹掉，
-  // 排在后面的账号就再也没机会被排上来。
+  // 这里不再问账本 —— 调度索引是系统的记忆，写不进去会把"谁做过什么"整轮抹掉，
+  // 排在后面的账号就再也没机会被排上来；而 KV 有自己的额度，不参与外部请求闸门。
   try {
     if (allDone) await clearProgress(env, tool, uid);
     else await saveProgress(env, tool, uid, progress);
@@ -244,6 +233,12 @@ async function runOneAccount({ env, budget, tool, uid, config, day, now, trigger
     // 积分只算本轮真做的那些步：复用来的积分再报一次，日志里就是凭空翻倍
     credits: results.reduce((sum, r) => sum + (r.reused ? 0 : (r.credits || 0)), 0),
     steps: results.map((r) => ({ id: r.id, status: r.status, message: r.message, reused: !!r.reused, over: r.over || 0, unreachable: !!r.unreachable })),
+    // 本账号这一轮真实花掉的外部请求数（2026-10-01 起账本分成两本，KV 不计入）。
+    // 取的是差值而不是 budget.used —— 后者是整轮累计，混进单条日志就成了
+    // "这账号花了整轮那么多请求"，越到后面的账号数字越离谱。
+    // 同时带上 KV 次数，两个数各走各的额度，界面上要分别显示。
+    http: budget.used - httpBefore,
+    kv: budget.kv - kvBefore,
     sched: {
       didWork: results.some((r) => !r.reused && !CONTINUABLE.has(r.status) && r.status !== "partial"),
       allDone,
@@ -282,6 +277,9 @@ function commitSched(index, tool, uid, result, day, now) {
 const publicResult = (r) => ({
   uid: r.uid, label: r.label, status: r.status,
   message: r.message, credits: r.credits || 0, steps: r.steps || [],
+  // 本账号这一轮的外部请求 / KV 次数。列表页那一列显示的就是它（2026-10-01 起
+  // 账本分成两本，两个数各走各的额度，所以都要报）
+  http: r.http || 0, kv: r.kv || 0,
 });
 
 async function safe(fn) {
@@ -312,18 +310,21 @@ export async function runTick({ env, budget, tools, trigger = "cron", now = nowS
   const plan = [];
   let ran = 0;
   // 停用标记只读一次、贯穿本轮。放在循环里逐工具读就是"工具数"笔，
-  // 而工具数会随加第 4 个工具一起涨 —— 那正是这套预算最经不起的变化。
-  const flags = budget.fits(FLAGS_FRAME) ? await loadFlags(env) : {};
+  // 而工具数会随加第 4 个工具一起涨。
+  // 这一笔是 KV，不再参与 fits() —— 它有自己的额度，读得起。
+  const flags = await loadFlags(env);
 
   for (const tool of tools) {
-    // 判据放在 TOOL_FRAME 之前：停用中的工具**一笔 KV 都不该花**。
-    // 排在后面的话，为了知道"它停着"已经读掉了配置、列过了账号。
+    // 停用判据放在最前：停用中的工具**一笔 KV 都不该花**。
+    // 排在读配置、列账号之后的话，为了知道"它停着"已经花掉了那些。
     if (isOff(flags, tool.id)) {
       plan.push({ tool: tool.id, skipped: "已停用", accounts: [] });
       continue;
     }
-    if (!budget.fits(TOOL_FRAME)) {
-      plan.push({ tool: tool.id, skipped: "预算已用尽", accounts: [] });
+    // 准入闸只看外部 HTTP：这轮还剩多少额度决定这一轮还能不能开下一个账号。
+    // （旧实现在这里判 TOOL_FRAME —— 那是纯 KV 帧，等于用 HTTP 额度替 KV 记账。）
+    if (budget.left() <= 0) {
+      plan.push({ tool: tool.id, skipped: "外部请求额度已用尽", accounts: [] });
       continue;
     }
     const kv = requireKv(env);
@@ -337,9 +338,9 @@ export async function runTick({ env, budget, tools, trigger = "cron", now = nowS
     const index = await loadSchedIndex(env, tool.id);
     const day = dayOf(tool, now);
     // 到期判定全部走内存里的调度索引：每工具固定 1 次 list + 1 次 get，与账号数无关。
-    // 旧写法先 listAccounts（1 list + N get）再判定，48 个账号就贴着 50 的硬顶。
+    // 旧写法先 listAccounts（1 list + N get）再判定，账号一多就线性增长。
     // 到期队列按"最久没被服务"排序，不是按 uid 字典序。
-    // 字典序配上全局预算闸 = 排在末尾的账号永远饿死：WorkBuddy 一个账号就要 36 次，
+    // 字典序配上全局预算闸 = 排在末尾的账号永远饿死：WorkBuddy 一个账号最坏 31 次外部请求，
     // 上限 45 只装得下 1 个，而前两个每轮都以 partial 收（resumable 豁免节流，立刻再来），
     // 于是它们每轮把额度吃干、第三个永远排在闸外 —— 它连一条调度索引都拿不到，
     // 表现是红条不亮、首页进度不计入、/runs 里查无此人，用户只能逐个点进工具页才发现。
@@ -355,13 +356,16 @@ export async function runTick({ env, budget, tools, trigger = "cron", now = nowS
     const results = [];
     const touched = [];
     for (const uid of due) {
-      // 账号闸也要把收尾的 TAIL_RESERVE 一起算。只算 ACCOUNT_FRAME 会放进来一个
-      // "付得起 6 笔、但那 6 笔要在步骤之后才写"的账号：实测第三个账号取锁、读进度、
-      // 读凭据、写进度、写日志六笔全花了，上游却一个请求都没打（每步都装不下），
-      // 而 used 正是被它那 6 笔推到 45 之外，工具级收尾（合并写回 + 心跳）无处可付。
-      // 宁可在这里就地顺延：账号级顺延一分钱都不花。
-      if (!budget.fits(ACCOUNT_FRAME + TAIL_RESERVE)) {
-        results.push({ uid, status: "deferred", message: "本轮预算已用尽，留到下一轮", steps: [] });
+      // 账号级顺延：一分钱外部请求都不花，留给下一个账号。
+      //
+      // 旧实现在这里判 ACCOUNT_FRAME（6 笔**纯 KV**：取锁 2 + 进度 + 凭据 + 收尾）。
+      // 那是把 KV 算进 HTTP 额度，于是"KV 已经花了 40"会让剩下的 5 笔 HTTP
+      // 一个账号都跑不了 —— WorkBuddy 单账号最坏 31 笔上游请求，纯属误伤。
+      // 现在这一层只问"还有没有外部请求额度"，具体够不够跑完这个账号的某一步，
+      // 由 runOneAccount 里每一步的 fits(step.cost) 逐句判定（判据更准，且不会
+      // 因为一个账号的 KV 开销而拒掉另一个账号）。
+      if (budget.left() <= 0) {
+        results.push({ uid, status: "deferred", message: "本轮外部请求额度已用尽，留到下一轮", steps: [] });
         continue;
       }
       const result = await runOneAccount({ env, budget, tool, uid, config, day, now, trigger });
@@ -389,7 +393,7 @@ export async function runTick({ env, budget, tools, trigger = "cron", now = nowS
 }
 
 // 「立即执行」：跳过到期判定的时间闸（人既然点了就是要现在跑），但预算、锁、进度复用照旧。
-// 不跳预算是必须的 —— 手动连点不该把整次调用撞穿 50 的硬顶。
+// 不跳预算是必须的 —— 手动连点不该把整次调用撞穿外部请求的 50 硬顶。
 //
 // 唯一不跳的是"工具配置没填"：那不是节流，是前置条件。缺项时这家站点根本没有可用的接入点
 // 与超时值，cron 会整个跳过这个工具，手动却照跑就等于拿残缺的配置去打上游。

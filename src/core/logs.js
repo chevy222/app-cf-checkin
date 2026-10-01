@@ -106,6 +106,10 @@ function metaOf(entry) {
     status: entry.status,
     message: truncate(scrubSecrets(entry.message, secrets), META_MESSAGE_MAX),
     credits: entry.credits || 0,
+    // 这两个数进 metadata（而不是等详情页再读正文）——列表页有这一列，
+    // 而列表页只读 metadata。2026-10-01 起账本分成两本，两个数各走各的额度。
+    http: entry.http || 0,
+    kv: entry.kv || 0,
   };
 }
 
@@ -118,6 +122,8 @@ export async function writeRunLog(env, { now, tool, account, result, budget, tri
   const meta = metaOf({
     kind: "run", at, tool: tool.id, uid: result.uid, label: result.label,
     status: result.status, message: result.message, credits: result.credits, secrets,
+    // 账号级的两个读数（不是整轮累计）：列表页那一列显示它们
+    http: result.http, kv: result.kv,
   });
   const body = {
     kind: "run",
@@ -131,7 +137,13 @@ export async function writeRunLog(env, { now, tool, account, result, budget, tri
     // 正文留全量（内核已截到 200），metadata 才是给列表用的短摘要
     message: scrubSecrets(result.message, secrets),
     credits: result.credits || 0,
-    budget: { used: budget.used, limit: budget.limit, left: budget.left(), over: budget.over },
+    // 本账号这一轮的用量（各走各的额度）与整轮累计的账本快照。
+    // 两个都要：前者回答"这条记录花了多少"，后者回答"这次调用总共花了多少"。
+    usage: { http: result.http || 0, kv: result.kv || 0 },
+    budget: {
+      used: budget.used, kv: budget.kv, limit: budget.limit,
+      left: budget.left(), over: budget.over,
+    },
     // 步骤明细属于账号日志，汇总键里没有
     steps: (result.steps || []).map((s) => ({
       id: s.id, status: s.status, reused: !!s.reused, over: s.over || 0, unreachable: !!s.unreachable,
@@ -184,8 +196,10 @@ export async function readRunLog(env, key) {
 // 那是一个会误伤全库的操作，不该由一个筛选按钮提供。
 //
 // more=true 表示这个预算里删不完，需要用户再点一次。KV 没有批量删除，
-// 每条日志一次 delete，而一次调用只有 50 个子请求：这是硬约束，不是设计取舍。
-// 假装一次能清完 8000 条，结果就是界面说"已清空"而库里还剩几千条。
+// 每条日志一次 delete —— 而 delete 走 KV 自己的额度（每天 1000 次），
+// 不占外部请求那 50，所以这个上界比"50 个子请求"宽松得多。
+// 但一次调用里删太多会让这一轮跑很久，所以仍要设个上界，
+// 并且**必须如实报剩余**：假装一次能清完 8000 条，结果就是界面说"已清空"而库里还剩几千条。
 export const CLEAR_BUDGET = 28;   // 1 次 list + 28 次 delete，留出收尾写入的余量
 export async function clearRunLog(env, toolId) {
   const kv = requireKv(env);
