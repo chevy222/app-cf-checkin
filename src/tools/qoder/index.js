@@ -22,7 +22,9 @@ export default {
   id: "qoder",
   name: "Qoder",
   order: 10,
-  summary: "每天领取 IDE 活动额度（campaigns → claim）",
+  // 描述是给使用者看的一句话，不写接口名。campaigns → claim 是内部两步调用，
+  // 摆在卡片上对不了解上游的人没有任何意思（campaigns 是什么只能去问客服）。
+  summary: "每天领取 IDE 活动赠送的额度",
 
   // 工具级：对这家站点的所有账号生效。设备身份是"一台机器"的身份，不属于任何单个账号，
   // 所以它是 config 而不是 creds —— 一台机器上的多个账号共用一份。

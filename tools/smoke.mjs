@@ -208,6 +208,27 @@ fixtureTest("总览渲染注册表里的工具", async () => {
   assert.ok(res.text.includes("夹具"));
 });
 
+// 工具卡片上原来有两行内部参数：「单账号约需」（子请求数 + 日界 + 开始时间）与
+// 「下一次预计执行」。这两项对使用者没有行动价值；而日界/开始时间是内核的调度参数，
+// 摆在卡片上只会让人以为改了它就能改执行时间。
+fixtureTest("总览卡片不显示子请求数、日界与下一次预计执行", async () => {
+  const res = await authed("/", envFor(fakeKv()));
+  assert.ok(!res.text.includes("单账号约需"), "卡片上不该出现子请求数与日界");
+  assert.ok(!res.text.includes("下一次预计执行"), "卡片上不该出现下一次预计执行");
+  assert.ok(!res.text.includes("子请求 ·"), "日界与开始时间不该和子请求数混在一行里");
+  // 真正有用的还在：今日完成数与最后结果
+  assert.match(res.text, /今日完成/, "删掉参数行后要保留「今日完成」");
+  assert.match(res.text, /最后结果/, "删掉参数行后要保留「最后结果」");
+});
+
+fixtureTest("工具描述用使用者的话，不写内部接口名", async () => {
+  for (const tool of TOOLS) {
+    // campaigns / claim / endpoint 这类词对不了解上游的人没有信息量
+    assert.doesNotMatch(tool.summary, /campaigns|→|endpoint|接口/i,
+      `${tool.name} 的描述里带了内部实现词：${tool.summary}`);
+  }
+});
+
 fixtureTest("表单由字段 schema 自动生成：select 与 textarea 都在", async () => {
   const res = await authed("/account/new?tool=fix", envFor(fakeKv()));
   assert.match(res.text, /<select[^>]*name="plan"/);

@@ -27,7 +27,6 @@ export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, b
     const done = uids.filter((uid) => SETTLED.has(entries[uid].lastStatus)).length;
     const stuck = uids.filter((uid) => ["login_required", "error"].includes(entries[uid].lastStatus));
     const last = runs.find((r) => r.kind === "run" && r.tool === tool.id);
-    const total = tool.steps.reduce((sum, s) => sum + s.cost, 0);
     const segments = uids.map((uid) => {
       const s = entries[uid].lastStatus;
       const cls = SETTLED.has(s) ? "done" : s === "rate_limited" || s === "deferred" ? "wait" : s ? "bad" : "";
@@ -52,8 +51,6 @@ export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, b
       <div class="bd">
         <div class="prog">${segments}<span class="n">${done}/${uids.length || counts[tool.id] || 0} 今日完成</span></div>
         ${cardLine("最后结果", last ? `${badge(last.meta && last.meta.status)} <span class="dim">${escapeHtml(fmtCST(Math.floor(last.at / 1000)))}</span>` : '<span class="dim">—</span>')}
-        ${cardLine("单账号约需", `${total} 子请求 · 日界 ${escapeHtml(String(tool.schedule.resetHour))}:00 / ${escapeHtml(String(tool.schedule.notBeforeHour))}:00 后执行`)}
-        ${cardLine("下一次预计执行", off ? '<span class="dim">已停用，不参与调度</span>' : '<span class="dim">每 30 分钟醒一次，到期就跑</span>')}
         ${stuck.length ? cardLine("需要处理", `<span class="v">${stuck.length} 个账号${off ? "（停用中，恢复后仍要处理）" : ""}</span>`) : ""}
         <div class="kv"><span class="k">开关</span><span class="v">${toggleForm(pwd, tool, off)}</span></div>
       </div>
