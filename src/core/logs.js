@@ -14,11 +14,10 @@ const revOf = (ms) => String(REV_BASE - Number(ms)).padStart(13, "0");
 
 // 键名形状：
 //   v1:run:<tool>:<反转毫秒>:<uid>   账号级
-//   v1:tick:<反转毫秒>               本轮汇总
+//   （旧版本还写过 v1:tick:<反转毫秒> 的整轮汇总，已停写；键名解析保留到 30 天过渡期结束）
 // 工具段放在时间段之前，"按工具筛"才能是一次带前缀的 list（时间在前的话只能扫全量再过滤，
 // 而扫全量必然有页数上限，筛得窄的历史就永远读不到）。
 const runKey = (ms, toolId, uid) => `${RUN_PREFIX}${toolId}:${revOf(ms)}:${uid}`;
-const tickKey = (ms) => `${TICK_PREFIX}${revOf(ms)}`;
 
 export const isLogKey = (key) => String(key).startsWith(RUN_PREFIX) || String(key).startsWith(TICK_PREFIX);
 
@@ -107,7 +106,6 @@ function metaOf(entry) {
     status: entry.status,
     message: truncate(scrubSecrets(entry.message, secrets), META_MESSAGE_MAX),
     credits: entry.credits || 0,
-    ran: entry.ran, due: entry.due, used: entry.used, limit: entry.limit,
   };
 }
 
@@ -146,33 +144,9 @@ export async function writeRunLog(env, { now, tool, account, result, budget, tri
   });
 }
 
-// 本轮汇总只留结构与计数，不留任何自由文本：账号级的 message 一旦进这里，
-// 就得再洗一遍全文，而"压根不写"比"写了再洗"可靠得多。
-// 要看过程去账号级日志，每条 run 键都在。
-const leanPlan = (plan) => plan.map((p) => ({
-  tool: p.tool,
-  skipped: p.skipped || null,
-  accounts: (p.accounts || []).map((a) => ({ uid: a.uid, status: a.status, credits: a.credits || 0 })),
-}));
-
-export async function writeTickLog(env, { now, trigger, plan, budget, ran }) {
-  const kv = requireKv(env);
-  const at = now * 1000;
-  const body = { kind: "tick", at, trigger, ran, budget: { used: budget.used, limit: budget.limit, over: budget.over }, plan: leanPlan(plan) };
-  const meta = metaOf({
-    kind: "tick", at, tool: "*", status: ran > 0 ? "ok" : "skipped",
-    message: body.plan.map((p) => `${p.tool}：${p.skipped || `${p.accounts.length} 个账号`}`).join("；"),
-    ran, due: body.plan.reduce((n, p) => n + p.accounts.length, 0),
-    used: budget.used, limit: budget.limit,
-  });
-  await kv.put(tickKey(at), JSON.stringify(body), {
-    expirationTtl: LOG_TTL_SEC,
-    metadata: meta,
-  });
-}
-
 // 每个来源只取一页：键序就是时间倒序，所以每源的头 limit 条已经是该源的最新 limit 条，
-// 归并排序后截取就是全局最新 limit 条。成本上界 = 工具数 + 1（汇总键），与日志总量无关。
+// 归并排序后截取就是全局最新 limit 条。成本上界 = 工具数（旧版本的 v1:tick: 汇总键
+// 在 30 天过渡期内还会多一页，过期后自动消失），与日志总量无关。
 //
 // 代价：从注册表撤掉一个工具，它的历史日志不再出现在「全部」里（30 天自然过期）。
 // 全量翻页在这里帮不上忙 —— 翻的是最老的那头。

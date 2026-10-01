@@ -6,7 +6,7 @@ import { maskSecret } from "../src/core/text.js";
 import { coerceFields, saveAccount, schedOf } from "../src/core/accounts.js";
 import { listUids } from "../src/core/store.js";
 import { commitSchedEntries, loadSchedIndex } from "../src/core/accounts.js";
-import { ACCOUNT_FRAME, FLAGS_FRAME, ROUND_FRAME, TOOL_FRAME, aggregate, runAccountNow, runTick } from "../src/core/runner.js";
+import { ACCOUNT_FRAME, FLAGS_FRAME, TOOL_FRAME, aggregate, runAccountNow, runTick } from "../src/core/runner.js";
 import { makeBudget, trackedFetch, trackedKv } from "../src/core/budget.js";
 import { listRunLog, readRunLog, scrubSecrets, writeRunLog } from "../src/core/logs.js";
 import { logicalDay, cstDate } from "../src/core/time.js";
@@ -1109,18 +1109,18 @@ const logKeys = (kv) => [...kv.store.keys()].filter((k) => k.startsWith("v1:run:
 // 日志的可见面 = 正文 + metadata（列表页只读 metadata，正文没写全也不代表干净）
 const everyLogText = (kv) => logKeys(kv).map((k) => `${k}\n${kv.store.get(k)}\n${JSON.stringify(kv.metas.get(k) || {})}`).join("\n");
 
-test("[跑完一轮会留下账号日志与本轮汇总日志", async () => {
+test("[一轮只留账号日志，不再写整轮汇总", async () => {
   const kv = fakeKv();
   seedFull(kv, "LOGA1");
   await tickWith(kv, [leakyTool(okStep())]);
   const runs = [...kv.store.keys()].filter((k) => k.startsWith("v1:run:"));
   const ticks = [...kv.store.keys()].filter((k) => k.startsWith("v1:tick:"));
   assert.equal(runs.length, 1, `账号日志应有 1 条，实际 ${runs.join(", ")}`);
-  assert.equal(ticks.length, 1, `汇总日志应有 1 条，实际 ${ticks.join(", ")}`);
+  assert.equal(ticks.length, 0, `整轮汇总不该再写，实际 ${ticks.join(", ")}`);
   assert.ok(runs[0].includes("LOGA1"));
 });
 
-test("[全空转的轮不留汇总日志", async () => {
+test("[全空转的轮什么都不写", async () => {
   const kv = fakeKv();
   // 配置齐全但一个账号都没有 → 整轮 skipped（「无到期账号」），什么都没跑
   seedConfig(kv);
@@ -1132,20 +1132,20 @@ test("[全空转的轮不留汇总日志", async () => {
   assert.equal(logKeys(kv).length, 0);
 });
 
-test("[两类日志都带 30 天 TTL", async () => {
+test("[运行日志带 30 天 TTL", async () => {
   const kv = fakeKv();
   seedFull(kv, "LOGA2");
   const ttls = [];
   const wrapped = {
     ...kv,
     async put(key, value, options) {
-      if (key.startsWith("v1:run:") || key.startsWith("v1:tick:")) ttls.push(options && options.expirationTtl);
+      if (key.startsWith("v1:run:")) ttls.push(options && options.expirationTtl);
       return kv.put(key, value, options);
     },
   };
   const budget = makeBudget(45);
   await runTick({ env: { PASSWORD, CHECKIN_KV: trackedKv(wrapped, budget) }, budget, tools: [leakyTool(okStep())], trigger: "manual", now: cst(10) });
-  assert.equal(ttls.length, 2, "账号日志与汇总日志都该带 TTL");
+  assert.equal(ttls.length, 1, "账号日志该带 TTL");
   assert.ok(ttls.every((t) => t === 30 * 86400), `TTL 应为 30 天，实际 ${ttls.join(", ")}`);
 });
 
@@ -1506,22 +1506,13 @@ test("[归并后的日志列表按时间倒序，身份取自键名而不是 met
   assert.ok(Number.isFinite(recent[0].at));
 });
 
-test("[汇总日志只存结构与计数，消息字段压根不存在", async () => {
-  const kv = fakeKv();
-  seedFull(kv, "LOGD1");
-  await tickWith(kv, [leakyTool([leakStep()])]);
-  const tick = JSON.parse(kv.store.get([...kv.store.keys()].find((k) => k.startsWith("v1:tick:"))));
-  assert.equal(tick.plan[0].accounts[0].message, undefined, "汇总日志不该带账号级自由文本");
-  assert.equal(tick.plan[0].accounts[0].steps, undefined, "步骤明细属于账号日志，不该重复进汇总");
-});
-
 test("[预约的上界不小于真实用量", async () => {
   const kv = fakeKv();
   seedFull(kv, "FRAME1");
   const { budget } = await tickWith(kv, [leakyTool(okStep())]);
   // 账本靠 TOOL_FRAME / ACCOUNT_FRAME 预约来判"这一步装不装得下"。
   // 预约小于真实用量就等于给出一张比生产环境乐观的假票：第 51 次请求会把整轮炸掉。
-  const reserved = TOOL_FRAME + ACCOUNT_FRAME + ROUND_FRAME + FLAGS_FRAME;
+  const reserved = TOOL_FRAME + ACCOUNT_FRAME + FLAGS_FRAME;
   assert.ok(budget.used <= reserved, `一轮一号真实用了 ${budget.used}，超过预约的 ${reserved}`);
   assert.equal(budget.over, 0, "一轮一号不该超支");
 });
@@ -2779,8 +2770,6 @@ test("[审核P1-3] 被换掉的旧串不许进任何出口（非 JWT 形态，�
     assert.ok(runKey, "前提：写了运行日志");
     assert.ok(!kv.store.get(runKey).includes(OLD), "旧串进了运行日志正文（KV 存 30 天，详情页点一下就看得到）");
     assert.ok(!JSON.stringify(kv.metas.get(runKey) || {}).includes(OLD), "旧串进了运行日志 metadata");
-    const tickKey = [...kv.store.keys()].find((k) => k.startsWith("v1:tick:"));
-    assert.ok(!kv.store.get(tickKey).includes(OLD), "旧串进了本轮汇总日志");
     assert.ok(!JSON.stringify(summary).includes(OLD), "旧串进了 /api/tick 的返回值");
   } finally { stub.restore(); }
 });
@@ -2967,7 +2956,6 @@ test("[关掉一个工具：连跑 5 轮它一条记录都不留，且一个 KV 
   assert.equal(logKeys(kv).filter((k) => k.includes("qoder")).length, 0, "/runs 里不该出现任何 qoder 新记录");
   // 判据 5：关 A 不影响 B/C 的调度与计数
   assert.ok(logKeys(kv).some((k) => k.includes("trae")), "关掉 A 不该让 B 也停下");
-  assert.ok(logKeys(kv).some((k) => k.startsWith("v1:tick:")), "本轮汇总仍要写，B 的结果在里面");
 });
 
 test("[停用期间删不得任何东西：重开后当天进度接着做，已完成的那步不重做", async () => {

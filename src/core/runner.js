@@ -4,7 +4,7 @@ import { applyCredPatch, getAccount, loadSchedIndex, commitSchedEntries, schedOf
 import { isOff, loadFlags } from "./flags.js";
 import { trackedFetch } from "./budget.js";
 import { clearProgress, configComplete, dayOf, isDue, loadProgress, missingConfigFields, saveProgress } from "./scheduler.js";
-import { secretValuesOf, scrubSecrets, writeRunLog, writeTickLog } from "./logs.js";
+import { secretValuesOf, scrubSecrets, writeRunLog } from "./logs.js";
 import { nowSec } from "./time.js";
 
 const LOCK_TTL = 90;
@@ -27,9 +27,6 @@ const CONTINUABLE = new Set(["deferred", "skipped", "pending"]);
 export const TOOL_FRAME = 6;
 // 每账号每轮的固定 KV 开销：取锁 2 + 读进度 + 读凭据 + 收尾写或删进度 + 写运行日志
 export const ACCOUNT_FRAME = 6;
-// 本轮汇总日志：一次调用一份，不摊到每个工具头上（旧写法把它算进 TOOL_FRAME，
-// 四个工具就多_reserve 三次 —— 方向是安全的，但预约数字本身就不准了）
-export const ROUND_FRAME = 1;
 // 读一次 v1:flags 的开销。单键存全部工具，所以是 1 笔而不是"工具数"笔。
 // 漏记这一笔的后果不是"多花一次"：TOOL_FRAME / ACCOUNT_FRAME / TAIL_RESERVE
 // 全都是按 45 这个自限算的，账本实际比预约多 1 笔时，整轮会在 46 才停 ——
@@ -42,7 +39,7 @@ export const FLAGS_FRAME = 1;
 //   1  写运行日志
 //   2  调度索引合并写回（读新鲜 + 写）
 //   1  心跳
-// = 7。本轮汇总日志另有 ROUND_FRAME 的显式闸门，不在这里重复。
+// = 7。
 // 这 7 笔没有任何 fits() 挡在前面 —— 它们是 safe()/catch 包着的直写，
 // 而 fits(ACCOUNT_FRAME) 只是"开跑前确认还剩 6 笔"、并不占位，
 // 步骤把这 6 笔吃掉之后，收尾写入就只能越过自限的 45 去撞平台的 50。
@@ -384,12 +381,10 @@ export async function runTick({ env, budget, tools, trigger = "cron", now = nowS
   }
 
   const summary = { now, trigger, ran, budget: { used: budget.used, limit: budget.limit, left: budget.left(), over: budget.over }, plan };
-  // 全轮空转（一个账号都没开跑）不写汇总日志：cron 每 30 分钟一轮，全 skipped 的轮
-  // 一天能刷 48 条「未开始」，把真正有事的记录淹掉。「cron 还活着」由心跳承担，
-  // 坏记录无论何时都写自己的运行日志并计入 ran，不会被这条判据静默。
-  // 账本空了也少一条汇总日志 —— 不能为了写它把整次调用推到 50 以上，
-  // 那时候连累的是已经跑完的账号的收尾写入
-  if (ran > 0 && budget.fits(ROUND_FRAME)) await safe(() => writeTickLog(env, { now, trigger, plan, budget, ran }));
+  // 不写整轮汇总日志（使用者明确决定）：账号级日志每条都在，汇总只是重复视图；
+  // cron 每 30 分钟一轮，汇总记录只会把列表刷屏。要把握"这轮整体情况"，
+  // 看心跳（每工具写了"这轮跑了什么"）与 /api/tick 的返回值（手动触发时）。
+  // 旧版本写的 v1:tick: 键在 30 天内仍会出现在日志列表里，读侧保留它们的渲染。
   return summary;
 }
 
