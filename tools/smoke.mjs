@@ -3245,6 +3245,30 @@ test("[workbuddy] 一轮开几个盲盒由上游 max_open_count 决定，不是�
   } finally { stub.restore(); }
 });
 
+test("[workbuddy] 上游把 max_open_count 放大时，本地的每轮上限必须仍然生效", async () => {
+  // cost 声明的是 1 + OPENS_PER_ROUND = 6，而它是**准入判据**（budget.fits(step.cost)）。
+  // want 若跟着上游的 max_open_count 一起放大，这一步就会发出远超预约的请求数：
+  // 撞上自限 45 之后 trackedFetch 拒答，该步被 catch 成「失败」，而且同轮排在后面的
+  // 账号全部拿不到额度。上游明天把上限从 5 改成 50 是它的自由，但账本是我们自己的。
+  // 上面那条测试只守"上游给 2 就开 2"，这条守的是反方向 —— 两条合起来才把 min() 夹住。
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  const stub = stubUpstream(wbIdleRoutes({
+    "GET /v2/activity/growth/buddy/quota": { payload: { affordable: 500, max_open_count: 50 } },
+    "POST /v2/activity/growth/buddy/open": { payload: { code: 0, results: [{ instance: { credit: 5 } }] } },
+  }));
+  try {
+    const { summary } = await wbTick(kv);
+    const blindbox = wbView(summary).steps[3];
+    const opens = stub.seen.filter((r) => r.path.endsWith("/buddy/open")).length;
+    assert.equal(opens, 5, `上游给 50 时开了 ${opens} 个 —— 超过本地每轮上限 5，账本会真的花超`);
+    assert.ok(!/额度已用尽/.test(blindbox.message), `撞上预算闸了：${blindbox.message}`);
+    assert.notEqual(blindbox.status, "error", `盲盒被记成失败：${blindbox.message}`);
+    // affordable 还剩很多，所以如实报 partial、下一轮接着开 —— 顺延语义没有被破坏
+    assert.equal(blindbox.status, "partial");
+  } finally { stub.restore(); }
+});
+
 test("[workbuddy] 一轮装不下 7 步时整步顺延，下一轮接着做而不是重做", async () => {
   const kv = fakeKv();
   seedWorkbuddy(kv);

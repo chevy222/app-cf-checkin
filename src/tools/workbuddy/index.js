@@ -172,8 +172,8 @@ export default {
       id: "blindbox",
       label: "开盲盒",
       // cost 是**预约**：这一步向预算申请的外部请求上界 = 1 次读额度 + OPENS_PER_ROUND 次开盒。
-      // 本意是不跟着上游的 max_open_count 变（预约要取最坏情况的上界，算低就会真的花超），
-      // 但函数里的 want 目前确实跟着它变 —— 那是已知的不一致，见下面那段说明。
+      // 它必须与函数里 want 的上界**同口径** —— want 也是三者取最小，其中一项就是
+      // OPENS_PER_ROUND，所以这里的 6 是真话。改这里之前先读函数里那段变量说明。
       cost: 1 + OPENS_PER_ROUND,
       async run(ctx) {
         const guarded = await guard(ctx);
@@ -191,24 +191,26 @@ export default {
         //   max_open_count  —— 上游说"一次最多允许开几个"。是**单次上限**口径。
         //   OPENS_PER_ROUND —— 本地常量 5。本平台自己给自己定的每轮上限。
         //   cap             —— 真正采用了谁：用的是 max_open_count，读不到才回落到 OPENS_PER_ROUND。
-        //   want            —— 本轮打算开几次 = min(affordable, cap)，同时就是下面的循环次数。
+        //   want            —— 本轮打算开几次 = 三者取最小，同时就是下面的循环次数。
         //   opened          —— 真正开成功的次数（循环里每成功一发才 +1），用来算 left。
         //   left            —— affordable - opened。> 0 就报 partial，下一轮接着开。
         //   cost（在步骤声明上，不在这里）—— 本步向预算**预约**的外部请求上界 = 1 + OPENS_PER_ROUND = 6。
         //
-        // ⚠️ 已知不一致（**本次只记不改**）：上面声明的 cost 是 1 + OPENS_PER_ROUND = 6，
-        //    而 want 跟着上游的 max_open_count 走 —— 上游若返回 50，want 就是 50，
-        //    这一轮会朝上游连打 1 + 50 次请求，远超预约的 6 次。
-        //    后果不是"报错"：撞上自限 45 之后 trackedFetch 会拒答，这一步被 catch 成
-        //    「失败」（红条亮起，看着像账号坏了，真因是预算），而且**同轮排在后面的账号
-        //    全部拿不到额度**。
-        //    修法（只动 want 这一行，不动 cost）：
-        //        const want = Math.min(affordable, cap, OPENS_PER_ROUND);
-        //    上游说"只许开 2 个"就开 2 个（不放宽），说"许 50 个"则开 5 个（不超预约）。
-        //    不能写成 `const cap = OPENS_PER_ROUND` —— 那会打红下面这条测试：
-        //    「一轮开几个盲盒由上游 max_open_count 决定，不是本地写死的 5」。
+        // ⚠️ want 里**必须**同时带上 OPENS_PER_ROUND。三个 min 各管一件事，职责不重叠：
+        //   affordable      —— 别要超过付得起的次数（否则上游返业务错，请求白花）；
+        //   cap             —— 尊重上游的单次上限（上游说 2 就开 2，不放宽）；
+        //   OPENS_PER_ROUND —— 保护自己的预算（上游说 50 也只开 5），**让上面 cost 的 6 成为真话**。
+        //   少了第三项，上游一放开就会发出远超预约的请求数：撞上自限 45 后 trackedFetch 拒答，
+        //   这一步被 catch 成「失败」，而且同轮排在后面的账号全部拿不到额度。
+        //   ⚠️ 也不能反过来靠调大 cost 修：cost 是**开跑之前**的静态准入判据
+        //   （budget.fits(step.cost)），填一个大于自限 45 的值会让这一步被标成 unreachable、
+        //   永远排不进，比现状更糟。
+        //   历史（2026-10-02 修）：4456150 把本地常量从 min() 里**替换**掉（而不是加成第三项），
+        //   同时在 cost 上方新写了一句"上界用本地常量、不跟着 max_open_count 变"——
+        //   那句描述的是改动**前**的事实，于是注释替一个已经不成立的不变量背了书，
+        //   而当时的测试只守"上游给 2 就开 2"，没有任何一条把 want 与 cost 放在一起看。
         const cap = api.num(api.dig(quota.payload, "max_open_count")) || OPENS_PER_ROUND;
-        const want = Math.min(affordable, cap);
+        const want = Math.min(affordable, cap, OPENS_PER_ROUND);
         let opened = 0;
         let credits = 0;
         for (let i = 0; i < want; i += 1) {
