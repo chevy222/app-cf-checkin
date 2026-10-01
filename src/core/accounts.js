@@ -49,6 +49,10 @@ export function coerceFields(fields, form, { editing = false } = {}) {
     }
     if (raw === "") {
       if (editing && !field.required && !field.secret) values[field.key] = "";
+      // 留空 = 用声明的默认值。这不是"放宽必填"，而是让"这个值有官方默认、
+      // 用户不需要自己去抄"这件事在服务端也成立 —— 否则界面上写着默认值、
+      // 提交时却报必填，用户会以为表单坏了。
+      else if (field.default !== undefined) values[field.key] = String(field.default);
       else if (field.required && !(editing && field.secret)) errors[field.key] = `「${label}」是必填项`;
       continue;
     }

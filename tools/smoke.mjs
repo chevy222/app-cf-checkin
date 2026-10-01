@@ -3689,9 +3689,45 @@ test("[三家的参数获取教程在「新增账号」页上，且步骤完整"
   }
 });
 
-// 表格第一列写的是「平台内部的头名」（x-device-id / x-cloudide-token / Cloud-IDE-JWT），
-// 而表单里那一栏叫「Aha 设备号」「Access Token」。用户按头名去找字段找不到，
-// 会以为少填了一项 —— 教程与表单对不上，比没有教程更容易让人误操作。
+// 有 default 的字段（Trae 的 ClientID / 客户端版本、Qoder 的 Cosy-ClientType）
+// 界面上标着必填却给一个空框：用户会以为漏填了，去别处抄一个可能已过期的版本号。
+// 契约是"留空即用默认值" —— 服务端回落 + 界面预填，两边都要在。
+test("[有默认值的字段：界面预填且留空提交不报错]", async () => {
+  const withDefault = [];
+  for (const tool of TOOLS) {
+    for (const f of [...tool.config || [], ...tool.creds]) {
+      if (f.default !== undefined) withDefault.push({ tool, field: f });
+    }
+  }
+  assert.ok(withDefault.length >= 3, `期望至少三处声明了 default，实际 ${withDefault.length}`);
+
+  const env = envFor(fakeKv());
+  for (const { tool, field } of withDefault) {
+    const page = await authed(`/tool/${tool.id}/settings`, env);
+    assert.equal(page.status, 200, `${tool.name} 的配置页打不开`);
+    // 预填：输入框的 value 要等于默认值
+    const input = page.text.match(new RegExp(`id="f-${field.key}"[^>]*value="([^"]*)"`))
+      || page.text.match(new RegExp(`value="([^"]*)"[^>]*id="f-${field.key}"`));
+    assert.ok(input, `${tool.name} 的「${field.label}」没有渲染成输入框`);
+    assert.equal(input[1], String(field.default),
+      `${tool.name} 的「${field.label}」没预填默认值（框里是空的，用户会以为要自己填）`);
+    // help 要说清"通常不用动"，否则预填了用户也不敢确定
+    assert.match(page.text, /已预填|不用动/, `${tool.name} 的「${field.label}」没说清可以不动`);
+  }
+
+  // 留空提交：走服务端校验，不该报必填
+  for (const { tool, field } of withDefault) {
+    const fields = [...tool.config || [], ...tool.creds];
+    const form = { get: (k) => (k === field.key ? "" : "x-some-secret-value") };
+    const { values, errors } = coerceFields(fields, form, { editing: true });
+    assert.equal(errors[field.key], undefined, `「${field.label}」留空却被报必填：${errors[field.key] || ""}`);
+    assert.equal(String(values[field.key]), String(field.default), `留空后没有回落到默认值`);
+  }
+});
+
+// 表格第一列写的是「平台内部的头名」（x-device-id / COSY_* / Authorization: Bearer），
+// 而表单里那一栏叫「Aha 设备号」「Cosy-ClientType」「Access Token」。
+// 用户按头名去找字段找不到，会以为少填了一项 —— 教程与表单对不上，比没有教程更容易让人误操作。
 test("[教程的字段表用表单里能看到的名字，不用平台内部的头名", () => {
   // 字段名可能来自 creds（账号表单）或 config（工具配置，两处合起来才是用户要填的栏位）
   for (const tool of TOOLS) {

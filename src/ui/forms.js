@@ -26,7 +26,12 @@ function control(field, { value, masked, id }) {
   if (field.type === "textarea") {
     return `<textarea ${common} ${placeholder} ${field.secret ? "" : `spellcheck="false"`}>${field.secret ? "" : escapeHtml(value || "")}</textarea>`;
   }
-  return `<input ${common} type="text" ${placeholder} value="${field.secret ? "" : escapeHtml(value || "")}" autocomplete="off">`;
+  // 有默认值的文本框要**预填**而不是只放进 placeholder：
+  // placeholder 灰字一提交就消失，用户会以为那是示例而不是真值，
+  // 于是照着 help 去别处抄一个可能已经过期的版本号。
+  // 敏感字段与只读之外的都要预填；编辑态下已存的值优先于默认。
+  const text = value !== undefined && value !== null && value !== "" ? value : (field.default !== undefined ? field.default : "");
+  return `<input ${common} type="text" ${placeholder} value="${field.secret ? "" : escapeHtml(text)}" autocomplete="off">`;
 }
 
 export function renderField(field, state) {

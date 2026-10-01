@@ -33,7 +33,7 @@ export default {
       type: "text",
       required: true,
       default: "10",
-      help: "必须为 10：缺这个头活动列表直接返回空",
+      help: "必须为 10（已预填）：缺这个头活动列表直接返回空。除非上游改了协议，否则不用动。",
     },
     {
       key: "machineToken",

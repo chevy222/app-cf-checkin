@@ -21,7 +21,8 @@ export default {
       type: "text",
       required: true,
       default: api.traeDefaults.clientId,
-      help: "跟着官方 IDE 客户端发布的公开标识，不是密钥；换客户端版本时要一起改",
+      help: "Trae 官方客户端跟着版本发布的公开标识，**所有用户都是同一个**，不是你的凭据。"
+        + "已预填好，通常不用动；上游换客户端版本时这里要跟着改。",
     },
     {
       key: "appVersion",
@@ -29,7 +30,8 @@ export default {
       type: "text",
       required: true,
       default: api.traeDefaults.appVersion,
-      help: "决定 User-Agent 与 IDEVersion，上游按它做兼容判断",
+      help: "决定 User-Agent 与 IDEVersion，上游按它做兼容判断。已预填好，通常不用动；"
+        + "Trae 出了新版（签到报「请求已过期」多半是这个原因）才需要改。",
     },
     { key: "timeoutMs", label: "请求超时（毫秒）", type: "text", placeholder: "15000" },
     { key: "refreshAheadSec", label: "提前续期秒数", type: "text", placeholder: "259200（72 小时）" },
