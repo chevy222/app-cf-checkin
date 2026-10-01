@@ -243,8 +243,12 @@ if (-not $rt) { Write-Host "（回调里没有 refreshToken —— 请确认整�
   },
 
   workbuddy: {
-    intro: "新版 WorkBuddy 桌面端把凭据文件加密了（`auth.v1.dat` 是 DPAPI + AES-256-GCM），"
-      + "复制不出来。改用官方短信登录接口换明文 Token —— 值在本机拿，不经过 Cloudflare。",
+    // 提到 auth.v1.dat 时必须说清它是 WorkBuddy 自己那一份：Qoder 教程里解的是
+    // 同名的另一个文件，只写文件名会让人以为串台了（用户反馈过这一点）。
+    // 目录不复述 —— 两家目录不同这个事实已经够用，而具体路径没核实过就不写。
+    intro: "新版 WorkBuddy 桌面端把凭据文件加密了（WorkBuddy 自己那份 `auth.v1.dat`，"
+      + "DPAPI + AES-256-GCM），复制不出来 —— 它和 Qoder 教程里那个同名文件不是一份东西，目录不同。"
+      + "改用官方短信登录接口换明文 Token：值在本机拿，不经过 Cloudflare。",
     steps: [
       step("发验证码",
         "把 `13800000000` 换成你的手机号。返回 `code: 0` 即发送成功。",
