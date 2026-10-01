@@ -1,6 +1,7 @@
 import qoder from "./qoder/index.js";
 import trae from "./trae/index.js";
 import workbuddy from "./workbuddy/index.js";
+import yun69 from "./69yun/index.js";
 
 // 加工具只改这一个文件：import + 放进数组。内核与界面都不许出现按 id 分支的代码。
 //
@@ -8,7 +9,7 @@ import workbuddy from "./workbuddy/index.js";
 // 导致口令被当成工具凭据写进 KV），也不得用 "label"（界面层的通用备注名字段）。
 //
 // 顺序由 order 决定（界面与调度都按它排），这里的书写顺序不作为依据。
-const REGISTERED = [qoder, trae, workbuddy];
+const REGISTERED = [qoder, trae, workbuddy, yun69];
 
 // 启动期自检：宁可部署时直接报错，也不要等到有人打开首页才 500 且信息毫无指向。
 //

@@ -1,6 +1,6 @@
 # 签到台
 
-一个 Cloudflare Worker，每天自动替领 Qoder / Trae / WorkBuddy 三家的免费额度。
+一个 Cloudflare Worker，每天自动替领 Qoder / Trae / WorkBuddy / 69 云四家的免费额度。
 
 **给使用者**：部署与日常操作看本文档就够。
 **给开发者**：架构、契约、加新工具的完整模版、预算与 KV 设计都在 [`设计方案.md`](设计方案.md)。
@@ -88,8 +88,7 @@ npm run deploy
 
 输出里的地址就是你的签到台 —— 第 4 步选免费域名的话是
 `https://checkin.<你的子域>.workers.dev`，绑自有域名的话就是你填的那个。
-浏览器打开、输入口令，按「新增账号」页左侧的教程把三家账号加进去，当天就能开始领。
-浏览器打开、输入口令，按「新增账号」页左侧的教程把三家账号加进去，当天就能开始领。
+浏览器打开、输入口令，按「新增账号」页左侧的教程把四家账号加进去，当天就能开始领。
 
 这个命令会先把页面底部的版本号（`yyyy-MM-dd:NN`）递增到「今天的下一个序号」
 —— 同一天发一次 +1，第二天回到 01 —— 然后再执行部署。
@@ -160,8 +159,8 @@ npm run dev
 
 ## 凭据怎么取
 
-三个工具的凭据都在**本机的客户端上**取值，平台不参与 —— 这一点是安全设计的核心，
-也意味着**全程不需要 F12 抓包**。
+四个工具的凭据都在**本机的客户端上**取值，平台不参与 —— 这一点是安全设计的核心，
+也意味着**全程不需要 F12 抓包**。69 云例外：它的凭据就是网站的登录邮箱和密码。
 
 下面每一段脚本都整段复制到 **PowerShell** 回车即可（Windows）。
 **界面上也有同一份教程**（「新增账号」与「工具配置」页左侧），脚本抄自那里，两边一致。
@@ -173,6 +172,7 @@ npm run dev
 | Qoder | 脚本解密客户端的登录凭据文件 | 脚本跑客户端自带的 `runtime-info.exe` |
 | Trae | 登录后浏览器跳到的那条 `127.0.0.1` 地址（页面打不开是**正常的**），脚本从里面解析 | 客户端 `storage.json` 里的 8–16 位数字 |
 | WorkBuddy | 官方短信登录接口换明文 Token | 无（uid 平台自己解） |
+| 69 云 | 机场网站的登录邮箱和密码 | 无（uid 就是邮箱） |
 
 ### Qoder
 
@@ -425,6 +425,37 @@ Write-Host "=================================" -ForegroundColor Cyan
 
 ⚠️ **开盲盒每调一次服务端就扣 10 点能量**，所以平台每轮会自动限制次数。
 如果你看到「已开 N 个」比预期多，说明取到的可用次数变了，值得看一眼。
+
+### 69 云
+
+69 云是 SSPanel 架构的机场，签到凭据就是网站的登录邮箱和密码——不需要抓包、不需要客户端，能登录网页就能签到。签到台会自动保存登录后的 Cookie，失效时用邮箱密码重新登录，不需要手动维护。
+
+**第 1 步 · 确认能登录官网**。在浏览器里打开 **https://69yun69.com**，用你的邮箱密码登录，能进到用户中心就说明凭据有效。
+
+**第 2 步 ·（可选）用 PowerShell 验证登录接口**。把 `your@email.com` 和 `your_password` 换成你自己的，输出「登录成功」就说明凭据正确：
+
+```powershell
+& {
+  $email = "your@email.com"
+  $pass  = "your_password"
+  $body = @{ email = $email; passwd = $pass; remember_me = "on"; code = "" } | ConvertTo-Json
+  try {
+    $r = Invoke-RestMethod -Uri "https://69yun69.com/auth/login" `
+      -Method Post -ContentType "application/json" -Body $body
+    if ($r.ret -eq 1) {
+      Write-Host "登录成功！把邮箱和密码填进签到台即可" -ForegroundColor Green
+    } else {
+      Write-Host "登录失败: $($r.msg)" -ForegroundColor Red
+    }
+  } catch {
+    Write-Host "请求失败: $_" -ForegroundColor Red
+  }
+}
+```
+
+**第 3 步 · 填到表单**。邮箱填进「邮箱」栏，密码填进「密码」栏。「会话 Cookie」那一栏留空就行——签到台第一次签到时会自动登录并保存。
+
+> Cookie 自动管理：第一次签到时如果没有 Cookie，会自动走登录流程并保存；之后每次直接用 Cookie，失效时自动重新登录。
 
 ---
 

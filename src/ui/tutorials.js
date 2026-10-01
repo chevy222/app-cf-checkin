@@ -294,6 +294,48 @@ Write-Host "=================================" -ForegroundColor Cyan
       ["**Refresh Token**", "第 1 步（`.info`）或第 3 步（短信）的 `Refresh Token`", "填进 Refresh Token 那一栏。旧串用过一次即废，续期后平台当场写回"],
     ],
   },
+  "69yun": {
+    intro: "69 云是 SSPanel 架构的机场，签到凭据就是网站的登录邮箱和密码——"
+      + "不需要抓包、不需要客户端，能登录网页就能签到。"
+      + "签到台会自动保存登录后的 Cookie，失效时用邮箱密码重新登录，不需要手动维护。",
+    steps: [
+      step("确认能登录 69 云官网",
+        "在浏览器里打开 **https://69yun69.com**，用你的邮箱密码登录。"
+        + "能进到用户中心就说明凭据有效——签到台用的就是这对凭据。"),
+      step("（可选）用 PowerShell 验证登录接口",
+        "把 `your@email.com` 和 `your_password` 换成你自己的。"
+        + "输出「登录成功」就说明凭据正确，可以直接填表单。"
+        + "这一步不是必须的，只是给不确定密码对不对的人一个快速验证。",
+        `& {
+  $email = "your@email.com"
+  $pass  = "your_password"
+  $body = @{ email = $email; passwd = $pass; remember_me = "on"; code = "" } | ConvertTo-Json
+  try {
+    $r = Invoke-RestMethod -Uri "https://69yun69.com/auth/login" \`
+      -Method Post -ContentType "application/json" -Body $body
+    if ($r.ret -eq 1) {
+      Write-Host "登录成功！把邮箱和密码填进签到台即可" -ForegroundColor Green
+    } else {
+      Write-Host "登录失败: $($r.msg)" -ForegroundColor Red
+    }
+  } catch {
+    Write-Host "请求失败: $_" -ForegroundColor Red
+  }
+}`),
+      step("填到表单",
+        "邮箱填进「邮箱」栏，密码填进「密码」栏。"
+        + "「会话 Cookie」那一栏留空就行——签到台第一次签到时会自动登录并保存。"),
+    ],
+    notes: [
+      note("info", "Cookie 自动管理：第一次签到时如果没有 Cookie，会自动走登录流程并保存；之后每次直接用 Cookie，失效时自动重新登录。"),
+      note("warn", "密码是明文存储在 KV 里的（跟其他三家的 Token 一样），签到台本身有口令闸保护。不要把签到台的口令告诉别人。"),
+    ],
+    fields: [
+      ["**邮箱**", "69 云官网的登录邮箱", "同时作为账号的唯一标识，建号后不要改"],
+      ["**密码**", "69 云官网的登录密码", "Cookie 失效时用它重新登录"],
+      ["**会话 Cookie**", "自动生成，无需填写", "登录后自动保存，readonly 字段"],
+    ],
+  },
 };
 
 // 渲染成 HTML。刻意保持得比表格窄一点 —— 界面是给"填表时瞄一眼"用的，

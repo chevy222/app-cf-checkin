@@ -1908,7 +1908,7 @@ function stubUpstream(routes) {
     const handler = routes[`${record.method} ${record.path}`] || routes[url.pathname];
     if (!handler) return new Response(JSON.stringify({ error: "stub 没配这条路由" }), { status: 599 });
     const out = typeof handler === "function" ? handler(record, seen.length) : handler;
-    return new Response(out.body === undefined ? JSON.stringify(out.payload ?? null) : out.body, { status: out.status ?? 200 });
+    return new Response(out.body === undefined ? JSON.stringify(out.payload ?? null) : out.body, { status: out.status ?? 200, headers: out.headers || {} });
   };
   return { seen, restore: () => { globalThis.fetch = saved; } };
 }
@@ -2388,6 +2388,164 @@ test("[schedule] resetHour 填错的后果：日界决定「今天已领」的�
   assert.equal(findTool("qoder").schedule.notBeforeHour, 10, "Qoder 10 点之前打只是白烧子请求");
   assert.equal(findTool("trae").schedule.notBeforeHour, 0, "Trae 零点第一轮就跑");
   assert.equal(findTool("workbuddy").schedule.notBeforeHour, 0, "WorkBuddy 零点第一轮就跑");
+});
+
+// ═══════════ 69 云 ═══════════
+//
+// SSPanel 机场签到：Cookie Session 鉴权，ret=1 成功 / ret=0 已签 / 3xx=Cookie 失效。
+// 与 Qoder 的 401→续期→重试同构，但"续期"动作是重新登录而不是换 token。
+// 登录后的 Cookie 通过 cred 回写机制存进 KV，用户不需要手动维护。
+
+function seed69yun(kv, uid = "user@69yun.com", { cookie = "uid=1; email=user@69yun.com; key=abc123; expire=1760000000" } = {}) {
+  kv.store.set("v1:tool:69yun", JSON.stringify({}));
+  kv.store.set(`v1:acct:69yun:${uid}`, JSON.stringify({
+    label: `69 云-${uid}`,
+    cred: { email: uid, password: "pass123", cookie },
+    createdAt: 1, updatedAt: 1,
+  }));
+  kv.store.set("v1:schedidx:69yun", JSON.stringify({ day: null, entries: {} }));
+  return { uid };
+}
+
+const yun69Tick = (kv, now = cst(10)) => tickWith(kv, [findTool("69yun")], 45, now);
+
+test("[69yun] 正常签到：ret=1 → claimed，Cookie 有效时只发一次请求", async () => {
+  const kv = fakeKv();
+  seed69yun(kv);
+  const stub = stubUpstream({
+    "POST /user/checkin": { payload: { ret: 1, msg: "获得了 100 MB 流量" } },
+  });
+  try {
+    const { summary } = await yun69Tick(kv);
+    const acct = planOf(summary, "69yun").accounts[0];
+    assert.equal(acct.status, "claimed");
+    assert.match(acct.message, /100 MB/);
+    assert.equal(stub.seen.length, 1, "Cookie 有效时不该走登录流程");
+    assert.equal(stub.seen[0].path, "/user/checkin");
+    assert.equal(stub.seen[0].method, "POST");
+  } finally { stub.restore(); }
+});
+
+test("[69yun] 已签到：ret=0 → already，不重试不登录", async () => {
+  const kv = fakeKv();
+  seed69yun(kv);
+  const stub = stubUpstream({
+    "POST /user/checkin": { payload: { ret: 0, msg: "您今天已经签到过了" } },
+  });
+  try {
+    const { summary } = await yun69Tick(kv);
+    assert.equal(planOf(summary, "69yun").accounts[0].status, "already");
+    assert.equal(stub.seen.length, 1);
+  } finally { stub.restore(); }
+});
+
+test("[69yun] Cookie 失效 → 重新登录 → 重试签到成功，新 Cookie 写回 KV", async () => {
+  const kv = fakeKv();
+  const { uid } = seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
+  let loginCount = 0;
+  const stub = stubUpstream({
+    "POST /user/checkin": (rec, n) => (n === 1
+      ? { status: 302, headers: { Location: "/auth/login" }, body: "" }
+      : { payload: { ret: 1, msg: "签到成功" } }),
+    "GET /auth/login": { status: 200, body: "<html>login</html>", headers: { "set-cookie": "PHPSESSID=init123" } },
+    "POST /auth/login": () => {
+      loginCount += 1;
+      return { payload: { ret: 1, msg: "登录成功" }, headers: { "set-cookie": ["uid=1", "email=user@69yun.com", "key=newkey456", "expire=1760000000"] } };
+    },
+    "GET /user": { status: 200, body: "<html>user center</html>" },
+  });
+  try {
+    const { summary } = await yun69Tick(kv);
+    assert.equal(planOf(summary, "69yun").accounts[0].status, "claimed");
+    assert.equal(loginCount, 1, "只登录一次，不该反复登录");
+    const cred = JSON.parse(kv.store.get(`v1:acct:69yun:${uid}`)).cred;
+    assert.ok(cred.cookie.includes("newkey456"), "新 Cookie 没写回 KV，下一轮还会拿旧串");
+    assert.ok(!cred.cookie.includes("old=expired"), "旧 Cookie 不该还留在记录里");
+    // 密码是 secret 字段，不该进日志
+    const logKey = [...kv.store.keys()].find((k) => k.startsWith("v1:run:69yun:"));
+    if (logKey) assert.ok(!kv.store.get(logKey).includes("pass123"), "密码不该进运行日志");
+  } finally { stub.restore(); }
+});
+
+test("[69yun] 登录失败 → login_required，不再发第二次签到", async () => {
+  const kv = fakeKv();
+  seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
+  const stub = stubUpstream({
+    "POST /user/checkin": { status: 302, body: "" },
+    "GET /auth/login": { status: 200, body: "<html>login</html>" },
+    "POST /auth/login": { payload: { ret: 0, msg: "邮箱或密码错误" } },
+  });
+  try {
+    const { summary } = await yun69Tick(kv);
+    assert.equal(planOf(summary, "69yun").accounts[0].status, "login_required");
+    assert.equal(stub.seen.filter((r) => r.path === "/user/checkin").length, 1,
+      "登录已失败还去打第二次签到是白烧配额");
+    assert.equal(stub.seen.filter((r) => r.path === "/user").length, 0,
+      "登录失败不该再轮询 session");
+  } finally { stub.restore(); }
+});
+
+test("[69yun] 无 Cookie 时直接登录再签到，不先试一次", async () => {
+  const kv = fakeKv();
+  seed69yun(kv, "user@69yun.com", { cookie: "" });
+  const stub = stubUpstream({
+    "GET /auth/login": { status: 200, body: "<html>login</html>", headers: { "set-cookie": "PHPSESSID=abc" } },
+    "POST /auth/login": { payload: { ret: 1 }, headers: { "set-cookie": ["uid=1", "key=def456"] } },
+    "GET /user": { status: 200, body: "<html>ok</html>" },
+    "POST /user/checkin": { payload: { ret: 1, msg: "签到成功" } },
+  });
+  try {
+    const { summary } = await yun69Tick(kv);
+    assert.equal(planOf(summary, "69yun").accounts[0].status, "claimed");
+    // 第一步就该是 GET 登录页，而不是先试签到
+    assert.equal(stub.seen[0].path, "/auth/login");
+    assert.equal(stub.seen[0].method, "GET");
+  } finally { stub.restore(); }
+});
+
+test("[69yun] 签到必须 redirect:manual：自动跟随会把登录页 200 当成签到响应", async () => {
+  const kv = fakeKv();
+  seed69yun(kv);
+  const stub = stubUpstream({
+    "POST /user/checkin": { payload: { ret: 1, msg: "ok" } },
+  });
+  try {
+    await yun69Tick(kv);
+    const checkinCall = stub.seen.find((r) => r.path === "/user/checkin");
+    // stub 里拿不到 redirect 参数（fetch init 里的），但可以验证请求头里有 Referer
+    assert.equal(checkinCall.headers.Referer, "https://69yun69.com/user");
+    assert.equal(checkinCall.headers.Origin, "https://69yun69.com");
+  } finally { stub.restore(); }
+});
+
+test("[69yun] uid 从邮箱派生，trim 后取值", () => {
+  const tool = findTool("69yun");
+  assert.equal(tool.uidOf({ values: { email: "user@69yun.com" } }), "user@69yun.com");
+  assert.equal(tool.uidOf({ values: { email: "  user@69yun.com  " } }), "user@69yun.com");
+});
+
+test("[69yun] 白名单只有 69yun69.com，单步 cost=8 覆盖最坏情况", () => {
+  const tool = findTool("69yun");
+  assert.deepEqual(tool.hosts, ["69yun69.com"]);
+  assert.equal(tool.steps.length, 1);
+  assert.equal(tool.steps[0].cost, 8, "最坏 7 笔 + 1 余量 = 8");
+  assert.equal(tool.schedule.resetHour, 0);
+  assert.equal(tool.schedule.notBeforeHour, 0);
+});
+
+test("[69yun] 非 200 非 3xx 的签到响应报 error 而不是冒充成功", async () => {
+  const kv = fakeKv();
+  seed69yun(kv);
+  const stub = stubUpstream({
+    "POST /user/checkin": { status: 500, body: "internal error" },
+  });
+  try {
+    const { summary } = await yun69Tick(kv);
+    const acct = planOf(summary, "69yun").accounts[0];
+    assert.notEqual(acct.status, "claimed");
+    assert.notEqual(acct.status, "already");
+    assert.match(acct.message, /HTTP 500/);
+  } finally { stub.restore(); }
 });
 
 // ═══════════ Trae ═══════════
@@ -4079,10 +4237,10 @@ test("版本号递增：当天 +1，跨天回 01", () => {
   assert.equal(nextVersion("2026-09-30:07", "2026-10-01"), "2026-10-01:01");
 });
 
-test("[注册表里只有三家真实工具，夹具不许留在里面", async () => {
+test("[注册表里只有四家真实工具，夹具不许留在里面", async () => {
   // 夹具一旦留在注册表里就会产生真实副作用：占导航一格、被 cron 每 30 分钟调度一次、
   // 往 /runs 写假记录。演示工具不该有这些。所以它只在测试里临时注入。
-  assert.deepEqual(TOOLS.map((t) => t.id), ["qoder", "trae", "workbuddy"],
+  assert.deepEqual(TOOLS.map((t) => t.id), ["qoder", "trae", "workbuddy", "69yun"],
     `注册表不该含夹具或多出别的东西：${TOOLS.map((t) => t.id).join(", ")}`);
   assert.equal(TOOLS.includes(FIXTURE), false, "夹具被留在注册表里了");
 
@@ -4122,8 +4280,8 @@ test("[uidField 已彻底删除：契约里只剩 uidOf 一个来源", async () 
     assert.ok(!code.includes("uidField"), `${file} 的代码里还有 uidField`);
   }
   // 注册表自检现在只认 uidOf
-  assert.deepEqual(TOOLS.map((t) => typeof t.uidOf), ["function", "function", "function"],
-    "三家工具都必须声明 uidOf");
+  assert.deepEqual(TOOLS.map((t) => typeof t.uidOf), ["function", "function", "function", "function"],
+    "四家工具都必须声明 uidOf");
   // 少声明 uidOf 要在**模块加载时**就报错（部署时直接失败，而不是第一次建号才炸）。
   // 断言自检里那条判定确实在，别让它被改松。
   const entry = readFileSync("src/tools/index.js", "utf8");
