@@ -2457,6 +2457,43 @@ test("[workbuddy] target:0 的「0/0」任务照样能领：不许把 target 用
   } finally { stub.restore(); }
 });
 
+test("[workbuddy] 任务领取失败要把原因写进日志：只记「全部失败」查不出是谁拒的", async () => {
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  const stub = stubUpstream(wbIdleRoutes({
+    "GET /v2/activity/growth/tasks": { payload: { tasks: [
+      { task_code: "t-gone", progress: { current: 3, target: 3 }, accept_status: "unclaimed", has_reward: true, reward_credit: 10 },
+    ] } },
+    "POST /v2/activity/growth/tasks/accept": { status: 400, payload: { code: 10005, msg: "任务已下架" } },
+  }));
+  try {
+    const { summary } = await wbTick(kv);
+    const tasks = wbView(summary).steps[4];
+    assert.equal(tasks.status, "error");
+    assert.match(tasks.message, /t-gone HTTP 400 code=10005 任务已下架/, `失败原因没进日志：${tasks.message}`);
+
+    // 部分失败也要带原因：领到 1 个、失败 1 个，两条信息同一条 message 里
+    const kv2 = fakeKv();
+    seedWorkbuddy(kv2, "wb-partial");
+    const stub2 = stubUpstream(wbIdleRoutes({
+      "GET /v2/activity/growth/tasks": { payload: { tasks: [
+        { task_code: "t-ok", progress: { current: 1, target: 1 }, accept_status: "unclaimed", has_reward: true, reward_credit: 5 },
+        { task_code: "t-bad", progress: { current: 2, target: 2 }, accept_status: "unclaimed", has_reward: true, reward_credit: 5 },
+      ] } },
+      "POST /v2/activity/growth/tasks/accept": (rec) => (JSON.parse(rec.body).task_code === "t-ok"
+        ? { payload: { code: 0 } }
+        : { status: 403, payload: { msg: "frequency limit" } }),
+    }));
+    try {
+      const { summary: s2 } = await wbTick(kv2);
+      const tasks2 = wbView(s2).steps[4];
+      assert.equal(tasks2.status, "partial");
+      assert.match(tasks2.message, /领到 1 个任务奖励 \+5/, tasks2.message);
+      assert.match(tasks2.message, /失败：t-bad HTTP 403 frequency limit/, `部分失败的原因没进日志：${tasks2.message}`);
+    } finally { stub2.restore(); }
+  } finally { stub.restore(); }
+});
+
 test("[workbuddy] 连签兑换：409/403 是正常无事，天数不够报正常而不是活动未开", async () => {
   const kv = fakeKv();
   seedWorkbuddy(kv);

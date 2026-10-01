@@ -222,17 +222,26 @@ export default {
         const batch = eligible.slice(0, TASKS_PER_ROUND);
         let claimedCount = 0;
         let credits = 0;
+        const failed = [];
         for (const task of batch) {
           const accepted = await api.acceptTask(ctx, task.task_code);
-          if (accepted.status >= 400) continue;
+          if (accepted.status >= 400) {
+            // 失败原因必须进 message —— 这是这条运行日志唯一的诊断出口，
+            // 只写"全部失败"的话，401（凭据要重录）和 404（任务已下架）在界面上长得一样
+            const code = api.codeOf(accepted.payload);
+            const msg = String((accepted.payload && (accepted.payload.msg ?? accepted.payload.message)) ?? "");
+            failed.push(`${task.task_code} HTTP ${accepted.status}${code !== null ? ` code=${code}` : ""}${msg ? ` ${msg}` : ""}`.trim());
+            continue;
+          }
           claimedCount += 1;
           credits += api.num(task.reward_credit) || 0;
         }
-        if (claimedCount === 0) return { status: "error", message: `${batch.length} 个任务领取全部失败`, credits: 0, cred: ctx.rotated };
+        const failNote = failed.length ? `，失败：${failed.join("；")}` : "";
+        if (claimedCount === 0) return { status: "error", message: `${batch.length} 个任务领取全部失败${failNote}`, credits: 0, cred: ctx.rotated };
         const left = eligible.length - claimedCount;
         return {
           status: left > 0 ? "partial" : "claimed",
-          message: `领到 ${claimedCount} 个任务奖励 +${credits}${left > 0 ? `，还有 ${left} 个下一轮领` : ""}`,
+          message: `领到 ${claimedCount} 个任务奖励 +${credits}${failNote}${left > 0 ? `，还有 ${left} 个下一轮领` : ""}`,
           credits,
           cred: ctx.rotated,
         };
