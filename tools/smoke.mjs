@@ -51,8 +51,8 @@ const FIXTURE = {
   steps: [
     { id: "claim", label: "领取额度", cost: 4, async run() { return { status: "claimed", message: "领取试用额度 +50", credits: 50 }; } },
     // cost 20 刻意大于「跑完一个账号后的剩余额度」，这样第二轮能观察到断点续跑。
-    // 别调回 30：内核允许一步开跑前要连收尾写入的余量一起算（runner 的 TAIL_RESERVE），
-    // 30 在默认 45 的轮次里连单账号都做不完，这个夹具就观察不到"两步都做成"了。
+    // 别调回 30：准入闸只看 step.cost（HTTP 额度），claim 花掉 4 之后剩 41，
+    // 30 能装下但装完只剩 11 —— 这个夹具要观察"两步都做成"，20 是刚好够又留余量的值。
     { id: "survey", label: "顺手做份问卷", cost: 20, dependsOn: ["claim"], async run() { return { status: "claimed", message: "问卷已提交 +20", credits: 20 }; } },
   ],
   // 三家真实工具都是 uidOf，夹具也统一用 uidOf（uidField 已删）。
@@ -3691,7 +3691,8 @@ test("[审核P0-2b] 收尾写入不许把 used 顶过自限上限（预约不占
   } finally { stub.restore(); }
 
   // 最坏路径还得叠上"这一步同时换了票"：内核会当场把新串写回 KV（读新鲜 + 写 = 2 笔），
-  // 这 2 笔也算在收尾里、没有任何闸门挡着。TAIL_RESERVE 少了它们就会再次越界。
+  // 这 2 笔是 KV 写入，走 1000 那份额度，不参与 HTTP 闸门（step.cost 只预约上游请求）。
+  // 但它们仍然是真实的 KV 开销，测试要确认换票路径不会因为额外 KV 操作而中断。
   {
     const kv2 = fakeKv();
     seedTrae(kv2, "991099", { expiresAt: cst(10) + 60 });
