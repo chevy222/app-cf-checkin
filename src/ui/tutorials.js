@@ -257,39 +257,29 @@ if (-not $rt) { Write-Host "（回调里没有 refreshToken —— 请确认整�
       step("用验证码换 Token",
         "把手机号和 `123456` 换成实际收到的验证码（有效期约 5 分钟）。"
         + "执行后输出两行值，复制保存好 —— 下一步要填。",
+        // 刻意不解 uid：uid 平台自己从令牌的 sub 解，脚本再解一遍只是让人
+        // 多看一行字，还要多三行 base64 拼装（而 WorkBuddy 的票据形态会变，
+        // 拼错了反而让人以为令牌坏了）。
         `& {
 $r = Invoke-RestMethod -Uri "https://www.workbuddy.cn/v2/plugin/login/token" \`
   -Method Post -ContentType "application/json" \`
   -Body '{"login_method":"phone","phone":"13800000000","sms_code":"123456"}'
 
-$at = $r.data.accessToken
-$rt = $r.data.refreshToken
-# 解 JWT 载荷拿 uid（平台也会自己解一遍，这里只是让你能对上是哪个号）
-$p = $at.Split('.')[1].Replace('-','+').Replace('_','/')
-$p = $p.PadRight($p.Length + (4 - $p.Length % 4) % 4, '=')
-$j = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p)) | ConvertFrom-Json
-
 Write-Host ""
 Write-Host "====== 填到「新增账号」======" -ForegroundColor Cyan
-Write-Host "Access Token : $at"
-Write-Host "Refresh Token: $rt"
-Write-Host "uid 校验      : $($j.sub)"
+Write-Host "Access Token : $($r.data.accessToken)"
+Write-Host "Refresh Token: $($r.data.refreshToken)"
 Write-Host "=================================" -ForegroundColor Cyan
 }`),
       step("填到表单",
-        "两个令牌填进表单，**`uid` 不用填** —— 平台会从令牌的 `sub` 自己解出来"
-        + "（上面那行 `uid 校验` 就是让你对得上号）。令牌到期时间也自动。"),
+        "两个令牌填进表单就行 —— 令牌到期时间平台会自动从 `exp` 解出来。"),
     ],
     notes: [
-      note("warn", "**新版桌面端可能给的是包装格式** `{\"$wbEncrypted\":1,\"envelope\":\"…\"}` —— "
-        + "直接原样粘进表单就行，平台会自动展开。"),
-      note("warn", "开盲盒（`buddy/open`）**每调一次服务端就扣 10 点能量**，而且这个接口没有任何幂等字段。"
-        + "平台用本地的每轮上界卡住次数（默认 5 个），但它拦不住上游改字段 —— "
-        + "第 4 步显示的「已开 N 个」如果比预期多，说明取到的 `affordable` 变了，值得看一眼。"),
       note("info", "多账号时每个号都要走一遍这两步。"),
     ],
     fields: [
-      ["`Authorization: Bearer`", "第 2 步的 `Access Token`", "到期时间平台自动从 `exp` 解"],
+      ["`Authorization: Bearer`", "第 2 步的 `Access Token`",
+        "到期时间平台自动从 `exp` 解。新版桌面端可能给的是包装格式 `{\"$wbEncrypted\":1,\"envelope\":\"…\"}`，原样粘进来即可，平台会自动展开"],
       ["`X-Refresh-Token`", "第 2 步的 `Refresh Token`", "旧串用过一次即废，续期后平台当场写回"],
     ],
   },

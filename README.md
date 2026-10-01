@@ -384,24 +384,15 @@ $r = Invoke-RestMethod -Uri "https://www.workbuddy.cn/v2/plugin/login/token" `
   -Method Post -ContentType "application/json" `
   -Body '{"login_method":"phone","phone":"13800000000","sms_code":"123456"}'
 
-$at = $r.data.accessToken
-$rt = $r.data.refreshToken
-# 解 JWT 载荷拿 uid（平台也会自己解一遍，这里只是让你能对上是哪个号）
-$p = $at.Split('.')[1].Replace('-','+').Replace('_','/')
-$p = $p.PadRight($p.Length + (4 - $p.Length % 4) % 4, '=')
-$j = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p)) | ConvertFrom-Json
-
 Write-Host ""
 Write-Host "====== 填到「新增账号」======" -ForegroundColor Cyan
-Write-Host "Access Token : $at"
-Write-Host "Refresh Token: $rt"
-Write-Host "uid 校验      : $($j.sub)"
+Write-Host "Access Token : $($r.data.accessToken)"
+Write-Host "Refresh Token: $($r.data.refreshToken)"
 Write-Host "=================================" -ForegroundColor Cyan
 }
 ```
 
-**第 3 步**：两个令牌填进表单。**`uid` 不用填** —— 平台会从令牌的 `sub` 自己解出来
-（上面那行 `uid 校验` 就是让你能对上是哪个号）。多账号时每个号都要走一遍这两步。
+**第 3 步**：两个令牌填进表单就行，到期时间平台会自动从 `exp` 解出来。多账号时每个号都要走一遍这两步。
 
 新版桌面端可能给的是一段包装格式（`{"$wbEncrypted":1,…}`），**原样粘进表单就行**，
 平台会自动展开。
