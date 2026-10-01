@@ -3,7 +3,8 @@ import { fmtCST } from "../../core/time.js";
 import { link, navHtml, pageShell } from "../layout.js";
 import { badge, button, emptyState, sectionHead } from "../components.js";
 
-// 这一行是谁、什么时候：取自键名（listRunLog 已经解析好），不依赖 KV metadata。
+// 这一行是谁、什么时候：uid 取自键名（listRunLog 已经解析好）；备注名取自 metadata，
+// 是**记录那一刻**的快照 —— 之后改过名，旧日志仍显示旧名，这是日志语义的一部分。
 // metadata 只供摘要、积分、预算这些"缺了也只是少点信息"的字段。
 function filterBar(pwd, tools, active) {
   const item = (label, value) => `<a class="btn sm${(active.tool || "") === value ? " pri" : ""}" href="${escapeHtml(link("/runs", pwd, value ? { tool: value } : null))}">${escapeHtml(label)}</a>`;
@@ -16,7 +17,7 @@ export function renderRuns({ pwd, tools, entries, active = {} }) {
     const href = link(`/runs/${encodeURIComponent(entry.key)}`, pwd);
     const who = entry.kind === "tick"
       ? '<span class="mono dim">整轮调度</span>'
-      : `<span class="mono">${escapeHtml(entry.tool)}/${escapeHtml(entry.uid)}</span>`;
+      : `<span>${escapeHtml(entry.tool)}/${escapeHtml(meta.label || entry.uid)}</span>`;
     const budget = entry.kind === "tick" && meta.used !== undefined
       ? `<span class="num dim">${meta.used}/${meta.limit}</span>` : "";
     return `<tr>
@@ -85,14 +86,14 @@ export function renderRunDetail({ pwd, tools, entry, key, missing }) {
     ? (entry.plan || []).map((p) => `<tr>
         <td class="mono dim">${escapeHtml(p.tool)}</td>
         <td>${p.skipped ? badge("skipped", p.skipped) : badge("ok", `${p.accounts.length} 个账号`)}</td>
-        <td class="dim">${escapeHtml((p.accounts || []).map((a) => `${a.uid} ${a.status}`).join("；"))}</td>
+        <td class="dim">${escapeHtml((p.accounts || []).map((a) => `${a.label || a.uid} ${a.status}`).join("；"))}</td>
         <td></td></tr>`).join("")
     : (entry.steps || []).map(stepRow).join("");
 
   const b = entry.budget || {};
   const heads = isTick ? ["工具", "处置", "账号结果", ""] : ["步骤", "结果", "说明", "备注"];
   return pageShell({
-    title: isTick ? "本轮调度详情" : `${entry.tool} · ${entry.uid}`,
+    title: isTick ? "本轮调度详情" : `${entry.tool} · ${entry.label || entry.uid}`,
     nav: navHtml(pwd, "runs", tools),
     body: sectionHead(isTick ? "本轮调度" : "账号运行详情", "", button(link("/runs", pwd), "‹ 返回列表"))
       + `<div class="card"><div class="bd" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${head}</div>

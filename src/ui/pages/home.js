@@ -63,7 +63,7 @@ export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, b
   const feed = runs.slice(0, 12).map((entry) => {
     const m = entry.meta || {};
     const href = link(`/runs/${encodeURIComponent(entry.key)}`, pwd);
-    const who = entry.kind === "tick" ? "整轮调度" : `${entry.tool}/${entry.uid}`;
+    const who = entry.kind === "tick" ? "整轮调度" : `${entry.tool}/${m.label || entry.uid}`;
     return `<a class="flowitem" href="${escapeHtml(href)}" style="text-decoration:none;color:inherit">
       <span class="who">${escapeHtml(who)}</span>${badge(m.status || "error")}
       <span class="m">${escapeHtml(m.message || "")}</span>

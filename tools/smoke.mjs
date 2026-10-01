@@ -1395,6 +1395,24 @@ fixtureTest("[需要处理的账号会在工具页顶部出现红条，损坏记
   assert.ok(/需要你处理[\s\S]{0,200}BRK9/.test(page.text), "红条漏了损坏记录");
 });
 
+fixtureTest("[日志列表与总览流显示备注名，不是 uid", async () => {
+  const kv = fakeKv();
+  seedFull(kv, "LBL01");
+  await tickWith(kv, [leakyTool(okStep())]);
+  const env = envFor(kv);
+  // 写侧：meta.label 记的是记录那一刻的备注名
+  const run = (await listRunLog(env, { limit: 20, toolIds: ["fix"] })).find((r) => r.kind === "run");
+  assert.equal(run.meta.label, "备注-LBL01", "运行日志 metadata 里该有备注名");
+  // 读侧：列表页对象列、总览流都优先显示备注名；uid 仍留在详情页正文里可查
+  const list = await authed("/runs", env);
+  assert.ok(list.text.includes("fix/备注-LBL01"), "列表页对象列该显示备注名");
+  assert.ok(!list.text.includes("fix/LBL01"), "列表页不该再以 tool/uid 形态显示（uid 出现在详情链接里是正常的）");
+  const home = await authed("/", env);
+  assert.ok(home.text.includes("fix/备注-LBL01"), "总览流该显示备注名");
+  const detail = await authed(`/runs/${encodeURIComponent(run.key)}`, env);
+  assert.ok(detail.text.includes("备注-LBL01"), "详情页标题该显示备注名");
+});
+
 fixtureTest("[损坏记录要在 /runs 里露头", async () => {
   const kv = fakeKv();
   seedFull(kv, "BRKOK");
