@@ -32,9 +32,9 @@ export function sectionHead(title, sub, rightHtml) {
 
 export function emptyState({ title, lines, actions }) {
   return `<div class="empty"><div class="mark">${glyph("g-key", 22)}</div>
-    <b style="font-size:15px">${escapeHtml(title)}</b>
-    ${lines && lines.length ? `<p class="sub" style="margin:6px 0 0">${escapeHtml(lines.join(" "))}</p>` : ""}
-    ${actions && actions.length ? `<div style="display:flex;gap:8px;justify-content:center;margin-top:16px">${actions.join("")}</div>` : ""}
+    <b class="cap">${escapeHtml(title)}</b>
+    ${lines && lines.length ? `<p class="sub mt">${escapeHtml(lines.join(" "))}</p>` : ""}
+    ${actions && actions.length ? `<div class="acts center mt">${actions.join("")}</div>` : ""}
   </div>`;
 }
 

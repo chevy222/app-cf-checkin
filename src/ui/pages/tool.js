@@ -24,7 +24,7 @@ function nonSecretSummary(tool, account) {
 }
 
 function deleteForm(pwd, action) {
-  return `<form method="post" action="${escapeHtml(action)}" style="display:inline">
+  return `<form method="post" action="${escapeHtml(action)}">
     <input type="hidden" name="pwd" value="${escapeHtml(pwd)}">
     <button class="btn sm danger" type="submit">删除</button>
   </form>`;
@@ -32,8 +32,9 @@ function deleteForm(pwd, action) {
 
 // 单账号动作走 POST：GET 不该改变世界。结果直接渲染回本页，不重定向 ——
 // 重定向要么丢掉"这次跑出了什么"，要么把结果塞进 URL 查询串。
+// 表单不需要 display:inline：它们都放在 .acts（flex）里，块级表单照样并排。
 function actionForm(pwd, action, label, style) {
-  return `<form method="post" action="${escapeHtml(action)}" style="display:inline">
+  return `<form method="post" action="${escapeHtml(action)}">
     <input type="hidden" name="pwd" value="${escapeHtml(pwd)}">
     <button class="btn sm${style ? ` ${style}` : ""}" type="submit">${escapeHtml(label)}</button>
   </form>`;
@@ -92,7 +93,7 @@ export function renderTool({ pwd, tool, accounts, total, sched = {}, flash, flag
       actions: [button(addHref, "新增账号", "pri")],
     })
     : `<div class="tw"><table class="t"><thead><tr>
-        <th>账号</th><th>最近结果</th><th>步骤</th><th>字段</th><th>最后更新</th><th style="text-align:right">操作</th>
+        <th>账号</th><th>最近结果</th><th>步骤</th><th>字段</th><th>最后更新</th><th class="r">操作</th>
       </tr></thead><tbody>${rows}</tbody></table></div>`;
 
   const hidden = Math.max(0, (total ?? accounts.length) - accounts.length);
@@ -104,12 +105,12 @@ export function renderTool({ pwd, tool, accounts, total, sched = {}, flash, flag
       ${off ? alertBox("warn", `<b>${escapeHtml(tool.name)} 已停用。</b>不参与调度（cron 与手动执行都跳过），账号、凭据与当天进度全部原样保留；重新打开后从停下的那一步接着做。${stuckAll.length ? `当前有 ${stuckAll.length} 个账号处于失败或需重新登录状态，恢复后仍要处理。` : ""}`) : ""}
       ${needsAttention.length ? `<div class="card">${alertBox("bad", `<b>${needsAttention.length} 个账号需要你处理：</b>${escapeHtml(needsAttention.map((a) => a.label || a.uid).join("、"))} —— 自动重试治不好这一类，要么重新录入凭据，要么删掉重建。`)}</div>` : ""}
       <div class="card"><div class="hd"><div class="id">${iconImg(tool, 26)}<div><div class="t">${escapeHtml(tool.name)}</div><div class="d">${escapeHtml(tool.summary || "")}</div></div></div>
-        <span class="spacer"></span>${button(addHref, "+ 新增账号", "pri")} ${button(configHref, "工具配置")}</div>
-        <div class="bd" style="padding-top:0"><p class="tiny" style="margin:0">字段来自该工具的声明，界面不认具体工具。改动下一轮起生效。</p></div>
+        <div class="acts">${button(addHref, "+ 新增账号", "pri")}${button(configHref, "工具配置")}</div></div>
+        <div class="bd flush"><p class="tiny m0">字段来自该工具的声明，界面不认具体工具。改动下一轮起生效。</p></div>
       </div>
       ${table}
-      ${hidden > 0 ? `<div style="margin-top:12px">${alertBox("warn", `共 ${total} 个账号，这里只列出前 ${accounts.length} 个。这一页要逐个读记录才能显示字段值，而 KV 的写/删/list 每天只有 1000 次，所以列表是有上界的；要管更多请先把账号删到有意义的规模。`)}</div>` : ""}
-      <p class="tiny" style="margin-top:12px">「执行」跳过到期判定的时间闸，立刻跑这一个账号（预算、并发锁、进度复用照旧，工具配置没填或工具已停用时会被拒绝）。
+      ${hidden > 0 ? `<div class="mt">${alertBox("warn", `共 ${total} 个账号，这里只列出前 ${accounts.length} 个。这一页要逐个读记录才能显示字段值，而 KV 的写/删/list 每天只有 1000 次，所以列表是有上界的；要管更多请先把账号删到有意义的规模。`)}</div>` : ""}
+      <p class="tiny mt">「执行」跳过到期判定的时间闸，立刻跑这一个账号（预算、并发锁、进度复用照旧，工具配置没填或工具已停用时会被拒绝）。
         注意它真的会再打一次上游：今天已经领过的账号被点「执行」，上游会收到第二次领取请求。步骤色块悬停可看每一步的处置。</p>`,
   });
 }
@@ -135,7 +136,7 @@ export function renderAccountForm({ pwd, tool, fields, values, existing, errors,
           ${uidRow}
           <div class="kv"><span class="k">敏感字段</span><span class="v">${fields.filter((f) => f.secret).length} 个</span></div>
           <div class="kv"><span class="k">需线下取值</span><span class="v">${fields.filter((f) => f.offline).length} 个</span></div>
-          <p class="tiny" style="margin-top:12px">敏感字段保存后整串隐藏（12 位以内全隐，更长只露前后 4 位）；编辑时留空表示保持原值，非敏感的可选字段留空则是清空。凭据永不写进日志。</p>
+          <p class="tiny mt">敏感字段保存后整串隐藏（12 位以内全隐，更长只露前后 4 位）；编辑时留空表示保持原值，非敏感的可选字段留空则是清空。凭据永不写进日志。</p>
         </div>
         <div class="pane">
           ${renderForm(fields, { values, existing, errors, action, cancelHref, pwd, submitLabel: "保存" })}
@@ -161,7 +162,7 @@ export function renderToolConfig({ pwd, tool, values, errors, flash }) {
       ${renderTutorial(tool)}
       <div class="split">
         <div class="pane">
-          <p class="sub" style="margin:0 0 10px">这一层是<b>工具级</b>的，对该工具下所有账号生效；账号级凭据在「管理」页逐个填。</p>
+          <p class="sub mb">这一层是<b>工具级</b>的，对该工具下所有账号生效；账号级凭据在「管理」页逐个填。</p>
           <p class="tiny">改动下一轮生效。</p>
         </div>
         <div class="pane">

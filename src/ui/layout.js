@@ -104,7 +104,7 @@ table.t tr:last-child td{border-bottom:0}
    进度条自带下边距，紧跟的行不需要再来一道虚线。 */
 .prog + .kv{border-top:0}
 .kv .k{color:var(--muted)}
-.kv .v{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:12.5px;text-align:right}
+.kv .v{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:12.5px;text-align:right;overflow-wrap:anywhere}
 /* .kv .k 里带图标时必须显式 flex：.ico 是 display:block（为了不占基线下的空隙），
    不套 flex 它就会竖在文字上方，而不是像设计稿那样排在名字左边。 */
 .kv .k:has(.ico){display:flex;align-items:center;gap:9px}
@@ -187,6 +187,23 @@ table.t tr:last-child td{border-bottom:0}
   border-radius:var(--radius-sm);padding:8px 10px;font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;
   font-size:11.5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .tiny{color:var(--faint);font-size:11.5px}
+/* 一组小工具类：各页面反复内联的那几行样式收进来（CSP 已放行内联，纯为一致性）。
+   边距口径归一：上边距一律 .mt=12px（原先散着 10/14/16/18px），下边距用 .mb（10px）。
+   恢复正常换行叫 .flow 而不是 .wrap —— .wrap 已是页面容器（max-width 那条），同名会互相误伤。 */
+.m0{margin:0}
+.mt{margin-top:12px}
+.mb{margin:0 0 10px}
+.flush{padding-top:0}
+th.r,td.r{text-align:right}
+.cap{font-size:14.5px;font-weight:650}
+.over{color:var(--bad)}
+.card .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.pre{white-space:pre-wrap;word-break:break-all}
+.center{justify-content:center}
+.tc{text-align:center}
+.flow{white-space:normal}
+/* 管理页卡片头右侧的按钮组：margin-left:auto 顶到右边（代替原来的 .spacer） */
+.card .hd .acts{margin-left:auto;gap:8px}
 .login{max-width:330px;margin:48px auto;text-align:center}
 .login .lock{width:44px;height:44px;border-radius:12px;background:var(--panel3);color:var(--muted);
   display:grid;place-items:center;margin:0 auto 14px}
@@ -228,6 +245,9 @@ table.t tr:last-child td{border-bottom:0}
   .tut-b,.tut-c,.tutbox .alert,.tutbox .tw{margin-left:0}
   .field textarea{min-height:120px}
   .card .hd,.card .bd,.pane{padding-left:13px;padding-right:13px}
+  /* 管理页卡片头在窄屏换行：标题一行、按钮组一行，标题不再被两个按钮挤没 */
+  .card .hd{flex-wrap:wrap}
+  .card .hd .acts{flex:1 1 100%}
   /* 运行流在窄屏太挤：who 缩窄、时间戳降一档，把宽度让给摘要 */
   .flowitem .who{width:72px}
   .flowitem .when{font-size:10.5px}

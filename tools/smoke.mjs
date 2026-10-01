@@ -1776,6 +1776,45 @@ test("首页样式七处打磨：行线、去内联、截断、窄屏运行流�
   assert.match(page.text, /href="[^"]*\/tool\/[a-z]+[^"]*">还没有账号/, "引导链接没指向工具页");
 });
 
+test("内联样式收进工具类：CSS 工具类齐全，各页面不再散落布局内联", async () => {
+  const env = envFor(fakeKv());
+  const css = (await authed("/", env)).text.match(/<style>([\s\S]*?)<\/style>/)[1];
+  // 工具类本体必须存在 —— 各页面删内联的前提是这些类真的在样式表里
+  assert.match(css, /\.m0\{margin:0\}/, "缺 .m0");
+  assert.match(css, /\.mt\{margin-top:12px\}/, "缺 .mt");
+  assert.match(css, /\.mb\{margin:0 0 10px\}/, "缺 .mb");
+  assert.match(css, /\.flush\{padding-top:0\}/, "缺 .flush");
+  assert.match(css, /\.cap\{font-size:14\.5px;font-weight:650\}/, "缺 .cap");
+  assert.match(css, /th\.r,td\.r\{text-align:right\}/, "缺 th.r,td.r 右对齐");
+  assert.match(css, /\.flow\{white-space:normal\}/, "缺 .flow");
+  // 恢复换行的工具类不能叫 .wrap：那是页面容器（max-width 那条），同名会互相误伤
+  assert.doesNotMatch(css, /\.wrap\{white-space/, "white-space 工具类占用了页面容器的 .wrap 名字");
+  // 管理页卡片头的按钮组要顶到右边；窄屏下卡片头换行、按钮组独占一行
+  assert.match(css, /\.card \.hd \.acts\{margin-left:auto/, "卡片头按钮组没顶到右边");
+  assert.match(css, /@media \(max-width:720px\)\{[^@]*\.card \.hd\{flex-wrap:wrap\}/, "窄屏卡片头不换行");
+  // 长值（日志键名、令牌）在 .kv 里必须能折行，否则会把行撑爆
+  assert.match(css, /\.kv \.v\{[^}]*overflow-wrap:anywhere/, ".kv 的值不能折行，长键名会撑爆行");
+
+  // 收编完成后，各页面不许再有散落的内联布局样式。
+  // 注意用真实注册表里的 qoder：夹具 fix 不在注册表，会被 404 挡掉，扫了个寂寞。
+  //（SVG 精灵图的 display:none 是结构性隐藏，不在清理范围，也不在下面这些模式里）
+  const pages = ["/", "/help", "/runs", "/tool/qoder", "/tool/qoder/settings", "/account/new?tool=qoder", "/nope"];
+  for (const p of pages) {
+    const html = (await authed(p, env)).text;
+    for (const bad of ['style="margin', 'style="display:inline', 'style="display:flex', 'style="font-size', 'style="text-align', 'style="white-space']) {
+      assert.ok(!html.includes(bad), `${p} 还有内联样式 ${bad}`);
+    }
+  }
+  // 口令闸与未配置页也一并收干净（这两页 401/200 都行，只看正文）
+  const gate = await hit("/", { env: envFor(fakeKv()) });
+  const unconfigured = await hit("/", { env: { CHECKIN_KV: fakeKv() } });
+  for (const page of [gate.text, unconfigured.text]) {
+    for (const bad of ['style="margin', 'style="font-size', 'style="text-align']) {
+      assert.ok(!page.includes(bad), `闸前页面还有内联样式 ${bad}`);
+    }
+  }
+});
+
 test("[?tool= 筛选日志，且成本与日志总量无关", async () => {
   const kv = fakeKv();
   seedFull(kv, "FILT1");

@@ -14,27 +14,27 @@ export function renderGate() {
         <input type="password" name="pwd" autocomplete="off" aria-label="访问密码" placeholder="••••••••">
         <button class="btn pri" type="submit">进入</button>
       </form>
-      <p class="tiny" style="margin-top:14px">命令行可改用请求头 <span class="mono">X-Pwd</span> 提交</p>
+      <p class="tiny mt">命令行可改用请求头 <span class="mono">X-Pwd</span> 提交</p>
     </div>`,
   });
 }
 
 export function renderUnconfigured() {  return pageShell({
     title: "未配置访问密码",
-    body: `<div class="card" style="margin-top:20px"><div class="bd">
-      <b style="font-size:15px">缺少环境变量 <span class="mono">PASSWORD</span></b>
-      <p class="sub" style="margin:8px 0 0">平台拒绝在无口令状态下运行。设置一个即可：</p>
-      <div class="cmdbox" style="margin-top:12px">npx wrangler secret put PASSWORD</div>
-      <p class="tiny" style="margin-top:10px">本地开发则把它写进 <span class="mono">.dev.vars</span>（模板见 <span class="mono">.dev.vars.example</span>）。</p>
+    body: `<div class="card mt"><div class="bd">
+      <b class="cap">缺少环境变量 <span class="mono">PASSWORD</span></b>
+      <p class="sub mt">平台拒绝在无口令状态下运行。设置一个即可：</p>
+      <div class="cmdbox mt">npx wrangler secret put PASSWORD</div>
+      <p class="tiny mt">本地开发则把它写进 <span class="mono">.dev.vars</span>（模板见 <span class="mono">.dev.vars.example</span>）。</p>
     </div></div>`,
   });
 }
 
 export function renderNotFound(pwd) {  return pageShell({
     title: "没有这个页面",
-    body: `<div class="pane" style="margin-top:20px;text-align:center">
-      <b style="font-size:15px">没有这个页面。</b>
-      <p class="sub" style="margin:8px 0 16px">路径不存在，或该工具尚未注册。</p>
+    body: `<div class="pane mt tc">
+      <b class="cap">没有这个页面。</b>
+      <p class="sub mt">路径不存在，或该工具尚未注册。</p>
       ${button(link("/", pwd), "回到总览", "pri")}
     </div>`,
   });
@@ -44,10 +44,10 @@ export function renderNotFound(pwd) {  return pageShell({
 export function renderFatal(message) {
   return pageShell({
     title: "出错了",
-    body: `<div class="card" style="margin-top:20px"><div class="bd">
-      <b style="font-size:15px">请求处理失败</b>
-      <p class="sub" style="margin:8px 0 0">这一轮没有任何写入。</p>
-      <div class="cmdbox" style="margin-top:12px;white-space:normal">${escapeHtml(message)}</div>
+    body: `<div class="card mt"><div class="bd">
+      <b class="cap">请求处理失败</b>
+      <p class="sub mt">这一轮没有任何写入。</p>
+      <div class="cmdbox mt flow">${escapeHtml(message)}</div>
     </div></div>`,
   });
 }

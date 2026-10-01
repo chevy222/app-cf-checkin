@@ -17,7 +17,7 @@ function filterBar(pwd, tools, active) {
 // 就是一个会误伤所有记录的操作，不该由筛选栏上的一个按钮提供。
 function clearForm(pwd, toolId) {
   if (!toolId) return "";
-  return `<form method="post" action="${escapeHtml(link(`/runs/${encodeURIComponent(toolId)}/clear`, pwd))}" style="display:inline">
+  return `<form method="post" action="${escapeHtml(link(`/runs/${encodeURIComponent(toolId)}/clear`, pwd))}">
     <button class="btn sm danger" type="submit">清空日志</button>
   </form>`;
 }
@@ -45,7 +45,7 @@ export function renderRuns({ pwd, tools, entries, active = {}, flash }) {
       <td class="dim" data-label="摘要">${escapeHtml(meta.message || "（无摘要）")}</td>
       <td class="num dim" data-label="积分">${escapeHtml(meta.credits ? `+${meta.credits}` : "")}</td>
       <td data-label="请求">${usage}</td>
-      <td data-label="" style="text-align:right"><a class="btn sm" href="${escapeHtml(href)}">详情</a></td>
+      <td class="r" data-label=""><a class="btn sm" href="${escapeHtml(href)}">详情</a></td>
     </tr>`;
   }).join("");
 
@@ -57,7 +57,7 @@ export function renderRuns({ pwd, tools, entries, active = {}, flash }) {
         : ["调度每 30 分钟醒一次，跑过的账号会在这里留下痕迹。"],
     })
     : `<div class="tw"><table class="t"><thead><tr>
-        <th>时间</th><th>对象</th><th>结果</th><th>摘要</th><th>积分</th><th>请求</th><th></th>
+        <th>时间</th><th>对象</th><th>结果</th><th>摘要</th><th>积分</th><th>请求</th><th class="r"></th>
       </tr></thead><tbody>${rows}</tbody></table></div>`;
 
   return pageShell({
@@ -67,7 +67,7 @@ export function renderRuns({ pwd, tools, entries, active = {}, flash }) {
       ${sectionHead("运行日志", "保留 30 天；列表只读一次 KV，正文点进详情才读",
         `<div class="acts">${clearForm(pwd, active.tool)}${filterBar(pwd, tools, active)}</div>`)}
       ${table}
-      <p class="tiny" style="margin-top:12px">列表的摘要存在 KV 的 metadata 里，所以这一页的成本只与「已注册的工具数」有关，与记录条数无关。凭据与访问口令永不写入日志。</p>`,
+      <p class="tiny mt">列表的摘要存在 KV 的 metadata 里，所以这一页的成本只与「已注册的工具数」有关，与记录条数无关。凭据与访问口令永不写入日志。</p>`,
   });
 }
 
@@ -81,9 +81,9 @@ export function renderRunsClearConfirm({ pwd, tools, tool, count }) {
     body: sectionHead(`清空 ${tool.name} 的运行日志`, "", button(link("/runs", pwd, { tool: tool.id }), "‹ 返回列表"))
       + alertBox("warn", `将删除 <b>${escapeHtml(tool.name)}</b> 名下全部运行日志${count ? `（当前一页能看到 ${count} 条）` : ""}。`
         + `<br>只删这一个工具的记录，另外两个工具的日志、账号、凭据、当天进度全部不动。删掉之后不能恢复。`)
-      + `<div class="pane" style="margin-top:16px"><p class="sub" style="margin:0 0 14px">`
+      + `<div class="pane mt"><p class="sub mb">`
       + `一次最多删 ${CLEAR_BUDGET} 条左右；条数更多时分几次点就行，每次删完会告诉你还剩多少。</p>`
-      + `<div class="acts"><form method="post" action="${escapeHtml(action)}" style="display:inline">`
+      + `<div class="acts"><form method="post" action="${escapeHtml(action)}">`
       + `<button class="btn danger" type="submit">确认清空</button></form>`
       + `${button(link("/runs", pwd, { tool: tool.id }), "取消")}</div></div>`,
   });
@@ -108,17 +108,17 @@ export function renderRunDetail({ pwd, tools, entry, key, missing }) {
       title: "记录不存在",
       nav: navHtml(pwd, "runs", tools),
       body: sectionHead("记录不存在")
-        + `<div class="pane"><p class="sub" style="margin:0">这条记录已过期（保留 30 天）或键名不合法。</p>
-           <div style="margin-top:14px">${button(link("/runs", pwd), "回到日志列表")}</div></div>`,
+        + `<div class="pane"><p class="sub m0">这条记录已过期（保留 30 天）或键名不合法。</p>
+           <div class="mt">${button(link("/runs", pwd), "回到日志列表")}</div></div>`,
     });
   }
 
   const isTick = entry.kind === "tick";
   const head = isTick
-    ? `<b style="font-size:14.5px">整轮调度</b> ${badge(entry.ran > 0 ? "ok" : "skipped", entry.ran > 0 ? `跑了 ${entry.ran} 个账号` : "无账号执行")}
-       <span class="sp" style="margin-left:auto"></span><span class="mono dim">${escapeHtml(fmtCST(Math.floor(entry.at / 1000)))} · ${escapeHtml(entry.trigger || "")}</span>`
-    : `<b style="font-size:14.5px">${escapeHtml(entry.label || entry.uid)}</b> ${badge(entry.status)}
-       <span class="sp" style="margin-left:auto"></span><span class="mono dim">${escapeHtml(entry.tool)}/${escapeHtml(entry.uid)} · ${escapeHtml(fmtCST(Math.floor(entry.at / 1000)))} · ${escapeHtml(entry.trigger || "")}</span>`;
+    ? `<b class="cap">整轮调度</b> ${badge(entry.ran > 0 ? "ok" : "skipped", entry.ran > 0 ? `跑了 ${entry.ran} 个账号` : "无账号执行")}
+       <span class="spacer"></span><span class="mono dim">${escapeHtml(fmtCST(Math.floor(entry.at / 1000)))} · ${escapeHtml(entry.trigger || "")}</span>`
+    : `<b class="cap">${escapeHtml(entry.label || entry.uid)}</b> ${badge(entry.status)}
+       <span class="spacer"></span><span class="mono dim">${escapeHtml(entry.tool)}/${escapeHtml(entry.uid)} · ${escapeHtml(fmtCST(Math.floor(entry.at / 1000)))} · ${escapeHtml(entry.trigger || "")}</span>`;
 
   const steps = isTick
     ? (entry.plan || []).map((p) => `<tr>
@@ -135,11 +135,11 @@ export function renderRunDetail({ pwd, tools, entry, key, missing }) {
     title: isTick ? "本轮调度详情" : `${entry.tool} · ${entry.label || entry.uid}`,
     nav: navHtml(pwd, "runs", tools),
     body: sectionHead(isTick ? "本轮调度" : "账号运行详情", "", button(link("/runs", pwd), "‹ 返回列表"))
-      + `<div class="card"><div class="bd" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${head}</div>
-        <div class="bd" style="padding-top:0">
-          <p class="sub" style="margin:0">${escapeHtml(entry.message || "")}</p>
+      + `<div class="card"><div class="bd row">${head}</div>
+        <div class="bd flush">
+          <p class="sub m0">${escapeHtml(entry.message || "")}</p>
           ${entry.credits ? `<div class="kv"><span class="k">本次积分</span><span class="v">+${escapeHtml(String(entry.credits))}</span></div>` : ""}
-          <div class="kv"><span class="k">本账号外部请求</span><span class="v">${escapeHtml(String(u.http ?? "—"))} / 上限 ${escapeHtml(String(b.limit ?? "—"))}${b.over ? ` · <span style="color:var(--bad)">超出 ${escapeHtml(String(b.over))}</span>` : ""}</span></div>
+          <div class="kv"><span class="k">本账号外部请求</span><span class="v">${escapeHtml(String(u.http ?? "—"))} / 上限 ${escapeHtml(String(b.limit ?? "—"))}${b.over ? ` · <span class="over">超出 ${escapeHtml(String(b.over))}</span>` : ""}</span></div>
           <div class="kv"><span class="k">本次调用 KV</span><span class="v">${escapeHtml(String(b.kv ?? "—"))} 次（KV 另有 1000 次额度，不占上面那个 50）</span></div>
           <div class="kv"><span class="k">键名</span><span class="v dim">${escapeHtml(key)}（时间那段是反转毫秒，所以键序就是时间倒序）</span></div>
         </div></div>

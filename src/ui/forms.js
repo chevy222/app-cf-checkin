@@ -8,7 +8,7 @@ function control(field, { value, masked, id }) {
   // 表单不收它 —— 收进来就等于让用户能伪报一个内核事实
   if (field.readonly) {
     const shown = field.type === "datetime" && value ? fmtCST(Number(value)) : (value === undefined || value === "" ? "（尚未取得）" : String(value));
-    return `<div class="kv"><span class="v mono" style="white-space:pre-wrap;word-break:break-all">${escapeHtml(shown)}</span></div>`;
+    return `<div class="kv"><span class="v mono pre">${escapeHtml(shown)}</span></div>`;
   }
   const placeholder = field.secret
     ? `placeholder="${escapeHtml(masked ? `未改动 · 当前 ${maskSecret(masked)}` : "未设置")}"`
@@ -69,7 +69,8 @@ export function renderForm(fields, { values = {}, existing = {}, action, errors 
 
   return `<form method="post" action="${escapeHtml(action)}" accept-charset="utf-8">
     ${hidden}${body}
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">
+    <!-- 按钮组交给 .acts（右对齐、可换行）+ .mt：原先的内联 18px 上边距与全站 12px 不一致 -->
+    <div class="acts mt">
       ${cancel}<button class="btn pri" type="submit">${escapeHtml(submitLabel)}</button>
     </div>
   </form>`;
