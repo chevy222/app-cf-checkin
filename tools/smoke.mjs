@@ -3846,6 +3846,32 @@ test("[教程里 PowerShell 脚本能真的抳出对应的凭据字段", async (
   }
 });
 
+// 2026-10-01 用户指出：WorkBuddy 教程里写「桌面端把凭据文件加密了，改用短信登录」，
+// 而短信接口跟任何本机文件都没有因果关系 —— 那句是抄错的。
+// 真实情况是两条独立的取法：旧桌面端（.info 未加密）可以直接从文件里取到两个令牌，
+// 新桌面端才必须走短信。这条守住两件事：旧版路径真的写在教程里，且不再拿别的工具的
+// 文件名来解释（Qoder 那份 auth.v1.dat 与 WorkBuddy 毫无关系，提它只会让人串台）。
+test("[WorkBuddy] 教程有旧版 .info 取法，且不拿 Qoder 的文件名来解释", async () => {
+  const t = TUTORIALS.workbuddy;
+  const body = JSON.stringify(t);
+
+  // 旧版路径：文件路径 + 两个字段名 + 解析命令，缺一个就抳不出来。
+  // body 是 JSON.stringify 过的，反斜杠已倍增，所以模式里要写四个。
+  assert.match(body, /CodeBuddyExtension\\\\Data\\\\Public\\\\auth\\\\workbuddy-desktop\.info/,
+    "教程里该给出旧版凭据文件的真实路径");
+  assert.match(body, /ConvertFrom-Json/, "该教用户把它当 JSON 解析");
+  assert.match(body, /\$j\.accessToken/, "该从解析结果里取 accessToken");
+  assert.match(body, /\$j\.refreshToken/, "该从解析结果里取 refreshToken");
+
+  // 短信那条路仍然要在（新版客户端只能这么走）
+  assert.match(body, /send-sms/, "新版客户端的短信登录路径不能被删掉");
+
+  // 不许提 Qoder 的 auth.v1.dat，也不许解释两份文件的关系
+  assert.doesNotMatch(body, /auth\.v1\.dat/, "这是 Qoder 的文件，与 WorkBuddy 无关");
+  assert.doesNotMatch(body, /串台|不是一份东西|同名/,
+    "三份教程各自独立，跨工具互相指路只会让人串台");
+});
+
 test("[Trae 教程的解析脚本与服务端 parseCallbackUrl 同语义", async () => {
   // 服务端（trae-cf-checkin/worker.js 的 parseCallbackUrl）与教程里的 PowerShell
   // 必须解出**同一个** refreshToken。两边不一致 = 用户按教程拿到的是错的串。

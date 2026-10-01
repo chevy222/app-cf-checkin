@@ -8,10 +8,10 @@
 // 这里是**数据**，不是分支：界面按 TUTORIALS[tool.id] 取一份，没有数据就没有这一块。
 // 所以加第 4 个工具不需要改这个文件，也不需要改任何界面代码。
 //
-// 三家的取法（与三个前身高 Worker 的做法一致，值全在本机客户端上，不需要 F12 抓包）：
+// 三家的取法（与三个前身手 Worker 的做法一致，值全在本机客户端上，不需要 F12 抓包）：
 //   · Qoder     —— 跑客户端自带的 runtime-info.exe 取设备标识，DPAPI 解密登录凭据
 //   · Trae      —— 打开登录页 → 浏览器跳到 127.0.0.1 的回调 → PowerShell 解析出参数
-//   · WorkBuddy —— 官方短信登录接口换明文 Token
+//   · WorkBuddy —— 旧版客户端从 .info 直接取两个令牌；新版走官方短信登录接口换明文 Token
 
 // 一个步骤块。code 非空时渲染成 <pre><code>。
 const step = (title, body, code) => ({ title, body, code });
@@ -249,13 +249,28 @@ if (-not $rt) { Write-Host "（回调里没有 refreshToken —— 请确认整�
   },
 
   workbuddy: {
-    // 提到 auth.v1.dat 时必须说清它是 WorkBuddy 自己那一份：Qoder 教程里解的是
-    // 同名的另一个文件，只写文件名会让人以为串台了（用户反馈过这一点）。
-    // 目录不复述 —— 两家目录不同这个事实已经够用，而具体路径没核实过就不写。
-    intro: "新版 WorkBuddy 桌面端把凭据文件加密了（WorkBuddy 自己那份 `auth.v1.dat`，"
-      + "DPAPI + AES-256-GCM），复制不出来 —— 它和 Qoder 教程里那个同名文件不是一份东西，目录不同。"
-      + "改用官方短信登录接口换明文 Token：值在本机拿，不经过 Cloudflare。",
+    // 不提别的工具的文件名：三份教程各自独立，跨工具互相指路只会让人串台
+    // （曾经在这里写"它和 Qoder 教程里那个同名文件不是一份东西"，而 SMS 登录
+    //  与任何本机文件都没有关系，那句话既指错了工具，编的因果也是假的）。
+    intro: "令牌走 WorkBuddy 官方的短信登录接口换明文 Token —— 值在本机拿，不经过 Cloudflare。"
+      + "桌面端较旧时也可以不折腾这个接口，直接从客户端的凭据文件里取（见下面第 1 步）。",
     steps: [
+      step("先试旧版：从客户端凭据文件里直接取（可跳过）",
+        "打开 `%LOCALAPPDATA%\\CodeBuddyExtension\\Data\\Public\\auth\\workbuddy-desktop.info`，"
+        + "里面是 JSON，**旧版本**的 `accessToken` / `refreshToken` 还是纯字符串（不是加密对象），"
+        + "复制这两个值填进表单即可，不用发短信。"
+        + "新版本这两个值已被加密成 `{\"$wbEncrypted\":1,\"envelope\":\"…\"}`，复制出来也没用 —— 那种版本走第 2、3 步。",
+        `$p = "$env:LOCALAPPDATA\\CodeBuddyExtension\\Data\\Public\\auth\\workbuddy-desktop.info"
+if (Test-Path $p) {
+  $j = Get-Content $p -Raw | ConvertFrom-Json
+  Write-Host ""
+  Write-Host "====== 填到「新增账号」（取到明文才有效）======" -ForegroundColor Cyan
+  Write-Host "Access Token : $($j.accessToken)"
+  Write-Host "Refresh Token: $($j.refreshToken)"
+  Write-Host "==============================================" -ForegroundColor Cyan
+} else {
+  Write-Host "没找到 $p —— 桌面端装过吗？或版本较新，请走短信登录那两步。" -ForegroundColor Yellow
+}`),
       step("发验证码",
         "把 `13800000000` 换成你的手机号。返回 `code: 0` 即发送成功。",
         `Invoke-RestMethod -Uri "https://www.workbuddy.cn/v2/plugin/login/send-sms" \`
@@ -281,12 +296,12 @@ Write-Host "=================================" -ForegroundColor Cyan
         "两个令牌填进表单就行 —— 令牌到期时间平台会自动从 `exp` 解出来。"),
     ],
     notes: [
-      note("info", "多账号时每个号都要走一遍这两步。"),
+      note("info", "多账号时每个号都要走一遍：旧版客户端从第 1 步的 `.info` 取，新版走第 2、3 步发短信。"),
     ],
     fields: [
-      ["**Access Token**", "第 2 步的 `Access Token`",
+      ["**Access Token**", "第 1 步（`.info`）或第 3 步（短信）的 `Access Token`",
         "填进表单的 Access Token 那一栏，到期时间平台自动从 `exp` 解。新版桌面端可能给的是包装格式 `{\"$wbEncrypted\":1,\"envelope\":\"…\"}`，原样粘进来即可，平台会自动展开"],
-      ["**Refresh Token**", "第 2 步的 `Refresh Token`", "填进 Refresh Token 那一栏。旧串用过一次即废，续期后平台当场写回"],
+      ["**Refresh Token**", "第 1 步（`.info`）或第 3 步（短信）的 `Refresh Token`", "填进 Refresh Token 那一栏。旧串用过一次即废，续期后平台当场写回"],
     ],
   },
 };
