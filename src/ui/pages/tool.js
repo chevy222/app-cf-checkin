@@ -1,4 +1,4 @@
-import { escapeHtml, maskSecret } from "../../core/text.js";
+import { escapeHtml } from "../../core/text.js";
 import { fmtCST } from "../../core/time.js";
 import { isOff } from "../../core/flags.js";
 import { TOOLS } from "../../tools/index.js";

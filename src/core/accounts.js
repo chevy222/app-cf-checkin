@@ -1,5 +1,4 @@
-import { acctKey, acctPrefix, getJson, putJson, requireKv, schedIdxKey } from "./store.js";
-import { listUids } from "./store.js";
+import { acctKey, acctPrefix, getJson, listUids, putJson, requireKv, schedIdxKey } from "./store.js";
 import { nowSec } from "./time.js";
 
 const MAX_FIELD_LEN = 8192;

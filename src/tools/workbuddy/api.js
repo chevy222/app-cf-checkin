@@ -274,4 +274,3 @@ export function uidFromToken(values) {
 
 export const workbuddyHosts = [HOST];
 export const workbuddyRedeemTiers = REDEEM_TIERS;
-export const expiresFromToken = (token) => expiresAtOf(token);
