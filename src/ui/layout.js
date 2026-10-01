@@ -45,14 +45,20 @@ h2{margin:0;font-size:17px;font-weight:650;letter-spacing:-.2px}
 .grid.cols3{grid-template-columns:repeat(auto-fit,minmax(290px,1fr))}
 .split{display:grid;grid-template-columns:minmax(0,340px) minmax(0,1fr);gap:14px;align-items:start}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-  box-shadow:var(--shadow);overflow:hidden}
+  box-shadow:var(--shadow);overflow:hidden;transition:border-color .15s}
+/* 悬停微反馈：边框亮一档就够，不加位移和阴影变化 —— 卡片是信息容器，不是按钮 */
+.card:hover{border-color:var(--line2)}
 .card .hd{display:flex;align-items:center;gap:10px;padding:16px 16px 0}
 .card .hd .id{display:flex;align-items:center;gap:9px;min-width:0}
 .card .hd .t{font-weight:650;font-size:14.5px}
-.card .hd .d{color:var(--faint);font-size:12px}
+/* 描述不截断的话，长一点就会把「管理 ›」挤出卡片（.hd 不换行）。
+   包名字和描述的那层 div 也要 min-width:0，否则 flex 子项不肯缩 */
+.card .hd .id > div{min-width:0}
+.card .hd .d{color:var(--faint);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* 只作用于文字链接（如「管理 ›」）：这条规则的优先级高于 .btn.pri，
    不收窄会把卡片头里主按钮的白字覆盖成橙色 —— 橙底橙字，文字隐形 */
 .card .hd a:not(.btn){margin-left:auto;color:var(--accent);text-decoration:none;font-size:12.5px}
+.card .hd a:not(.btn):hover{text-decoration:underline}
 /* 图标是内联 data URI（见 icons.js 的理由：必须在口令闸后）。64×64 缩到 22px，
    交给浏览器双线性插值；只做圆角与去白边，不加滤镜 —— 样式 B 里图标是配角。 */
 .ico{width:22px;height:22px;border-radius:5px;flex:none;display:block}
@@ -93,6 +99,10 @@ table.t td{padding:11px 13px;border-bottom:1px solid var(--line);vertical-align:
 table.t tr:last-child td{border-bottom:0}
 .kv{display:flex;justify-content:space-between;gap:12px;padding:7px 0;font-size:13px;border-top:1px dashed var(--line)}
 .kv:first-of-type{border-top:0}
+/* 首页卡片的 .bd 以进度条开头 —— 它和 .kv 同为 div，:first-of-type 命中的是
+   .prog 而不是第一条 .kv，上面的规则在首页从来没生效过。用相邻选择器直接表达：
+   进度条自带下边距，紧跟的行不需要再来一道虚线。 */
+.prog + .kv{border-top:0}
 .kv .k{color:var(--muted)}
 .kv .v{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:12.5px;text-align:right}
 /* .kv .k 里带图标时必须显式 flex：.ico 是 display:block（为了不占基线下的空隙），
@@ -147,7 +157,7 @@ table.t tr:last-child td{border-bottom:0}
 /* 最近运行流。显式 flex 不是为了好看：<a> 默认是行内元素，不写这一条
    N 条记录会首尾相连成一段文字。who 固定宽 + 省略号，m 吃掉剩余空间，
    时间戳因此在每一行的同一列对齐。 */
-.flowitem{display:flex;gap:9px;align-items:center;padding:8px 0;
+.flowitem{display:flex;gap:9px;align-items:center;padding:8px 0;text-decoration:none;color:inherit;
   border-top:1px solid var(--line);font-size:13px}
 .flowitem:first-child{border-top:0}
 .flowitem:hover{background:var(--panel2)}
@@ -218,6 +228,9 @@ table.t tr:last-child td{border-bottom:0}
   .tut-b,.tut-c,.tutbox .alert,.tutbox .tw{margin-left:0}
   .field textarea{min-height:120px}
   .card .hd,.card .bd,.pane{padding-left:13px;padding-right:13px}
+  /* 运行流在窄屏太挤：who 缩窄、时间戳降一档，把宽度让给摘要 */
+  .flowitem .who{width:72px}
+  .flowitem .when{font-size:10.5px}
   .kv{flex-direction:column;gap:2px}
   .kv .v{text-align:left}
   .login{max-width:none;margin:36px 16px}

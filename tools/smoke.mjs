@@ -1753,6 +1753,29 @@ test("拨动开关是提交按钮：运行中亮绿滑块靠右、滑块居中�
   assert.match(css, /\.kv\.kv-row\{[^}]*flex-direction:row/, "卡片的 kv 行在窄屏被竖排了");
 });
 
+test("首页样式七处打磨：行线、去内联、截断、窄屏运行流、hover、空账号引导", async () => {
+  const page = await authed("/", envFor(fakeKv()));
+  const css = page.text.match(/<style>([\s\S]*?)<\/style>/)[1];
+  // ① 进度条后面第一行不该再带虚线：.kv:first-of-type 命中的是同为 div 的 .prog，
+  //    在首页从来没生效过，必须用相邻选择器表达
+  assert.match(css, /\.prog \+ \.kv\{border-top:0\}/, "进度条下的 kv 行还带着虚线");
+  // ② 需要处理行不许再嵌套两层 .v
+  assert.ok(!/<span class="v"><span class="v">/.test(page.text), "需要处理行嵌套了两层 .v");
+  // ③ 运行流的去链接样式进 CSS，不许每条记录内联一份
+  assert.match(css, /\.flowitem\{[^}]*text-decoration:none/, "flowitem 的去链接样式没进 CSS");
+  assert.ok(!page.text.includes('style="text-decoration'), "运行流还在用内联样式");
+  // ④ 卡片头描述截断：描述长了不能把「管理 ›」挤出卡片
+  assert.match(css, /\.card \.hd \.d\{[^}]*text-overflow:ellipsis/, "卡片头描述没有截断");
+  // ⑤ 窄屏运行流：who 缩窄、时间戳降一档，把宽度让给摘要
+  assert.match(css, /@media \(max-width:720px\)\{[^@]*\.flowitem \.who\{width:72px\}/,
+    "窄屏运行流没缩窄 .who");
+  // ⑥ 卡片 hover 微反馈（纯 CSS，零 JS 兼容）
+  assert.match(css, /\.card:hover\{border-color:var\(--line2\)\}/, "卡片没有 hover 反馈");
+  // ⑦ 没有账号时给「去添加」的引导，而不是干巴巴的 0/0
+  assert.match(page.text, /还没有账号，去添加 ›<\/a>/, "空账号工具没有去添加的引导");
+  assert.match(page.text, /href="[^"]*\/tool\/[a-z]+[^"]*">还没有账号/, "引导链接没指向工具页");
+});
+
 test("[?tool= 筛选日志，且成本与日志总量无关", async () => {
   const kv = fakeKv();
   seedFull(kv, "FILT1");

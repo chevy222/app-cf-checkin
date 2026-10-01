@@ -58,7 +58,8 @@ export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, b
         <div class="prog">${segments}<span class="n">${done}/${uids.length || counts[tool.id] || 0} 今日完成</span></div>
         ${cardLine("最后结果", last ? `${badge(last.meta && last.meta.status)} <span class="dim">${escapeHtml(fmtCST(Math.floor(last.at / 1000)))}</span>` : '<span class="dim">—</span>')}
         ${cardLine("日界", `每天 ${escapeHtml(String(tool.schedule.resetHour))}:00 翻日 · ${escapeHtml(String(tool.schedule.notBeforeHour))}:00 起可执行`)}
-        ${stuck.length ? cardLine("需要处理", `<span class="v">${stuck.length} 个账号${off ? "（停用中，恢复后仍要处理）" : ""}</span>`) : ""}
+        ${uids.length || counts[tool.id] ? "" : cardLine("需要处理", `<a href="${escapeHtml(link(`/tool/${tool.id}`, pwd))}">还没有账号，去添加 ›</a>`)}
+        ${stuck.length ? cardLine("需要处理", `${stuck.length} 个账号${off ? "（停用中，恢复后仍要处理）" : ""}`) : ""}
         <div class="kv kv-row"><span class="k">开关</span><span class="v">${toggleForm(pwd, tool, off)}</span></div>
       </div>
     </div>`;
@@ -68,7 +69,7 @@ export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, b
     const m = entry.meta || {};
     const href = link(`/runs/${encodeURIComponent(entry.key)}`, pwd);
     const who = entry.kind === "tick" ? "整轮调度" : `${entry.tool}/${m.label || entry.uid}`;
-    return `<a class="flowitem" href="${escapeHtml(href)}" style="text-decoration:none;color:inherit">
+    return `<a class="flowitem" href="${escapeHtml(href)}">
       <span class="who">${escapeHtml(who)}</span>${badge(m.status || "error")}
       <span class="m">${escapeHtml(m.message || "")}</span>
       <span class="when">${escapeHtml(fmtCST(Math.floor(entry.at / 1000)))}</span></a>`;
