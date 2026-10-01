@@ -1896,7 +1896,9 @@ test("[qoder] 401 → 续期 → 只重试一次；新凭据当场写回 KV", as
     const cred = JSON.parse(kv.store.get(`v1:acct:qoder:${uid}`)).cred;
     assert.equal(cred.refreshToken, "rt-ROTATED-999", "轮换出来的新 refresh_token 没写回，下一轮拿旧串必然失败");
     assert.match(cred.accessToken, /^eyJ/);
-    assert.ok(Number(cred.expiresAt) > 0, "到期时间应随续期一起落盘");
+    // Qoder 不声明 expiresAt：续期靠上游 401 触发，不做"提前 N 天主动换票"，
+    // 而 dt-- 形态解不出 exp。到期时间对这个工具没有决策价值，字段已从 creds 里删掉。
+    assert.ok(!("expiresAt" in cred), "expiresAt 已不在 creds 声明里，不该被写回");
     const log = kv.store.get([...kv.store.keys()].find((k) => k.startsWith("v1:run:qoder:")));
     assert.ok(!log.includes("rt-ROTATED-999") && !log.includes("rt-old"), "新旧任一张 refresh_token 都不许进日志");
   } finally { stub.restore(); }
@@ -2023,12 +2025,22 @@ test("[qoder] 把另一个号的票据粘进已有账号会被拒", async () => 
   assert.equal(JSON.parse(kv.store.get(`v1:acct:qoder:${uid}`)).cred.accessToken.split(".")[1], mkJwt({ sub: uid, exp: cst(30) }).split(".")[1], "凭据不该被改掉");
 });
 
-test("[qoder] 令牌到期时间在界面上按北京时间显示，且表单不收它", async () => {
+// 2026-10-01 用户拿工具页截图反馈「令牌到期时间」永远是「（尚未取得）」。
+// 查下来是真的拿不到：dt-- 形态的设备令牌解不出 exp，而原脚本那种「+14 天」兜底
+// 是猜的日期。Qoder 的续期又完全由上游 401 触发（api.js 的 authorized 里没有
+// ensureToken），所以本地到期时间没有任何决策价值 —— 摆一个永远空着的只读字段
+// 只会让人以为哪里坏了。字段整个删掉，而不是留个空的。
+test("[qoder] 不声明 expiresAt：拿不到真值就不摆字段，而表单也不收它", async () => {
+  const tool = findTool("qoder");
+  assert.ok(!tool.creds.some((f) => f.key === "expiresAt"), "Qoder 不该声明 expiresAt");
+
   const kv = fakeKv();
   seedQoder(kv);
   const page = await authed("/account/qoder/qdr-77001/edit", envFor(kv));
-  assert.ok(page.text.includes("只读"), "派生字段要标成只读");
+  assert.ok(!page.text.includes("令牌到期时间"), "编辑页不该再出现这个字段");
   assert.ok(!/<input[^>]*name="expiresAt"/.test(page.text), "expiresAt 不该是可提交的输入框");
+
+  // 就算有人（脚本、手工构造的表单）塞进来，也落不了盘
   const forged = await hit("/account/qoder/qdr-77001/edit", {
     method: "POST", env: envFor(kv),
     body: form({ pwd: PASSWORD, label: "伪报", accessToken: "", refreshToken: "", expiresAt: "253402300800" }),
@@ -2093,21 +2105,19 @@ test("[含 + 与 = 的令牌粘进表单不会被解码成空格", async () => {
   assert.ok(!saved.refreshToken.includes(" "), "凭据里不该出现空格");
 });
 
+// 这条测的是内核的通用能力（只读派生字段的显示与不可伪报），所以挂在 WorkBuddy 上：
+// Qoder 已经不声明 expiresAt 了（它的续期靠 401 触发，不需要本地到期时间）。
 test("[只读派生字段不收表单值，界面上按北京时间显示", async () => {
   const kv = fakeKv();
-  seedQoder(kv, "ro-user");
-  kv.store.set("v1:acct:qoder:ro-user", JSON.stringify({
-    label: "已续期", cred: { accessToken: mkJwt({ sub: "ro-user", exp: cst(30) }), refreshToken: "rt-x", expiresAt: String(cst(30)) },
-    createdAt: 1, updatedAt: 1,
-  }));
-  const page = await authed("/tool/qoder", envFor(kv));
+  seedWorkbuddy(kv, "ro-user", { exp: cst(30), expiresAt: cst(30) });
+  const page = await authed("/tool/workbuddy", envFor(kv));
   assert.ok(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(page.text), "到期时间该显示成可读的北京时间，而不是一串 epoch");
-  const forged = await hit("/account/qoder/ro-user/edit", {
+  const forged = await hit("/account/workbuddy/ro-user/edit", {
     method: "POST", env: envFor(kv),
     body: form({ pwd: PASSWORD, label: "伪报永久", accessToken: "", refreshToken: "", expiresAt: "253402300800" }),
   });
   assert.equal(forged.status, 303);
-  assert.equal(JSON.parse(kv.store.get("v1:acct:qoder:ro-user")).cred.expiresAt, String(cst(30)), "表单里的伪报值不该覆盖内核记的到期时间");
+  assert.equal(JSON.parse(kv.store.get("v1:acct:workbuddy:ro-user")).cred.expiresAt, String(cst(30)), "表单里的伪报值不该覆盖内核记的到期时间");
 });
 
 test("[某个工具的表单里不该出现别的工具的字段名", async () => {

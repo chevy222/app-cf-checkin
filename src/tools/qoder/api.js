@@ -1,4 +1,4 @@
-import { expiresAtOf, subjectOf } from "../../core/jwt.js";
+import { subjectOf } from "../../core/jwt.js";
 import { truncate } from "../../core/text.js";
 
 // Qoder 请求层。这一层的存在理由：内核只认 {status, message, credits} 一种方言，
@@ -58,9 +58,9 @@ async function refreshToken(ctx) {
     accessToken: String(token),
     // 上游可能不发新串；发空串当没发处理（否则空串写回 KV，下一轮必然认证失败）
     refreshToken: String((data && (data.refreshToken || data.refresh_token)) || ctx.account.cred.refreshToken),
-    // exp 解不出来时不猜"+14 天"：猜了就把"临近过期先续期"这条规则废掉，
-    // 变成每次都续。0 交给调用方决定，语义上就是"没给过期时间"。
-    expiresAt: String(expiresAtOf(token)),
+    // 不返回 expiresAt：这家续期靠上游的 401 触发，不做"提前 N 天主动换票"，
+    // 所以本地到期时间没有决策价值；而 dt-- 形态的令牌解不出 exp，猜一个日期只会误导。
+    // creds 里也没声明它，写回时会被内核按白名单拒掉。
   };
 }
 

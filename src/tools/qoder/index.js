@@ -54,7 +54,11 @@ export default {
     { key: "version", label: "Cosy-Version", type: "text", placeholder: "如 0.1.43" },
   ],
 
-  // 账号级。两个 token 都是 secret；expiresAt 由续期写回，界面只读不收输入
+  // 账号级。两个 token 都是 secret。
+  // 不声明 expiresAt：Qoder 的续期完全由上游的 401/403 触发（见 api.js 的 authorized），
+  // 没有"提前 N 天主动换票"这条规则，所以本地到期时间对换期没有任何决策价值。
+  // 而设备令牌（dt-- 形态）解不出 exp、原脚本那种"+14 天"兜底又是猜的 ——
+  // 摆一个永远空着或写着假日期的只读字段，不如不声明。
   creds: [
     {
       key: "accessToken",
@@ -87,7 +91,6 @@ export default {
       offline: "tools/extract/qoder-device.ps1",
       help: "每次续期都会换新串，内核当场写回；旧串用过一次即废",
     },
-    { key: "expiresAt", label: "令牌到期时间", type: "datetime", readonly: true },
   ],
 
   // uid 从凭据里算（JWT 的 sub），新客户端的设备令牌解不出时退到手填代号
