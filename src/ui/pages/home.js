@@ -22,7 +22,8 @@ function toggleForm(pwd, tool, off) {
 }
 
 function cardLine(label, value) {
-  return `<div class="kv"><span class="k">${escapeHtml(label)}</span><span class="v">${value}</span></div>`;
+  // kv-row：这些行的值都短（徽章、时间、拨杆），窄屏也不跟着 .kv 竖排，值一律靠右。
+  return `<div class="kv kv-row"><span class="k">${escapeHtml(label)}</span><span class="v">${value}</span></div>`;
 }
 
 export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, budget, flags = {} }) {
@@ -56,8 +57,9 @@ export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, b
       <div class="bd">
         <div class="prog">${segments}<span class="n">${done}/${uids.length || counts[tool.id] || 0} 今日完成</span></div>
         ${cardLine("最后结果", last ? `${badge(last.meta && last.meta.status)} <span class="dim">${escapeHtml(fmtCST(Math.floor(last.at / 1000)))}</span>` : '<span class="dim">—</span>')}
+        ${cardLine("日界", `每天 ${escapeHtml(String(tool.schedule.resetHour))}:00 翻日 · ${escapeHtml(String(tool.schedule.notBeforeHour))}:00 起可执行`)}
         ${stuck.length ? cardLine("需要处理", `<span class="v">${stuck.length} 个账号${off ? "（停用中，恢复后仍要处理）" : ""}</span>`) : ""}
-        <div class="kv"><span class="k">开关</span><span class="v">${toggleForm(pwd, tool, off)}</span></div>
+        <div class="kv kv-row"><span class="k">开关</span><span class="v">${toggleForm(pwd, tool, off)}</span></div>
       </div>
     </div>`;
   });

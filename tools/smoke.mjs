@@ -211,11 +211,14 @@ fixtureTest("总览渲染注册表里的工具", async () => {
 // 工具卡片上原来有两行内部参数：「单账号约需」（子请求数 + 日界 + 开始时间）与
 // 「下一次预计执行」。这两项对使用者没有行动价值；而日界/开始时间是内核的调度参数，
 // 摆在卡片上只会让人以为改了它就能改执行时间。
-fixtureTest("总览卡片不显示子请求数、日界与下一次预计执行", async () => {
+fixtureTest("总览卡片：子请求数与下一次预计执行仍不显示，日界恢复成一行人话", async () => {
   const res = await authed("/", envFor(fakeKv()));
-  assert.ok(!res.text.includes("单账号约需"), "卡片上不该出现子请求数与日界");
+  assert.ok(!res.text.includes("单账号约需"), "子请求数对使用者没有行动价值，不该出现");
   assert.ok(!res.text.includes("下一次预计执行"), "卡片上不该出现下一次预计执行");
-  assert.ok(!res.text.includes("子请求 ·"), "日界与开始时间不该和子请求数混在一行里");
+  assert.ok(!res.text.includes("子请求 ·"), "日界不许再和子请求数混在一行里");
+  // 日界回到卡片上：每天几点翻日、几点起可执行，一句话说清
+  assert.match(res.text, /日界<\/span><span class="v">每天 \d{1,2}:00 翻日 · \d{1,2}:00 起可执行</,
+    "卡片上要有「日界」行，写明翻日时刻与最早执行时刻");
   // 真正有用的还在：今日完成数与最后结果
   assert.match(res.text, /今日完成/, "删掉参数行后要保留「今日完成」");
   assert.match(res.text, /最后结果/, "删掉参数行后要保留「最后结果」");
@@ -1746,8 +1749,8 @@ test("拨动开关是提交按钮：运行中亮绿滑块靠右、滑块居中�
   assert.match(css, /\.sw-b\.on::after\{[^}]*transform:translateX\(17px\)/, "运行中滑块没靠右");
   // 滑块垂直居中：top:50% 配 margin-top:-7.5px（15px 的一半，写 -9 会偏上 1.5px）
   assert.match(css, /\.sw-b::after\{[^}]*margin-top:-7\.5px/, "滑块没垂直居中");
-  // 窄屏 .kv 会上下堆叠，开关行必须保持横排：标签在左、拨杆靠右
-  assert.match(css, /\.kv:has\(\.sw\)\{[^}]*flex-direction:row/, "开关行在窄屏被竖排了");
+  // 窄屏 .kv 会上下堆叠，卡片里这些短值行必须保持横排：标签在左、值（含拨杆）靠右
+  assert.match(css, /\.kv\.kv-row\{[^}]*flex-direction:row/, "卡片的 kv 行在窄屏被竖排了");
 });
 
 test("[?tool= 筛选日志，且成本与日志总量无关", async () => {

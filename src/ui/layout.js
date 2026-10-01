@@ -132,9 +132,10 @@ table.t tr:last-child td{border-bottom:0}
 .sw-b.on .sw-t{color:var(--ok);font-weight:600}
 .sw-b:focus-visible::before{box-shadow:0 0 0 3px var(--accent-weak)}
 .sw-t{white-space:nowrap}
-/* 开关行在窄屏也不许跟着 .kv 竖排：标签在左、拨杆靠右，跟宽屏一个样 */
-.kv:has(.sw){flex-direction:row;justify-content:space-between;align-items:center}
-.kv:has(.sw) .v{text-align:right}
+/* 首页卡片里这些行的值都短（徽章、时间、数字、拨杆），窄屏也不许跟着 .kv 竖排：
+   标签在左、值靠右，跟宽屏一个样。长值的行（日志详情的键名、说明页清单）仍走竖排。 */
+.kv.kv-row{flex-direction:row;justify-content:space-between;align-items:center}
+.kv.kv-row .v{text-align:right}
 /* 工具卡片的账号进度条。一格一个账号：done 已结、bad 待处理、wait 顺延/限频。
    <i> 是空元素，没有显式宽高就是 0×0 —— 整条进度条会什么都不剩。 */
 .prog{display:flex;gap:3px;align-items:center;margin:2px 0 9px;flex-wrap:wrap}
