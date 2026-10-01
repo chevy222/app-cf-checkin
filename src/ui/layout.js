@@ -95,6 +95,9 @@ table.t tr:last-child td{border-bottom:0}
 .kv:first-of-type{border-top:0}
 .kv .k{color:var(--muted)}
 .kv .v{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:12.5px;text-align:right}
+/* .kv .k 里带图标时必须显式 flex：.ico 是 display:block（为了不占基线下的空隙），
+   不套 flex 它就会竖在文字上方，而不是像设计稿那样排在名字左边。 */
+.kv .k:has(.ico){display:flex;align-items:center;gap:9px}
 .field{margin:0 0 15px}
 .field label{display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;margin-bottom:5px;flex-wrap:wrap}
 .field .help{color:var(--muted);font-weight:400;font-size:12px;margin-top:4px;line-height:1.45}

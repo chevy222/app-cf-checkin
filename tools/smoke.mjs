@@ -3716,6 +3716,26 @@ test("[图标内联在 data URI 里，且必须是 PNG", async () => {
   assert.ok(page.text.includes('class="ico"'), "工具页该带图标");
 });
 
+// 2026-10-01 用户拿说明页截图反馈：工具名（Qoder / Trae / WorkBuddy）压在图标下面。
+// 根因是 .kv .k 不是 flex 容器，而 .ico 是 display:block（那样它不占基线下的空隙），
+// 于是图标成块级元素竖在文字上方。设计稿 ui-preview.html 里那一行本来就是横向的。
+test("说明页工具清单里图标排在名字左边（.kv .k 带图标时显式 flex）", async () => {
+  const env = envFor(fakeKv());
+  const page = await authed("/help", env);
+  const css = page.text.match(/<style>([\s\S]*?)<\/style>/)[1];
+
+  assert.match(css, /\.kv \.k:has\(\.ico\)\{[^}]*display:flex/,
+    "带图标的 .kv .k 没有显式 flex，图标会竖在名字上方");
+  assert.match(css, /\.kv \.k:has\(\.ico\)\{[^}]*align-items:center/,
+    "图标与名字没有垂直居中对齐");
+  // 只在带图标时套 flex：状态词汇表那一列 .k 里是徽章，不能被这条规则影响排版
+  assert.match(css, /\.kv \.k:has\(\.ico\)\{[^}]*\}\s*\.field\{/, "这条规则必须只作用于带图标的 .k");
+
+  // 结构上：图标与名字必须同在一个 .k 里，否则 flex 也救不了
+  assert.match(page.text, /<span class="k"><img class="ico"[^>]*>(Qoder|Trae|WorkBuddy)<\/span>/,
+    "说明页的工具名与图标不在同一个 .k 里");
+});
+
 test("[三家的参数获取教程在「新增账号」页上，且步骤完整", async () => {
   // 教程内容挪自三个旧 Worker 的 README（客户端取值那一套），不是 F12 抓包。
   // 这条守三件事：三家都有教程、步骤带序号、PowerShell 代码块完整。
