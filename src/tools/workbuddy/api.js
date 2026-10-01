@@ -209,7 +209,10 @@ export async function openBlindbox(ctx) {
   return call(ctx, OPEN, { body: { count: 1 } });
 }
 
-export const claimTravel = (ctx, recordId) => call(ctx, TRAVEL_CLAIM, { body: { record_id: recordId } });
+// 到站礼物的领取不需要参数：服务端按当前账号的行程记录自己找。
+// 前端就是空体（j = () => e.post("/activity/growth/buddy/travel/claim", {})），
+// 之前多传 record_id 属于自作多情，上游当时没报错不代表它认这个字段。
+export const claimTravel = (ctx) => call(ctx, TRAVEL_CLAIM, { body: {} });
 export const departTravel = (ctx, locationId) => call(ctx, TRAVEL_DEPART, { body: { location_id: locationId } });
 export const acceptTask = (ctx, taskCode) => call(ctx, TASK_ACCEPT, { body: { task_code: taskCode } });
 export const redeemTier = (ctx, tier) => call(ctx, REDEEM, { body: { tier, client_token: idemKey("redeem", ctx.account.uid, ctx.day, tier) } });

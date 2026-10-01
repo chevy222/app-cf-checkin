@@ -100,8 +100,7 @@ export default {
         const state = api.dig(first.payload, "state");
 
         if (state === "arrived") {
-          const recordId = api.dig(first.payload, "record_id");
-          const claimed = await api.claimTravel(ctx, recordId);
+          const claimed = await api.claimTravel(ctx);
           const reward = api.num(api.dig(claimed.payload, "reward_credit"));
           if (claimed.status < 400 && reward !== null) {
             // 领到就 return，**不**在同一趟里接着派新行程 —— 这是有意的选择。
@@ -164,6 +163,8 @@ export default {
     {
       id: "blindbox",
       label: "开盲盒",
+      // 上界用本地常量，不跟着 max_open_count 变：预约必须是最坏情况的上界，
+      // 而上游给的上限我们无法预知（cost 是准入判据，算低会让账本真的花超）
       cost: 1 + OPENS_PER_ROUND,
       async run(ctx) {
         const guarded = await guard(ctx);
@@ -172,9 +173,11 @@ export default {
         const affordable = api.num(api.dig(quota.payload, "affordable")) || 0;
         if (affordable === 0) return { status: "ok", message: "能量不够开盲盒", credits: 0, cred: ctx.rotated };
 
-        // 这个接口**没有任何幂等字段**，每调一次服务端就扣 10 点能量，
-        // 所以一轮开几个是真金白银的决策：上界 5 个，中断最多损失这 5 发的机会
-        const want = Math.min(affordable, OPENS_PER_ROUND);
+        // 一轮开几个由上游的 max_open_count 决定（前端读的就是这个字段，不是 affordable）。
+        // 缺失时回落到本地常量：宁可少开几个，也不能因为读不到上限就放开手——
+        // 这个接口没有幂等键，每调一次服务端真扣 10 点能量，多开就是白花。
+        const cap = api.num(api.dig(quota.payload, "max_open_count")) || OPENS_PER_ROUND;
+        const want = Math.min(affordable, cap);
         let opened = 0;
         let credits = 0;
         for (let i = 0; i < want; i += 1) {

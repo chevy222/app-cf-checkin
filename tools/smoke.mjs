@@ -2601,6 +2601,39 @@ test("[workbuddy] 顶层字段是 null 时要能穿透到包装层取到真值",
     assert.equal(travel.status, "claimed", `顶层 null 让到站礼物没领到（实际 ${travel.status}：${travel.message}）`);
     assert.match(travel.message, /\+8/);
     assert.equal(stub.seen.filter((r) => r.path.endsWith("/buddy/travel/claim")).length, 1, "到站了却没发领取请求");
+    // 前端发的是空体：多传 record_id 属于自作多情，上游当时没报错不代表它认这个字段
+    const claimReq = stub.seen.find((r) => r.path.endsWith("/buddy/travel/claim"));
+    assert.deepEqual(JSON.parse(claimReq.body), {}, `到站领取不该带参数，实际 ${claimReq.body}`);
+  } finally { stub.restore(); }
+});
+
+test("[workbuddy] 一轮开几个盲盒由上游 max_open_count 决定，不是本地写死的 5", async () => {
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  // affordable 给 500（能量很多），但上游说单轮只许开 2 个 —— 上限必须听上游的
+  const stub = stubUpstream(wbIdleRoutes({
+    "GET /v2/activity/growth/buddy/quota": { payload: { affordable: 500, max_open_count: 2 } },
+    "POST /v2/activity/growth/buddy/open": { payload: { code: 0, results: [{ instance: { credit: 5 } }] } },
+  }));
+  try {
+    const { summary } = await wbTick(kv);
+    const blindbox = wbView(summary).steps[3];
+    // affordable 500 但只开 2 个：剩下的下轮继续，所以是 partial 而不是 claimed
+    assert.equal(blindbox.status, "partial");
+    assert.match(blindbox.message, /开 2 个/, `没听上游的上限：${blindbox.message}`);
+    assert.equal(stub.seen.filter((r) => r.path.endsWith("/buddy/open")).length, 2, "能量 500 时不该按本地 5 个开满");
+
+    // 上游没给 max_open_count 时回落到本地常量，不能因为读不到就放开手（每开一个真扣 10 能量）
+    const kv2 = fakeKv();
+    seedWorkbuddy(kv2, "wb-nocap");
+    const stub2 = stubUpstream(wbIdleRoutes({
+      "GET /v2/activity/growth/buddy/quota": { payload: { affordable: 500 } },
+      "POST /v2/activity/growth/buddy/open": { payload: { code: 0, results: [{ instance: { credit: 5 } }] } },
+    }));
+    try {
+      const { summary: s2 } = await wbTick(kv2);
+      assert.equal(stub2.seen.filter((r) => r.path.endsWith("/buddy/open")).length, 5, "读不到上限时该回落到本地常量 5");
+    } finally { stub2.restore(); }
   } finally { stub.restore(); }
 });
 
