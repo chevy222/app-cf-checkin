@@ -34,6 +34,8 @@
 
 ## 部署
 
+> 还没有 Cloudflare 账号？先去 [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up) 注册一个，免费版就够用。
+
 三种方式，选一种：
 
 - **方式一 · 本地文件**：把打包好的单文件 JS 粘贴到 Cloudflare 面板，不用装 Node.js
