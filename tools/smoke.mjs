@@ -3637,6 +3637,76 @@ test("[workbuddy] 抽奖金额上游没回时报奖名，不许拿 +0 冒充没�
   }
 });
 
+test("[workbuddy] 派发成功以响应为准报地点与时长，不是我们自己挑的那个", async () => {
+  // 旧脚本 worker.js:608-610 就是这么做的：从 depart 的响应里读 location.name 与
+  // duration_hours（「派 Buddy 去XX（X 小时后回）」）。响应里的地点是**上游确认过**的，
+  // 时长更是只有响应里才有 —— 只报配置里那个名字等于丢掉一半信息。
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  const stub = stubUpstream(wbIdleRoutes({
+    "GET /v2/activity/growth/buddy/travel/status": { payload: { state: "idle" } },
+    "GET /v2/activity/growth/buddy/travel/config": { payload: { locations: [{ id: "loc-1", name: "甲" }] } },
+    "POST /v2/activity/growth/buddy/travel/depart": { payload: { location: { id: "loc-9", name: "乙" }, duration_hours: 4 } },
+  }));
+  try {
+    const { summary } = await wbTick(kv);
+    const msg = wbView(summary).steps[1].message;
+    assert.match(msg, /乙（4 小时后回）/, `该以上游响应为准：${msg}`);
+    assert.ok(!msg.includes("甲"), `报的还是配置里那个名字：${msg}`);
+  } finally { stub.restore(); }
+});
+
+test("[workbuddy] 开盲盒要报出开出的是什么（名字+品质）", async () => {
+  // 每开一次真扣 10 点能量，日志只写「+3」看不出这 10 点花得值不值。
+  // 旧脚本报的就是「名字(品质)」（worker.js:665）。
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  const stub = stubUpstream(wbIdleRoutes({
+    "GET /v2/activity/growth/buddy/quota": { payload: { affordable: 2, max_open_count: 2 } },
+    "POST /v2/activity/growth/buddy/open": {
+      payload: { code: 0, results: [{ credit: 3, instance: { name: "摸鱼喵", rarity: "SSR" }, template: { name: "暴富喵", rarity: "R" } }] },
+    },
+  }));
+  try {
+    const { summary } = await wbTick(kv);
+    const msg = wbView(summary).steps[3].message;
+    assert.match(msg, /摸鱼喵\(SSR\)/, `没报出开出了什么：${msg}`);
+    assert.ok(!msg.includes("暴富喵"), `instance 有名字时不该退回 template 的：${msg}`);
+  } finally { stub.restore(); }
+});
+
+test("[workbuddy] 签到步补报今日到账 / 连签天数 / 累计积分", async () => {
+  // 这几个字段与 active / today_checked_in 在**同一份状态响应**里
+  // （旧脚本 worker.js:525-543 的 pickStatus / alreadyReport 读的就是它们），
+  // 多报不多花一次请求 —— 而它们正是"这号到底签成什么样"的依据。
+  const kv = fakeKv();
+  seedWorkbuddy(kv);
+  const stub1 = stubUpstream(wbIdleRoutes({
+    "POST /v2/billing/meter/checkin-activity-status": wbStatus({ today_checked_in: true, today_credit: 100, streak_days: 3, total_credits: 1234 }),
+  }));
+  try {
+    const msg = wbView((await wbTick(kv)).summary).steps[0].message;
+    assert.match(msg, /今日已签到/, msg);
+    assert.match(msg, /今日 \+100/, msg);
+    assert.match(msg, /连签 3 天/, msg);
+    assert.match(msg, /累计 1234 积分/, msg);
+  } finally { stub1.restore(); }
+
+  // 真领到那条路径：连签与累计来自"领完再读一次"的那份状态（领取接口只回 credit）
+  const kv2 = fakeKv();
+  seedWorkbuddy(kv2);
+  const stub2 = stubUpstream(wbIdleRoutes({
+    "POST /v2/billing/meter/checkin-activity-status": wbStatus({ today_checked_in: false, streak_days: 4, total_credits: 1334 }),
+    "POST /v2/billing/meter/daily-checkin": { payload: { credit: 100 } },
+  }));
+  try {
+    const msg = wbView((await wbTick(kv2)).summary).steps[0].message;
+    assert.match(msg, /签到 \+100/, msg);
+    assert.match(msg, /连签 4 天/, msg);
+    assert.match(msg, /累计 1334 积分/, msg);
+  } finally { stub2.restore(); }
+});
+
 test("[workbuddy] 顶层字段是 null 时要能穿透到包装层取到真值", async () => {
   // dig 命中 null/undefined 时必须穿透到包装层：{state:null, data:{state:"arrived"}}
   // 若读出 null，travel 走不进"到站领奖"分支，一次能白拿的到站礼物无声过期，

@@ -117,6 +117,19 @@ export function drawCredit(payload) {
   return 0;
 }
 
+// 盲盒开出来的是什么：`instance` / `template` 两层的 name + rarity
+// （旧脚本 worker.js:665 就是这么报的：`(instance.name || template.name)` +
+// `"(" + (instance.rarity || template.rarity) + ")"`）。
+// 报出来很值：这个接口每开一次真扣 10 点能量，日志只写「+3」时看不出这 10 点花得值不值。
+export function blindboxItemLabel(item) {
+  const instance = (item && item.instance) || {};
+  const template = (item && item.template) || {};
+  const name = instance.name ?? template.name;
+  if (typeof name !== "string" || !name.trim()) return "";
+  const rarity = instance.rarity ?? template.rarity;
+  return rarity ? `${name.trim()}(${rarity})` : name.trim();
+}
+
 // 抽奖结果里**有前端佐证**的字段只有 `prize_code` / `prize_name` / `reward_id` ——
 // 前端的结果弹窗读 `prize_name`，而它的描述是**写死的**「积分已发放，将在几分钟内到账」：
 // 金额本来就异步到账，响应里可能根本没有。所以"拿不到金额"不是异常，
@@ -330,12 +343,37 @@ export const redeemTier = (ctx, tier) => call(ctx, REDEEM, { body: { tier, clien
 // 签到的判定方言，分两段。顺序不能变：401/403 必须排在"空 body 算已领"之前，
 // 否则登录失效会被读成"今天已经签过了"并返回成功码。
 // 拆成两个函数而不是在一个函数里重复判一遍"要不要领"：两处条件一定会漂移。
+// 签到状态里那几个"补充数字"：今日到账 / 连签奖励日 / 连签天数 / 累计积分。
+// 字段都在**同一份状态响应**里（旧脚本 worker.js:525-543 的 pickStatus / alreadyReport
+// 读的就是它们），多报几个不多花一次请求，而它们正是"这号到底签成什么样"的依据。
+export function streakFacts(payload, { withToday = false } = {}) {
+  const out = [];
+  if (withToday) {
+    const today = num(dig(payload, "today_credit") ?? dig(payload, "daily_credit"));
+    if (today !== null) out.push(`今日 +${today}`);
+  }
+  if (dig(payload, "is_streak_day") === true) out.push("今天是连签奖励日");
+  const streak = num(dig(payload, "streak_days"));
+  if (streak !== null) out.push(`连签 ${streak} 天`);
+  const total = num(dig(payload, "total_credits"));
+  if (total !== null) out.push(`累计 ${total} 积分`);
+  return out;
+}
+
 export function judgeStatus(result) {
   if (isAuthFail(result)) return { verdict: "login_required", message: `签到状态被拒（HTTP ${result.status}）` };
   if (result.status >= 400) return { verdict: "error", message: `签到状态查询失败：HTTP ${result.status}` };
-  if (dig(result.payload, "active") === false) return { verdict: "inactive", message: "签到活动未开启" };
+  if (dig(result.payload, "active") === false) {
+    const name = dig(result.payload, "activity_name");
+    return { verdict: "inactive", message: `签到活动未开启${typeof name === "string" && name.trim() ? `（${name.trim()}）` : ""}` };
+  }
   if (dig(result.payload, "today_checked_in") === true) {
-    return { verdict: "already", message: "今日已签到", credits: 0, streak: num(dig(result.payload, "streak_days")) };
+    return {
+      verdict: "already",
+      message: ["今日已签到", ...streakFacts(result.payload, { withToday: true })].join("，"),
+      credits: 0,
+      streak: num(dig(result.payload, "streak_days")),
+    };
   }
   return { verdict: "claimable" };
 }

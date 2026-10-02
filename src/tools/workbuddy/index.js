@@ -88,12 +88,11 @@ export default {
         const verdict = api.judgeClaim(await api.submitCheckin(ctx));
         if (verdict.status !== "claimed") return { ...verdict, cred: ctx.rotated };
 
-        // 领完再读一次状态：领取接口只回 credit，连签天数要另问
+        // 领完再读一次状态：领取接口只回 credit，连签天数与累计积分要另问
         const after = await api.readStatus(ctx);
-        const streak = api.num(api.dig(after.payload, "streak_days"));
         return {
           status: "claimed",
-          message: `签到 +${verdict.credits}${streak !== null ? `，连签 ${streak} 天` : ""}`,
+          message: [`签到 +${verdict.credits}`, ...api.streakFacts(after.payload)].join("，"),
           credits: verdict.credits,
           cred: ctx.rotated,
         };
@@ -127,7 +126,7 @@ export default {
           if (departed.error) return { status: "error", message: `到站礼物 +${reward}，但${departed.error}`, credits: reward, cred: ctx.rotated };
           if (departed.limit) return { status: "inactive", message: `到站礼物 +${reward}，今日旅行次数已用尽`, credits: reward, cred: ctx.rotated };
           if (departed.inflight) return { status: "waiting", message: `到站礼物 +${reward}，已在旅途中`, credits: reward, cred: ctx.rotated };
-          return { status: "waiting", message: `到站礼物 +${reward}，新行程已派 → ${departed.place}`, credits: reward, cred: ctx.rotated };
+          return { status: "waiting", message: `到站礼物 +${reward}，新行程已派 → ${departed.place}${departed.hours ? `（${departed.hours} 小时后回）` : ""}`, credits: reward, cred: ctx.rotated };
         }
 
         // 上游正在走。到站时间由它决定，所以**不落已结**：下一轮再看。
@@ -143,7 +142,7 @@ export default {
         if (departed.error) return { status: "error", message: departed.error, credits: 0, cred: ctx.rotated };
         if (departed.limit) return { status: "inactive", message: "今日旅行次数已用尽", credits: 0, cred: ctx.rotated };
         if (departed.inflight) return { status: "waiting", message: "已在旅途中", credits: 0, cred: ctx.rotated };
-        return { status: "waiting", message: `已派新行程 → ${departed.place}`, credits: 0, cred: ctx.rotated };
+        return { status: "waiting", message: `已派新行程 → ${departed.place}${departed.hours ? `（${departed.hours} 小时后回）` : ""}`, credits: 0, cred: ctx.rotated };
       },
     },
     {
@@ -246,6 +245,9 @@ export default {
         const want = Math.min(affordable, cap, OPENS_PER_ROUND);
         let opened = 0;
         let credits = 0;
+        // 开出来的是什么也记下来：每开一次真扣 10 点能量，日志只写「+3」看不出这 10 点
+        // 花得值不值（旧脚本报的就是「名字(品质)」）。
+        const labels = [];
         for (let i = 0; i < want; i += 1) {
           const result = await api.openBlindbox(ctx);
           if (result.status >= 400 || api.codeOf(result.payload) !== 0) break;
@@ -253,13 +255,17 @@ export default {
           // firstCredit 不是冗余：上游把积分挂在 data 层、item 层、instance 层、
           // template 层都可能，只读 item.credit 时能量已经扣了、积分却报 0
           credits += items.map((item) => api.firstCredit(result.payload, item)).reduce((a, b) => a + b, 0);
+          for (const item of items) {
+            const label = api.blindboxItemLabel(item);
+            if (label) labels.push(label);
+          }
           opened += 1;
         }
         if (opened === 0) return { status: "error", message: `有 ${affordable} 个额度但第一发就没成（响应异常）`, credits: 0, cred: ctx.rotated };
         const left = affordable - opened;
         return {
           status: left > 0 ? "partial" : "claimed",
-          message: `开 ${opened} 个 +${credits}${left > 0 ? `，还能开 ${left} 个下一轮再开` : ""}`,
+          message: `开 ${opened} 个 +${credits}${labels.length ? `：${labels.join("、")}` : ""}${left > 0 ? `，还能开 ${left} 个下一轮再开` : ""}`,
           credits,
           cred: ctx.rotated,
         };
@@ -488,7 +494,16 @@ async function departNext(ctx) {
   const rejected = [];
   for (const place of locations.slice(0, DEPART_ATTEMPTS)) {
     const depart = await api.departTravel(ctx, place.id);
-    if (depart.status < 400) return { place: place.name || place.id };
+    if (depart.status < 400) {
+      // 派成了就以**上游的响应**为准报地点与时长（旧脚本 worker.js:608-610 就是这么做的：
+      // `dig(body,"location").name` + `duration_hours`）。拿不到才退回配置里的名字 ——
+      // 上游确认过的那个地点比我们自己挑的更可信，时长也只有响应里有。
+      const loc = api.dig(depart.payload, "location") || {};
+      return {
+        place: (typeof loc.name === "string" && loc.name.trim()) || place.name || place.id,
+        hours: api.num(api.dig(depart.payload, "duration_hours")) ?? api.num(loc.duration_hours),
+      };
+    }
     const why = api.classifyDepartFailure(depart);
     if (why.kind === "limit") return { limit: true };
     // "already traveling" 是幂等应答：这一趟已经在走了，不是失败。
