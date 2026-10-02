@@ -1143,23 +1143,11 @@ async function readUsage(ctx, token) {
   const result = await post(ctx, USAGE, CLAIM_HOST, claimHeaders(ctx, token), { require_usage: true, req_source: 2 });
   if (httpAuthFail(result)) return { authFailed: true };
   if (result.status >= 400) return { error: `\u989D\u5EA6\u5305\u67E5\u8BE2\u5931\u8D25\uFF1AHTTP ${result.status}` };
-  const root = result.payload || {};
-  const summary = root.usage_summary || {};
+  const summary = (result.payload || {}).usage_summary || {};
   const total = Number(summary.total_amount) || 0;
   const consumed = Number(summary.consumed_amount) || 0;
-  const packs = root.user_entitlement_pack_list || [];
-  if (total > 0) {
-    return { limit: total, used: consumed, remaining: total - consumed, packs: packs.length };
-  }
-  let limit = 0;
-  let used = 0;
-  for (const pack of packs) {
-    const quota = (pack.entitlement_base_info || {}).quota || {};
-    const usage = pack.usage || {};
-    limit += Number(quota.credits_limit) || 0;
-    used += Number(usage.credits_amount) || 0;
-  }
-  return { limit, used, remaining: limit - used, packs: packs.length };
+  if (total <= 0) return { error: "\u989D\u5EA6\u5305\u67E5\u8BE2\u5931\u8D25\uFF1Ausage_summary \u65E0\u6570\u636E" };
+  return { limit: total, used: consumed, remaining: total - consumed };
 }
 __name(readUsage, "readUsage");
 function translateClaim({ code, msg, credits }) {
@@ -1287,13 +1275,13 @@ var trae_default = {
     backoff: [30, 60, 120, 240, 360]
   },
   hosts: traeHosts,
-  // 最坏一轮：换票 1 + 状态 1 + [票被提前判死: 强制换票 1 + 重读状态 1] + 领取 1 + 额度包 1 = 6。
-  // 预约低了不会报错，只会把越界的机会留给后面几步，所以宁可报高。
+  // 常规一轮：换票 1 + 状态 1 + 领取 1 + 额度包 1 = 4。
+  // status 401 后的强制换票是异常路径，不算在常规 cost 里（over 了只标记不中断）。
   steps: [
     {
       id: "checkin",
       label: "\u7B7E\u5230\u9886\u79EF\u5206",
-      cost: 6,
+      cost: 4,
       async run(ctx) {
         const ensured = await ensureToken(ctx);
         if (ensured.error) return { status: "login_required", message: ensured.error, credits: 0, cred: null };

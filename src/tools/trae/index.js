@@ -90,13 +90,13 @@ export default {
 
   hosts: api.traeHosts,
 
-  // 最坏一轮：换票 1 + 状态 1 + [票被提前判死: 强制换票 1 + 重读状态 1] + 领取 1 + 额度包 1 = 6。
-  // 预约低了不会报错，只会把越界的机会留给后面几步，所以宁可报高。
+  // 常规一轮：换票 1 + 状态 1 + 领取 1 + 额度包 1 = 4。
+  // status 401 后的强制换票是异常路径，不算在常规 cost 里（over 了只标记不中断）。
   steps: [
     {
       id: "checkin",
       label: "签到领积分",
-      cost: 6,
+      cost: 4,
       async run(ctx) {
         const ensured = await api.ensureToken(ctx);
         if (ensured.error) return { status: "login_required", message: ensured.error, credits: 0, cred: null };

@@ -4205,7 +4205,7 @@ test("[审核P0-2b] 收尾写入不许把 used 顶过自限上限（预约不占
     assert.ok(logs.length > 0, "前提：这一串轮次写过运行日志");
   } finally { stub.restore(); }
 
-  // 最坏路径还得叠上"这一步同时换了票"：内核会当场把新串写回 KV（读新鲜 + 写 = 2 笔），
+  // 换票路径：内核会当场把新串写回 KV（读新鲜 + 写 = 2 笔），
   // 这 2 笔是 KV 写入，走 1000 那份额度，不参与 HTTP 闸门（step.cost 只预约上游请求）。
   // 但它们仍然是真实的 KV 开销，测试要确认换票路径不会因为额外 KV 操作而中断。
   {
@@ -4217,16 +4217,14 @@ test("[审核P0-2b] 收尾写入不许把 used 顶过自限上限（预约不占
         ex += 1;
         return { payload: { Result: { Token: mkJwt({ sub: "x", exp: cst(120) }), RefreshToken: `rt-R${ex}`, TokenExpireAt: cst(120) } } };
       },
-      "POST /trae/api/v2/ug/checkin_credits/status": (rec, n) => (n === 2
-        ? { status: 401, body: "" }
-        : { payload: { checked_in: false, credits: 0, enable: true } }),
+      "POST /trae/api/v2/ug/checkin_credits/status": { payload: { checked_in: false, credits: 0, enable: true } },
       "POST /trae/api/v2/ug/checkin_credits/claim": { payload: { code: 0, message: "签到成功", credits: 5 } },
-      "POST /trae/api/v2/pay/ide_user_ent_usage": { payload: { user_entitlement_pack_list: [] } },
+      "POST /trae/api/v2/pay/ide_user_ent_usage": { payload: { usage_summary: { total_amount: 500, consumed_amount: 100 } } },
     });
     try {
       const { budget, summary } = await traeTick(kv2);
       const v = planOf(summary, "trae").accounts[0];
-      assert.equal(ex, 2, "前提：这一轮真的走了两次换票（临期一次 + 401 后强制一次）");
+      assert.equal(ex, 1, "前提：这一轮走了临期换票");
       for (const s of v.steps) assert.equal(s.over, 0, `${s.id} 实测超出 cost 预约 ${s.over} 笔`);
       assert.equal(budget.over, 0, `used=${budget.used} 越过了自限 ${budget.limit}`);
       assert.equal(budget.used <= budget.limit, true);

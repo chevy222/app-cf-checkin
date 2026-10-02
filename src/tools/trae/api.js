@@ -140,30 +140,17 @@ export async function claimOnce(ctx, token) {
 }
 
 // 「剩余积分」只是观测，不是领取动作。
-// 优先用 usage_summary（总额 - 已用）：上游的 pack_list 里 quota 不一定带 credits_limit
-// （免费包的 quota 只有功能开关布尔值），只遍历 pack 会算出 0。
+// 只用 usage_summary（总额 - 已用）：上游的 pack_list 里 quota 不一定带 credits_limit
+// （免费包的 quota 只有功能开关布尔值），遍历 pack 会算出 0。
 export async function readUsage(ctx, token) {
   const result = await post(ctx, USAGE, CLAIM_HOST, claimHeaders(ctx, token), { require_usage: true, req_source: 2 });
   if (httpAuthFail(result)) return { authFailed: true };
   if (result.status >= 400) return { error: `额度包查询失败：HTTP ${result.status}` };
-  const root = result.payload || {};
-  const summary = root.usage_summary || {};
+  const summary = (result.payload || {}).usage_summary || {};
   const total = Number(summary.total_amount) || 0;
   const consumed = Number(summary.consumed_amount) || 0;
-  const packs = root.user_entitlement_pack_list || [];
-  if (total > 0) {
-    return { limit: total, used: consumed, remaining: total - consumed, packs: packs.length };
-  }
-  // 兜底：usage_summary 没给时遍历 pack_list
-  let limit = 0;
-  let used = 0;
-  for (const pack of packs) {
-    const quota = (pack.entitlement_base_info || {}).quota || {};
-    const usage = pack.usage || {};
-    limit += Number(quota.credits_limit) || 0;
-    used += Number(usage.credits_amount) || 0;
-  }
-  return { limit, used, remaining: limit - used, packs: packs.length };
+  if (total <= 0) return { error: "额度包查询失败：usage_summary 无数据" };
+  return { limit: total, used: consumed, remaining: total - consumed };
 }
 
 // 业务码方言 → 内核状态。这一小段是 Trae 全部"方言"的所在，顺序不能乱（见下）。
