@@ -1,7 +1,7 @@
 import { coerceFields, countAccounts, deleteAccount, getAccount, listAccounts, loadSchedIndex, sanitizeUid, saveAccount } from "./accounts.js";
 import { isOff, loadFlags, setToolOff } from "./flags.js";
 import { getJson, putJson, requireKv, toolKey } from "./store.js";
-import { clearRunLog, listRunLog, readRunLog, scrubSecrets } from "./logs.js";
+import { CLEAR_BUDGET, clearRunLog, listRunLog, readRunLog, scrubSecrets } from "./logs.js";
 import { truncate } from "./text.js";
 import { trackedFetch } from "./budget.js";
 import { htmlRes, jsonRes, redirectRes } from "./http.js";
@@ -24,8 +24,8 @@ function flashFrom(url) {
   const flag = url.searchParams.get("done");
   if (flag === "saved") return { kind: "info", text: "已保存。" };
   if (flag === "deleted") return { kind: "info", text: "已删除。" };
-  // 清空日志的回执必须报真实数字，且说清"没删完"这件事 —— 一次调用只有 50 个
-  // 子请求，删不完是常态。谎报"已清空"比删不掉更糟。
+  // 清空日志的回执必须报真实数字，且说清"没删完"这件事 —— 一次调用的 KV 额度有限
+  // （每天 1000 次），删不完是常态。谎报"已清空"比删不掉更糟。
   // 判据用 cleared 而不是 done：跳转参数里 cleared 是"确实删过"的信号，
   // deleted/saved 那两个是固定文案、没有数字可带。
   if (url.searchParams.get("cleared") !== null) {
@@ -33,9 +33,12 @@ function flashFrom(url) {
     const more = url.searchParams.get("more") === "1";
     return {
       kind: more ? "warn" : "info",
+      // 上限要写进文案：只报实测数的话，删到上限（cleared 恰好 = CLEAR_BUDGET）
+      // 与"真的删完了"看起来一模一样，用户以为清干净了而库里还剩几百条。
+      // 数字来自 CLEAR_BUDGET，不写死 —— 改了上界这里自动跟着走。
       text: more
-        ? `已删除 ${n} 条，这个预算只够删这么多（KV 每天 1000 次写/删/list）。再点一次「清空」继续删剩下的。`
-        : `已删除 ${n} 条运行日志。`,
+        ? `已删除 ${n} 条（单次最多 ${CLEAR_BUDGET} 条，KV 每天 1000 次写/删/list）。再点一次「清空」继续删剩下的。`
+        : `已删除 ${n} 条运行日志${n >= CLEAR_BUDGET ? `（单次上限 ${CLEAR_BUDGET} 条，若库里还有请再点一次「清空」）` : ""}。`,
     };
   }
   // 开关切换的回执要说清是哪一家、变成了什么状态。跳转参数里只放工具 id 与 0/1，
