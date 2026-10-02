@@ -159,12 +159,23 @@ if ($sess -and $sess.token) {
   trae: {
     intro: "Trae 的凭据只能从登录回调里拿：登录页会跳到一个 `http://127.0.0.1:18080/authorize?...` "
       + "的地址（那个页面打不开是**正常的**，本机没有服务在监听），整条 URL 里就带着令牌。"
-      + "设备号另有一份，在客户端的 `storage.json` 里。",
+      + "设备号在客户端的 `storage.json` 里，最后一步脚本会自动读出来，不用单独找。",
     steps: [
-      step("取出 Aha 设备号（8–16 位数字）",
-        "打开一个 PowerShell（Windows）或终端（macOS），整段复制回车。三个候选路径对应"
-        + " SOLO 国内版 / Trae 国内版 / Trae 国际版，哪个存在就打印哪一行。",
+      step("打开登录链接",
+        "复制下面这行到 PowerShell 回车，它会直接用默认浏览器打开 Trae 登录页。"
+        + "链接**现取现用**，每次都会生成新的。",
+        `Start-Process "https://api.trae.cn/ide/v1/auth/authorize?login_version=1&auth_from=solo&login_channel=native_ide&plugin_version=0.1.43&auth_type=local&client_id=en1oxy7wnw8j9n&redirect=0&auth_callback_url=http://127.0.0.1:18080/authorize&machine_id=&device_id=&x_device_brand=PC&x_device_type=PC&x_os_version=1.0&x_app_version=0.1.43&x_app_type=stable"`),
+      step("登录，然后复制那条打不开的地址",
+        "用手机号 + 验证码登录。登录成功后浏览器会跳到"
+        + " `http://127.0.0.1:18080/authorize?...` 开头的页面，显示「无法访问此网站」—— 正常。"
+        + "在地址栏 `Ctrl+A` → `Ctrl+C`（macOS `Cmd+A` → `Cmd+C`），"
+        + "把这一整条完整 URL 复制下来（很长，带 `refreshToken=...` 等参数；在浏览器里复制不会被截断）。"),
+      step("运行脚本：自动取设备号 + 解析令牌",
+        "把下面第一行的引号内换成你刚复制的那条完整 URL，整段回车。"
+        + "脚本会自动从本地客户端的 storage.json 里读出 Aha 设备号，再从回调 URL 里解析出令牌，一次输出三个值。",
         `& {
+# 1. 从本地客户端取 Aha 设备号（8-16 位数字）
+$deviceId = ""
 $paths = @(
   "$env:APPDATA\\TRAE SOLO CN\\User\\globalStorage\\storage.json",
   "$env:APPDATA\\Trae CN\\User\\globalStorage\\storage.json",
@@ -172,25 +183,13 @@ $paths = @(
 )
 foreach ($p in $paths) {
   if (Test-Path $p) {
-    Select-String -Path $p -Pattern 'iCubeAuthInfo://icube-dc:(\\d{8,16})' -AllMatches |
-      ForEach-Object { $_.Matches } |
-      ForEach-Object { "找到设备号: " + $_.Groups[1].Value }
+    $m = Select-String -Path $p -Pattern 'iCubeAuthInfo://icube-dc:(\\d{8,16})' -AllMatches |
+      ForEach-Object { $_.Matches } | Select-Object -First 1
+    if ($m) { $deviceId = $m.Groups[1].Value; break }
   }
 }
-}`),
-      step("打开登录链接",
-        "复制下面这行到 PowerShell 回车，它会直接用默认浏览器打开 Trae 登录页。"
-        + "链接**现取现用**，每次都会生成新的。",
-        `Start-Process "https://api.trae.cn/ide/v1/auth/authorize?login_version=1&auth_from=solo&login_channel=native_ide&plugin_version=0.1.43&auth_type=local&client_id=en1oxy7wnw8j9n&redirect=0&auth_callback_url=http://127.0.0.1:18080/authorize&machine_id=&device_id=&x_device_brand=PC&x_device_type=PC&x_os_version=1.0&x_app_version=0.1.43&x_app_type=stable"`),
-      step("登录，然后复制那条打不开的地址",
-        "用手机号 + 验证码登录**与上面设备号同一个账号**。登录成功后浏览器会跳到"
-        + " `http://127.0.0.1:18080/authorize?...` 开头的页面，显示「无法访问此网站」—— 正常。"
-        + "在地址栏 `Ctrl+A` → `Ctrl+C`（macOS `Cmd+A` → `Cmd+C`），"
-        + "把这一整条完整 URL 复制下来（很长，带 `refreshToken=...` 等参数；在浏览器里复制不会被截断）。"),
-      step("用 PowerShell 从回调地址里解析出三个值",
-        "把下面第一行的引号内换成你刚复制的那条完整 URL，整段回车。"
-        + "它会打印出令牌、refresh token 和 Aha 设备号 —— 三个值直接对应表单的三个字段。",
-        `& {
+
+# 2. 把下面引号内换成你复制的整条 127.0.0.1 开头的 URL
 $cb = "粘贴你复制的整条 127.0.0.1 开头的 URL"
 
 # 与服务端同一套解析：只做一次 %XX 解码，不做 '+' → 空格转换
@@ -212,17 +211,17 @@ function J($v) {
   return $null
 }
 
-$info = J (Q "userInfo")
-$jwt  = J (Q "userJwt")
-$rt   = Q "refreshToken"
+$jwt = J (Q "userJwt")
+$rt  = Q "refreshToken"
 if (-not $rt -and $jwt) { $rt = $jwt.RefreshToken }
 
 Write-Host ""
 Write-Host "====== 填到「新增账号」======" -ForegroundColor Cyan
+Write-Host "Aha 设备号  : $deviceId"
 Write-Host "Access Token : $($jwt.Token)"
 Write-Host "Refresh Token: $rt"
 Write-Host "=================================" -ForegroundColor Cyan
-Write-Host "还有一栏「Aha 设备号」不在这里 —— 它填第 1 步从 storage.json 拿到的那个 8–16 位数字" -ForegroundColor DarkGray
+if (-not $deviceId) { Write-Host "（没找到设备号——确认装过 Trae 客户端并登录过）" -ForegroundColor Yellow }
 if (-not $rt) { Write-Host "（回调里没有 refreshToken —— 请确认整条 URL 都复制了）" -ForegroundColor Yellow }
 }`),
     ],
@@ -233,7 +232,7 @@ if (-not $rt) { Write-Host "（回调里没有 refreshToken —— 请确认整�
     // 第一列必须是**表单里能看到的字段名**，不能是平台内部的头名 ——
     // 用户按头名去找字段找不到，会以为少填了一项（这三个头与两个令牌框的关系本来就不直观）。
     fields: [
-      ["**Aha 设备号**", "第 1 步的客户端 `storage.json`", "填进表单的「Aha 设备号」那一栏。签到时它被放进 `x-device-id` 头，8–16 位数字，风控按它判定"],
+      ["**Aha 设备号**", "第 3 步脚本自动从客户端 `storage.json` 读出", "填进表单的「Aha 设备号」那一栏。签到时它被放进 `x-device-id` 头，8–16 位数字，风控按它判定"],
       ["**Access Token**", "登录回调 URL 里的 `userJwt`", "换票与查用户信息时它被放进 `x-cloudide-token` 头"],
       ["**Refresh Token**", "登录回调 URL 里的 `refreshToken`", "续期时换新票；**签到用的不是它**"],
       ["（不用填）`Cloud-IDE-JWT`", "同一个 `userJwt`", "签到与额度查询时它才是 `Authorization` 的值 —— 所以上面两个令牌里，只有 Access Token 参与签到"],

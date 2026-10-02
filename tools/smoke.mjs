@@ -4905,9 +4905,9 @@ test("[Trae 教程里那行正则本身能匹配（抠出发布文本实测，�
   // 正则抠出来编译成 JS RegExp 跑一遍。抄一份的测法有个盲区——教程里的正则
   // 被人改坏了（少了转义、$ 拼错、锚点写错），重抄的那份照样通过。
   // 教程是**会被真人复制去跑**的东西，抳不出值比没有教程更坏，所以必须咬住发布文本。
-  const code = TUTORIALS.trae.steps[3].code;
+  const code = TUTORIALS.trae.steps[2].code;
   const line = code.split("\n").find((l) => l.includes("[regex]::Match($raw"));
-  assert.ok(line, "Trae 教程第 4 步里找不到 Q 函数的正则那一行");
+  assert.ok(line, "Trae 教程第 3 步里找不到 Q 函数的正则那一行");
   // 抠出模式串：那一行里恰好有一对引号（单引号或双引号都行），内容就是要编译的正则
   const lit = line.match(/["']([^"']*)["']/);
   assert.ok(lit, `无法从教程那一行抠出正则字面量：${line.trim()}`);
