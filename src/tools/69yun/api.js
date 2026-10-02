@@ -156,6 +156,20 @@ export async function login(ctx) {
 // 必须 redirect:manual —— Cookie 失效时上游返回 302 到登录页，
 // 自动跟随会把 200（登录页 HTML）当成签到响应，解析 JSON 失败报一个莫名其妙的错。
 
+// 上游 msg 的实际形状（真实响应，不是猜的）：
+//   「尊贵的王者Lv7，您获得了 0.771GB 流量.\n\n🎉【69云】中秋国庆季…\n📅【活动时间】…\n💥【折扣码】…」
+// 结果在**第一行**，其后全是站点自己的营销广告 —— 每轮一字不变，且长度随站点改版变变。
+// 只取第一行有两个理由：广告会把关键数字挤出内核那 200 字的截断；广告里的折扣码每轮都一样，
+// 混在运行日志里只会让人以为那是什么新信息。解析不到流量时退回整行原文，不丢信息。
+const TRAFFIC_RE = /获得了\s*([\d.]+)\s*(TB|GB|MB|KB|PB)\b/i;
+const RANK_RE = /尊贵的\s*([^，,。]+)/;
+
+function resultLine(msg) {
+  const line = String(msg || "").split(/\r?\n/).map((s) => s.trim()).find(Boolean) || "";
+  // 尾部句点/省略号去掉：跟内核的「标签：消息」连读时多个尾巴很别扭（"…流量.."）
+  return line.replace(/[.。…]+$/, "");
+}
+
 export async function checkin(ctx, cookie) {
   const result = await call(ctx, {
     path: CHECKIN,
@@ -181,13 +195,31 @@ export async function checkin(ctx, cookie) {
 
   // ret===1 = 签到成功；ret===0 = 今日已签到（SSPanel 约定）
   if (ret === 1) {
-    // 流量信息可能在 msg 里（如"获得了 100 MB 流量"），也可能在 data 里
-    return { status: "claimed", message: msg || "签到成功" };
+    const line = resultLine(msg);
+    const traffic = line.match(TRAFFIC_RE);
+    const rank = line.match(RANK_RE);
+    // 摘要报「领了多少」而不是「领到了什么」：机场的流量单位不统一（MB/GB/TB 都见过），
+    // 原文照抄时值班的人得自己心算；credits 保持 0 —— 上游没给可累加的数值字段，
+    // 凭空折算一个数字进积分列反而是对账不了的假测量值。
+    const amount = traffic ? `${traffic[1]}${traffic[2].toUpperCase()}` : "";
+    return {
+      status: "claimed",
+      message: amount
+        ? `签到 +${amount}${rank ? `（${rank[1].trim()}）` : ""}`
+        : line || "签到成功",
+    };
   }
   if (ret === 0) {
-    return { status: "already", message: msg || "今日已签到" };
+    const line = resultLine(msg);
+    // 已签到时上游也会附同一段广告；等级照旧取（用户会想知道今天是什么身份签的），
+    // 但不编流量数 —— 没领到就没有「+0.771GB」这回事。
+    const rank = line.match(RANK_RE);
+    return {
+      status: "already",
+      message: rank ? `今日已签到（${rank[1].trim()}）` : line || "今日已签到",
+    };
   }
-  return { status: "error", message: `签到返回 ret=${ret}：${msg}` };
+  return { status: "error", message: `签到返回 ret=${ret}：${resultLine(msg)}` };
 }
 
 export const yun69Hosts = [HOST];

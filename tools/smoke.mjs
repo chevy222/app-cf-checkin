@@ -2440,10 +2440,71 @@ test("[69yun] 正常签到：ret=1 → claimed，Cookie 有效时只发一次请
     const { summary } = await yun69Tick(kv);
     const acct = planOf(summary, "69yun").accounts[0];
     assert.equal(acct.status, "claimed");
-    assert.match(acct.message, /100 MB/);
+    // 摘要已规范化成「签到 +100MB」（单位大写、空格去掉）；下游用例覆盖带广告与带等级的完整形态
+    assert.match(acct.message, /签到 \+100MB/);
     assert.equal(stub.seen.length, 1, "Cookie 有效时不该走登录流程");
     assert.equal(stub.seen[0].path, "/user/checkin");
     assert.equal(stub.seen[0].method, "POST");
+  } finally { stub.restore(); }
+});
+
+// 上游把「等级 + 流量 + 整段营销广告」全塞进 msg 一个字段（真实响应，不是构造的）。
+// 广告每轮一字不变，混进日志只会让人以为是新信息，还会把关键数字挤出内核那 200 字截断。
+const YUN69_AD = "\n\n🎉【69云】中秋国庆季 · 全场 7.8 折!🎉\n📅【活动时间】9月25日 00:00 — 10月2日 00:00\n💥【折扣码】69yun-78%off（有效时间：9/25 — 10/2）";
+
+test("[69yun] 从 msg 里抽出流量与等级，营销广告不进日志", async () => {
+  const kv = fakeKv();
+  seed69yun(kv);
+  const stub = stubUpstream({
+    "POST /user/checkin": { payload: { ret: 1, msg: `尊贵的王者Lv7，您获得了 0.771GB 流量.${YUN69_AD}` } },
+  });
+  try {
+    const { summary } = await yun69Tick(kv);
+    const acct = planOf(summary, "69yun").accounts[0];
+    assert.equal(acct.status, "claimed");
+    // 摘要报「领了多少」：单位原样带出，值班的人不用心算
+    assert.match(acct.message, /签到 \+0\.771GB/);
+    assert.match(acct.message, /王者Lv7/, "等级没抽出来");
+    // 广告一个字都不许进日志
+    for (const noise of ["中秋国庆季", "折扣码", "69yun-78%off", "活动时间"]) {
+      assert.ok(!acct.message.includes(noise), `广告「${noise}」漏进了日志摘要`);
+    }
+    // 积分列不许出现流量数：上游没给可累加字段，折算出来的数字对不了账
+    assert.equal(acct.credits, 0, "流量被折成了积分，而上游并没有可累加的数值字段");
+  } finally { stub.restore(); }
+});
+
+test("[69yun] 抽不出流量时退回原文首行，不丢信息也不报错", async () => {
+  const kv = fakeKv();
+  seed69yun(kv);
+  // 上游改版换了文案（等级/流量说法变了）——不能因此报 error 或丢掉全部信息
+  const stub = stubUpstream({
+    "POST /user/checkin": { payload: { ret: 1, msg: `签到成功，感谢使用${YUN69_AD}` } },
+  });
+  try {
+    const { summary } = await yun69Tick(kv);
+    const acct = planOf(summary, "69yun").accounts[0];
+    assert.equal(acct.status, "claimed", "解析不到流量就不该改变判定");
+    assert.match(acct.message, /签到成功，感谢使用/);
+    assert.ok(!acct.message.includes("折扣码"), "退回原文时把广告也带上了");
+  } finally { stub.restore(); }
+});
+
+test("[69yun] 今日已签到：取等级但不编造流量数", async () => {
+  const kv = fakeKv();
+  seed69yun(kv);
+  const stub = stubUpstream({
+    "POST /user/checkin": { payload: { ret: 0, msg: `尊贵的王者Lv7，您似乎已经签到过了...${YUN69_AD}` } },
+  });
+  try {
+    const { summary } = await yun69Tick(kv);
+    const acct = planOf(summary, "69yun").accounts[0];
+    assert.equal(acct.status, "already");
+    assert.match(acct.message, /今日已签到/);
+    assert.match(acct.message, /王者Lv7/, "等级没抽出来");
+    // 没领到就没有「+0.771GB」这回事 —— 这是本次改动最容易写错的地方
+    assert.doesNotMatch(acct.message, /\+\s*[\d.]+\s*(TB|GB|MB|KB)/, "没签到却报了一个流量数");
+    assert.ok(!acct.message.includes("折扣码"), "广告漏进了日志摘要");
   } finally { stub.restore(); }
 });
 
