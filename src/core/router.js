@@ -70,7 +70,7 @@ async function schedMap(env, toolId) {
   return index.entries;
 }
 
-async function homePage(env, pwd, flash, budget) {
+async function homePage(env, pwd, flash) {
   const counts = {};
   const sched = {};
   for (const tool of TOOLS) {
@@ -79,7 +79,7 @@ async function homePage(env, pwd, flash, budget) {
   }
   const flags = await loadFlags(env);
   const runs = await listRunLog(env, { limit: 12, toolIds: TOOLS.map((t) => t.id) });
-  return htmlRes(renderHome({ pwd, tools: TOOLS, counts, sched, runs, flash, budget, flags }));
+  return htmlRes(renderHome({ pwd, tools: TOOLS, counts, sched, runs, flash, flags }));
 }
 
 async function toolPage(env, pwd, tool, flash) {
@@ -349,7 +349,7 @@ const RUN_TRACE = /^\/runs\/([^/]+)\/trace$/;
 const NO_TOOL_ROUTES = new Set([RUN_DETAIL, RUN_TRACE]);
 
 const ROUTES = [
-  ["GET", /^\/$/, (ctx) => homePage(ctx.env, ctx.pwd, ctx.flash, ctx.budget)],
+  ["GET", /^\/$/, (ctx) => homePage(ctx.env, ctx.pwd, ctx.flash)],
   ["GET", /^\/help$/, (ctx) => htmlRes(renderHelp({ pwd: ctx.pwd, tools: TOOLS }))],
   ["GET", /^\/runs$/, (ctx) => runsPage(ctx)],
   // 路径必须是 /runs/<tool>/clear 而不是 /runs/clear：捕获组里的 tool 才会过注册表校验。

@@ -26,7 +26,7 @@ function cardLine(label, value) {
   return `<div class="kv kv-row"><span class="k">${escapeHtml(label)}</span><span class="v">${value}</span></div>`;
 }
 
-export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, budget, flags = {} }) {
+export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, flags = {} }) {
   const cards = tools.map((tool) => {
     const entries = sched[tool.id] || {};
     const uids = Object.keys(entries);
@@ -84,7 +84,6 @@ export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, b
       + sectionHead("工具", "每轮只处理到期账号，一轮装不下的自动顺延到下一轮")
       + (tools.length === 0 ? emptyState({ title: "还没有接入任何工具", lines: ["注册表是空的。"] }) : `<div class="grid cols3">${cards.join("")}</div>`)
       + sectionHead("最近运行", "", button(link("/runs", pwd), "全部日志 ›"))
-      + `<div class="card"><div class="bd">${feed || '<span class="dim">还没有运行记录。</span>'}</div></div>
-      ${budget ? `<p class="tiny mt">本次页面读取：外部请求 ${budget.used} / ${budget.limit}</p>` : ""}`,
+      + `<div class="card"><div class="bd">${feed || '<span class="dim">还没有运行记录。</span>'}</div></div>`,
   });
 }

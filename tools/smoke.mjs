@@ -2065,7 +2065,31 @@ test("[qoder] 设备身份是必填的工具级配置：没填全时整家在配
     assert.equal(stub.seen.length, 0, "配置没填全就该整个工具跳过，一次上游都不该打");
     const page = await authed("/tool/qoder/settings", envFor(kv));
     assert.match(page.text, /工具配置未完成/);
+    // 页面与内核必须用同一套判据：内核跳过时要说清缺哪几项
+    assert.match(page.text, /Cosy-MachineToken/, "要说出缺的是哪一项，而不是只报一个比例");
   } finally { stub.restore(); }
+});
+
+test("[配置页] 可选项留空不算「未完成」：页面与调度器用同一个判据", async () => {
+  // 这条断言的由来：Trae / WorkBuddy / 69 云的工具配置里**一项必填都没有**
+  // （超时、续期窗口这些都有代码兜底），而页面当时是"已填 N / 共 M"自己数一遍。
+  // 于是必填项全齐、只留可选项没填时，调度器照跑，页面却报警说"缺项时会被跳过"
+  // —— 一个每家都在亮、且永远消不掉的假警报（2026-10-02 用户报的就是这个）。
+  for (const tool of TOOLS.filter((t) => !(t.config || []).some((f) => f.required))) {
+    const kv = fakeKv();
+    kv.store.set(`v1:tool:${tool.id}`, "{}");
+    const page = await authed(`/tool/${tool.id}/settings`, envFor(kv));
+    assert.ok(!page.text.includes("工具配置未完成"),
+      `${tool.id} 一项必填都没有，配置页不该报「未完成」`);
+  }
+  // 反过来：必填项缺一个就必须报，且要指名缺哪一项
+  const kv = fakeKv();
+  kv.store.set("v1:tool:qoder", JSON.stringify({ clientType: "10" }));
+  const page = await authed("/tool/qoder/settings", envFor(kv));
+  assert.match(page.text, /工具配置未完成/);
+  assert.match(page.text, /Cosy-MachineToken/);
+  assert.ok(!/Cosy-ClientType/.test(page.text.match(/工具配置未完成[^<]*/)[0]),
+    "已填的必填项不该被算进缺项里");
 });
 
 test("[qoder] CLAIMED 且在窗口内 → already；endAt 缺失当无界，不当「1970 就结束」", async () => {
@@ -3153,16 +3177,22 @@ function seedWorkbuddy(kv, uid = "wb-77002", { exp = cst(60), expiresAt, wrapped
 const wbTool = () => findTool("workbuddy");
 const wbTick = (kv, now = cst(10), limit = 45) => tickWith(kv, [wbTool()], limit, now);
 const wbView = (summary) => planOf(summary, "workbuddy").accounts[0];
+// 按 step id 取那一步，不要按下标取：步骤顺序是产品决定（2026-10-02 就调整过一次），
+// 按下标写的断言在改顺序后全部指向错误的步骤 —— 而且症状极像"功能坏了"。
+const wbStep = (summary, id) => {
+  const step = wbView(summary).steps.find((s) => s.id === id);
+  assert.ok(step, `这一轮里没有 ${id} 步骤`);
+  return step;
+};
 
 const wbStatus = (over = {}) => ({ payload: { active: true, today_checked_in: false, credits: 0, ...over } });
-// 默认桩：一轮 7 步全部走通的"无事可做"版本
+// 默认桩：一轮 6 步全部走通的"无事可做"版本
 const wbIdleRoutes = (over = {}) => ({
   "POST /v2/billing/meter/checkin-activity-status": wbStatus({ today_checked_in: true }),
   "GET /v2/activity/growth/buddy/travel/status": { payload: { state: "traveling" } },
   "GET /v2/activity/growth/lottery/chances": { payload: { balance: 0 } },
   "GET /v2/activity/growth/buddy/quota": { payload: { affordable: 0 } },
   "GET /v2/activity/growth/tasks": { payload: { tasks: [] } },
-  "GET /v2/activity/growth/energy": { payload: { balance: 5 } },
   "GET /v2/activity/growth/streak": { payload: { streak: { days: 3 } } },
   ...over,
 });
@@ -3196,7 +3226,7 @@ test("[workbuddy] 空 body / code 10001 / 含「已签」都判今日已领；cr
     });
     try {
       const { summary } = await wbTick(kv);
-      assert.equal(wbView(summary).steps[0].status, expected, `领取响应 ${JSON.stringify(claimRoute)} 被判错`);
+      assert.equal(wbStep(summary, 'checkin').status, expected, `领取响应 ${JSON.stringify(claimRoute)} 被判错`);
     } finally { stub.restore(); }
   }
 });
@@ -3207,7 +3237,7 @@ test("[workbuddy] active=false 是活动未开，不是已领也不是失败", a
   const stub = stubUpstream(wbIdleRoutes({ "POST /v2/billing/meter/checkin-activity-status": { payload: { active: false } } }));
   try {
     const { summary } = await wbTick(kv);
-    assert.equal(wbView(summary).steps[0].status, "inactive");
+    assert.equal(wbStep(summary, 'checkin').status, "inactive");
     assert.equal(stub.seen.filter((r) => r.path.endsWith("/daily-checkin")).length, 0);
   } finally { stub.restore(); }
 });
@@ -3231,7 +3261,7 @@ test("[workbuddy] client_token 每次现生成：同轮内不重复，跨轮也�
   }));
   try {
     const first = await wbTick(kv, cst(10));
-    assert.equal(wbView(first.summary).steps[2].status, "partial", "前提：第一轮没抽完");
+    assert.equal(wbStep(first.summary, 'lottery').status, "partial", "前提：第一轮没抽完");
     const lock = [...kv.store.keys()].find((k) => k.startsWith("v1:lock:workbuddy:"));
     if (lock) kv.store.delete(lock);
     await wbTick(kv, cst(10, 31));
@@ -3254,7 +3284,7 @@ test("[workbuddy] 到站礼物没领到就不派新行程", async () => {
   }));
   try {
     const { summary } = await wbTick(kv);
-    assert.equal(wbView(summary).steps[1].status, "error");
+    assert.equal(wbStep(summary, 'travel').status, "error");
     assert.equal(stub.seen.filter((r) => r.path.endsWith("/travel/depart")).length, 0, "领取失败还派新行程");
   } finally { stub.restore(); }
 });
@@ -3279,7 +3309,7 @@ test("[workbuddy] 任务按 accept_status 分流：completed 才领，accepted/i
   }));
   try {
     const { summary } = await wbTick(kv);
-    const tasks = wbView(summary).steps[4];
+    const tasks = wbStep(summary, 'tasks');
     assert.equal(tasks.status, "claimed");
     assert.match(tasks.message, /领到 1 个任务奖励 \+10/, `状态机分流错了：${tasks.message}`);
     // 领奖端点：路径带 task_code、无 /v2、无请求体
@@ -3306,7 +3336,7 @@ test("[workbuddy] already_claimed 的任务不算领到：上游说不发奖就�
   }));
   try {
     const { summary } = await wbTick(kv);
-    const tasks = wbView(summary).steps[4];
+    const tasks = wbStep(summary, 'tasks');
     // 照实报"没领到"，而不是把列表里的 reward_credit=100 算成到手
     assert.equal(tasks.status, "error");
     assert.match(tasks.message, /t-dup 上游报已领过/, `already_claimed 没被识别：${tasks.message}`);
@@ -3341,7 +3371,7 @@ test("[workbuddy] 过期与未上线的任务不领：打上游的只有还在�
   try {
     const { summary } = await wbTick(kv, afterExpiry);
     const claims = stub.seen.filter((r) => r.path.includes("/tasks/") && r.path.endsWith("/claim")).map((r) => r.path);
-    const msg = wbView(summary).steps[4].message;
+    const msg = wbStep(summary, 'tasks').message;
     assert.ok(claims.some((p) => p.includes("t-live")), `窗口内的 t-live 没领（${msg}）`);
     assert.ok(claims.some((p) => p.includes("t-forever")), `没有 valid_end 的 t-forever 不该被当成过期（${msg}）`);
     assert.ok(!claims.some((p) => p.includes("t-expired")), `过期任务被去 claim 了 —— 那是白打一次上游，可能被拒（${msg}）`);
@@ -3366,7 +3396,7 @@ test("[workbuddy] 缺前置（first_buddy）要翻成可执行的话，不把上
   }));
   try {
     const { summary } = await wbTick(kv);
-    const msg = wbView(summary).steps[4].message;
+    const msg = wbStep(summary, 'tasks').message;
     assert.match(msg, /接领失败 HTTP 400/, msg);
     assert.match(msg, /领养第一只 Buddy/, `没翻成可执行的话：${msg}`);
     assert.ok(!msg.includes("no buddy instance"), `上游原文没被翻译：${msg}`);
@@ -3402,7 +3432,7 @@ test("[workbuddy] 接领不信任 200：逐项结果与回读都要对上，不�
   }));
   try {
     const { summary } = await wbTick(kv);
-    const msg = wbView(summary).steps[4].message;
+    const msg = wbStep(summary, 'tasks').message;
     // 缺前置要翻成能照着做的话，不能只把上游原文 task_code 抛给使用者
     assert.match(msg, /t-b.*领养第一只 Buddy/, `逐项失败没报出可执行的原因：${msg}`);
     assert.ok(!msg.includes("prerequisite not met"), `上游原文没被翻译：${msg}`);
@@ -3433,7 +3463,7 @@ test("[workbuddy] 上游不给逐项结果时靠回读确认：回读说没登�
   }));
   try {
     const { summary } = await wbTick(kv);
-    const msg = wbView(summary).steps[4].message;
+    const msg = wbStep(summary, 'tasks').message;
     assert.match(msg, /回读只确认了 1\/2/, `回读没确认住却没如实报：${msg}`);
     assert.ok(!/已接领 2 个/.test(msg), `回读失败仍谎报全成：${msg}`);
   } finally { stub.restore(); }
@@ -3460,7 +3490,7 @@ test("[workbuddy] not_accepted 的任务批量接领：体是 task_codes 数组�
     assert.equal(accepts.length, 1, "两个 not_accepted 的任务该合并成一次批量接领");
     // 关键形状：数组。发 { task_code: "x" } 会被上游判 400 invalid request
     assert.deepEqual(JSON.parse(accepts[0].body).task_codes, ["t-new1", "t-new2"], "接领体必须是 task_codes 数组");
-    const tasks = wbView(summary).steps[4];
+    const tasks = wbStep(summary, 'tasks');
     // 接领不发奖，所以积分只算 claim 那一笔
     assert.match(tasks.message, /已接领 2 个新任务/, `接领没被记进日志：${tasks.message}`);
     assert.equal(wbView(summary).credits, 7, "接领阶段的 reward_credit 是虚账，不能计入");
@@ -3484,7 +3514,7 @@ test("[workbuddy] wb_wechat_oa_subscribe_task 不走接领：过期的 not_accep
   }));
   try {
     const { summary } = await wbTick(kv);
-    const msg = wbView(summary).steps[4].message;
+    const msg = wbStep(summary, 'tasks').message;
     const accepts = stub.seen.filter((r) => r.path.endsWith("/tasks/accept"));
     assert.equal(accepts.length, 1, "该恰好发一次接领（只带没被排除的那个）");
     assert.deepEqual(JSON.parse(accepts[0].body).task_codes, ["t-normal"], `接领体里混进了被排除的任务：${accepts[0].body}`);
@@ -3527,7 +3557,7 @@ test("[workbuddy] 任务领取失败要把原因写进日志：只记「全部�
   }));
   try {
     const { summary } = await wbTick(kv);
-    const tasks = wbView(summary).steps[4];
+    const tasks = wbStep(summary, 'tasks');
     assert.equal(tasks.status, "error");
     assert.match(tasks.message, /t-gone HTTP 400 code=10005 任务已下架/, `失败原因没进日志：${tasks.message}`);
 
@@ -3544,7 +3574,7 @@ test("[workbuddy] 任务领取失败要把原因写进日志：只记「全部�
     }));
     try {
       const { summary: s2 } = await wbTick(kv2);
-      const tasks2 = wbView(s2).steps[4];
+      const tasks2 = wbStep(s2, 'tasks');
       assert.equal(tasks2.status, "partial");
       assert.match(tasks2.message, /领到 1 个任务奖励 \+5/, tasks2.message);
       assert.match(tasks2.message, /失败：t-bad HTTP 403 frequency limit/, `部分失败的原因没进日志：${tasks2.message}`);
@@ -3563,7 +3593,7 @@ test("[workbuddy] 连签兑换：409/403 是正常无事，天数不够报正常
   }));
   try {
     const { summary } = await wbTick(kv);
-    const redeem = wbView(summary).steps[6];
+    const redeem = wbStep(summary, 'redeem');
     assert.equal(redeem.status, "ok");
     assert.match(redeem.message, /已换或不够/);
     assert.equal(stub.seen.filter((r) => r.path.endsWith("/redeem")).length, 2, "15 天该解锁 7d 与 14d 两档");
@@ -3574,11 +3604,26 @@ test("[workbuddy] 连签兑换：409/403 是正常无事，天数不够报正常
     try {
       const { summary: s2 } = await wbTick(cold);
       // 天数没到任何兑换档是常态（活动开着，只是没到档），报"正常"而不是"活动未开"
-      assert.equal(wbView(s2).steps[6].status, "ok");
-      assert.match(wbView(s2).steps[6].message, /还没到任何兑换档/);
+      assert.equal(wbStep(s2, 'redeem').status, "ok");
+      assert.match(wbStep(s2, 'redeem').message, /连续使用 2 天，还没到任何兑换档/);
       assert.equal(stub2.seen.filter((r) => r.path.endsWith("/redeem")).length, 0);
     } finally { stub2.restore(); }
   } finally { stub.restore(); }
+});
+
+test("[workbuddy] 步骤顺序与取舍：6 步、energy 已删、判据是 id 不是下标", () => {
+  // 顺序是产品决定（2026-10-02 用户指定），不是实现细节：界面上步骤色块、
+  // 进度复用、顺延都按这个次序呈现，改动会让当天已跑过的账号错位。
+  assert.deepEqual(wbTool().steps.map((s) => s.id),
+    ["checkin", "travel", "blindbox", "lottery", "redeem", "tasks"]);
+  // energy 那步只为"看一眼"能量与连签，而 redeem 本来就自己重读连签天数
+  assert.ok(!wbTool().steps.some((s) => s.id === "energy"), "energy 步骤已删除");
+  assert.ok(!wbTool().steps.some((s) => (s.dependsOn || []).includes("energy")),
+    "不该留下指向已删步骤的依赖");
+  assert.equal(wbTool().steps.reduce((sum, s) => sum + s.cost, 0), 31,
+    "单账号一轮的请求上界变了，注释与文档里写死的 31 要跟着核对");
+  // 兑换判的是连续使用天数，文案不能与签到那步的"连签天数"混用
+  assert.match(wbTool().steps.find((s) => s.id === "redeem").run.toString(), /连续使用/);
 });
 
 test("[workbuddy] 积分挂在 6 个位置都要能取到：上游换版本就静默报 +0", async () => {
@@ -3619,7 +3664,7 @@ test("[workbuddy] 抽奖/兑换给 0 的那层要跳过，不能被 ?? 短路吃
   }));
   try {
     const { summary } = await wbTick(kv);
-    assert.match(wbView(summary).steps[2].message, /\+12/, `抽奖记 ${wbView(summary).steps[2].message}`);
+    assert.match(wbStep(summary, 'lottery').message, /\+12/, `抽奖记 ${wbStep(summary, 'lottery').message}`);
   } finally { stub.restore(); }
 
   const kv2 = fakeKv();
@@ -3630,7 +3675,7 @@ test("[workbuddy] 抽奖/兑换给 0 的那层要跳过，不能被 ?? 短路吃
   }));
   try {
     const { summary: s2 } = await wbTick(kv2);
-    assert.match(wbView(s2).steps[6].message, /7d \+20/, `兑换记 ${wbView(s2).steps[6].message}`);
+    assert.match(wbStep(s2, 'redeem').message, /7d \+20/, `兑换记 ${wbStep(s2, 'redeem').message}`);
   } finally { stub2.restore(); }
 });
 
@@ -3667,7 +3712,7 @@ test("[workbuddy] 抽奖金额上游没回时报奖名，不许拿 +0 冒充没�
     }));
     try {
       const { summary } = await wbTick(kv);
-      const msg = wbView(summary).steps[2].message;
+      const msg = wbStep(summary, 'lottery').message;
       assert.match(msg, c.expect, `${c.name}：${msg}`);
       assert.ok(!/\+0\b/.test(msg), `${c.name} 拿 +0 冒充了没中奖：${msg}`);
       assert.equal(wbView(summary).credits, c.credits, `${c.name} 的积分不该是编出来的`);
@@ -3688,7 +3733,7 @@ test("[workbuddy] 派发成功以响应为准报地点与时长，不是我们�
   }));
   try {
     const { summary } = await wbTick(kv);
-    const msg = wbView(summary).steps[1].message;
+    const msg = wbStep(summary, 'travel').message;
     assert.match(msg, /乙（4 小时后回）/, `该以上游响应为准：${msg}`);
     assert.ok(!msg.includes("甲"), `报的还是配置里那个名字：${msg}`);
   } finally { stub.restore(); }
@@ -3707,7 +3752,7 @@ test("[workbuddy] 开盲盒要报出开出的是什么（名字+品质）", asyn
   }));
   try {
     const { summary } = await wbTick(kv);
-    const msg = wbView(summary).steps[3].message;
+    const msg = wbStep(summary, 'blindbox').message;
     assert.match(msg, /摸鱼喵\(SSR\)/, `没报出开出了什么：${msg}`);
     assert.ok(!msg.includes("暴富喵"), `instance 有名字时不该退回 template 的：${msg}`);
   } finally { stub.restore(); }
@@ -3767,7 +3812,7 @@ test("[workbuddy] 顶层字段是 null 时要能穿透到包装层取到真值",
   }));
   try {
     const { summary } = await wbTick(kv);
-    const travel = wbView(summary).steps[1];
+    const travel = wbStep(summary, 'travel');
     assert.match(travel.message, /\+8/, `顶层 null 让到站礼物没领到（${travel.status}：${travel.message}）`);
     assert.equal(stub.seen.filter((r) => r.path.endsWith("/buddy/travel/claim")).length, 1, "到站了却没发领取请求");
     // 实测形状：到站领取**要带一个空的 JSON 体** —— 前端是 axios 的 `e.post(url, {})`，
@@ -3791,7 +3836,7 @@ test("[workbuddy] 到站领完礼物就接着派下一趟，不等下一轮", as
   }));
   try {
     const { summary } = await wbTick(kv);
-    const travel = wbView(summary).steps[1];
+    const travel = wbStep(summary, 'travel');
     assert.equal(travel.status, "waiting", `领完该接着派、并报"等待中"（${travel.status}：${travel.message}）`);
     assert.match(travel.message, /\+8/, travel.message);
     assert.match(travel.message, /甲/, `没报出派到哪：${travel.message}`);
@@ -3810,7 +3855,7 @@ test("[workbuddy] 旅行在途不落已结：同一天下一轮仍会重读状�
   const stub = stubUpstream(wbIdleRoutes());     // travel/status 默认就是 traveling
   try {
     const first = await wbTick(kv, cst(10));
-    assert.equal(wbView(first.summary).steps[1].status, "waiting");
+    assert.equal(wbStep(first.summary, 'travel').status, "waiting");
 
     const before = stub.seen.filter((r) => r.path.endsWith("/travel/status")).length;
     const lock = [...kv.store.keys()].find((k) => k.startsWith("v1:lock:workbuddy:"));
@@ -3819,7 +3864,7 @@ test("[workbuddy] 旅行在途不落已结：同一天下一轮仍会重读状�
 
     assert.ok(stub.seen.filter((r) => r.path.endsWith("/travel/status")).length > before,
       "同一天的下一轮没有再读旅行状态 —— 这就是那个 bug");
-    assert.equal(wbView(second.summary).steps[1].status, "waiting");
+    assert.equal(wbStep(second.summary, 'travel').status, "waiting");
     // 其余六步都已结、被复用，所以这一轮只该花 1 次外部请求
     assert.equal(wbView(second.summary).http, 1, `在途期间每轮该只花 1 次请求，实际 ${wbView(second.summary).http}`);
   } finally { stub.restore(); }
@@ -3833,7 +3878,7 @@ test("[workbuddy] daily_limit_reached 是 travel 唯一当天收工的情况", a
   }));
   try {
     const first = await wbTick(kv, cst(10));
-    assert.equal(wbView(first.summary).steps[1].status, "inactive");
+    assert.equal(wbStep(first.summary, 'travel').status, "inactive");
 
     const before = stub.seen.length;
     const lock = [...kv.store.keys()].find((k) => k.startsWith("v1:lock:workbuddy:"));
@@ -3861,7 +3906,7 @@ test("[workbuddy] depart 被拒按上游的说法分流：趟数用尽是收工�
     }));
     try {
       const { summary } = await wbTick(kv);
-      const travel = wbView(summary).steps[1];
+      const travel = wbStep(summary, 'travel');
       assert.equal(travel.status, c.expect, `${c.name} —— 实际 ${travel.status}：${travel.message}`);
     } finally { stub.restore(); }
   }
@@ -3884,7 +3929,7 @@ test("[workbuddy] 地点不可用就换下一个；最坏形态恰好花掉声�
   }));
   try {
     const { summary } = await wbTick(kv);
-    const travel = wbView(summary).steps[1];
+    const travel = wbStep(summary, 'travel');
     const tried = stub.seen.filter((r) => r.path.endsWith("/travel/depart")).map((r) => JSON.parse(r.body).location_id);
     assert.deepEqual(tried, ["loc-1", "loc-2"], `没换地点：${JSON.stringify(tried)}`);
     assert.equal(travel.status, "waiting", travel.message);
@@ -3904,7 +3949,7 @@ test("[workbuddy] 一轮开几个盲盒由上游 max_open_count 决定，不是�
   }));
   try {
     const { summary } = await wbTick(kv);
-    const blindbox = wbView(summary).steps[3];
+    const blindbox = wbStep(summary, 'blindbox');
     // affordable 500 但只开 2 个：剩下的下轮继续，所以是 partial 而不是 claimed
     assert.equal(blindbox.status, "partial");
     assert.match(blindbox.message, /开 2 个/, `没听上游的上限：${blindbox.message}`);
@@ -3938,7 +3983,7 @@ test("[workbuddy] 上游把 max_open_count 放大时，本地的每轮上限必�
   }));
   try {
     const { summary } = await wbTick(kv);
-    const blindbox = wbView(summary).steps[3];
+    const blindbox = wbStep(summary, 'blindbox');
     const opens = stub.seen.filter((r) => r.path.endsWith("/buddy/open")).length;
     assert.equal(opens, 5, `上游给 50 时开了 ${opens} 个 —— 超过本地每轮上限 5，账本会真的花超`);
     assert.ok(!/额度已用尽/.test(blindbox.message), `撞上预算闸了：${blindbox.message}`);
@@ -3948,7 +3993,7 @@ test("[workbuddy] 上游把 max_open_count 放大时，本地的每轮上限必�
   } finally { stub.restore(); }
 });
 
-test("[workbuddy] 一轮装不下 7 步时整步顺延，下一轮接着做而不是重做", async () => {
+test("[workbuddy] 一轮装不下 6 步时整步顺延，下一轮接着做而不是重做", async () => {
   const kv = fakeKv();
   seedWorkbuddy(kv);
   const stub = stubUpstream(wbIdleRoutes({
@@ -4061,7 +4106,7 @@ test("[jwt] subjectOf 与 expiresAtOf 收的都是 JWT 原文", async () => {
 // 断言全部写成不变量，而不是写成某一次探针的输出。
 
 test("[审核P0-1] 预算只够一个账号时，排在后面的账号不许饿死", async () => {
-  // 形状：WorkBuddy 单账号一轮 33 次（7 步 cost 之和），上限 45 → 每个 tick 只装得下 1 个。
+  // 形状：WorkBuddy 单账号一轮 31 次（6 步 cost 之和），上限 45 → 每个 tick 只装得下 1 个。
   // 上游的机会/额度/任务都远多于一轮的上限，于是三个账号永远以 partial 收，
   // 永远 resumable（豁免 minIntervalSec 与 maxDaily）→ 谁在队首谁永远占满额度。
   const kv = fakeKv();
@@ -4081,7 +4126,6 @@ test("[审核P0-1] 预算只够一个账号时，排在后面的账号不许饿�
     "POST /activity/growth/tasks/t0/claim": { payload: { code: 0, already_claimed: false, credit: 10, energy: 5 } },
     "POST /activity/growth/tasks/t1/claim": { payload: { code: 0, already_claimed: false, credit: 10, energy: 5 } },
     "POST /activity/growth/tasks/t2/claim": { payload: { code: 0, already_claimed: false, credit: 10, energy: 5 } },
-    "GET /v2/activity/growth/energy": { payload: { balance: 50 } },
     "GET /v2/activity/growth/streak": { payload: { streak: { days: 15 } } },
   });
   try {
@@ -4181,7 +4225,6 @@ test("[审核P0-2b] 收尾写入不许把 used 顶过自限上限（预约不占
     "POST /activity/growth/tasks/t0/claim": { payload: { code: 0, already_claimed: false, credit: 10, energy: 5 } },
     "POST /activity/growth/tasks/t1/claim": { payload: { code: 0, already_claimed: false, credit: 10, energy: 5 } },
     "POST /activity/growth/tasks/t2/claim": { payload: { code: 0, already_claimed: false, credit: 10, energy: 5 } },
-    "GET /v2/activity/growth/energy": { payload: { balance: 50 } },
     "GET /v2/activity/growth/streak": { payload: { streak: { days: 15 } } },
   });
   try {
@@ -4291,7 +4334,6 @@ test("[审核P0-3] 成功路径（HTTP 200 + code:0）必须有断言：blindbox
     "GET /v2/activity/growth/buddy/quota": { payload: { affordable: 2 } },
     "POST /v2/activity/growth/buddy/open": { payload: { code: 0, results: [{ credit: 3 }] } },
     "GET /v2/activity/growth/tasks": { payload: { tasks: [] } },
-    "GET /v2/activity/growth/energy": { payload: { balance: 50 } },
     "GET /v2/activity/growth/streak": { payload: { streak: { days: 15 } } },
     "POST /v2/activity/growth/redeem": { payload: { code: 0, credit_granted: 20 } },
   });
@@ -4364,7 +4406,7 @@ test("[关掉一个工具：连跑 5 轮它一条记录都不留，且一个 KV 
 
 test("[停用期间删不得任何东西：重开后当天进度接着做，已完成的那步不重做", async () => {
   // 判据 2。停用只是"不跑"，不是"忘掉"：删掉 step / schedidx 的话，
-  // 重开后就变成从零开始，WorkBuddy 那种 7 步的账号会重打一遍上游（其中 buddy/open 真扣额度）。
+  // 重开后就变成从零开始，WorkBuddy 那种 6 步的账号会重打一遍上游（其中 buddy/open 真扣额度）。
   const kv = fakeKv();
   seedAccount(kv, "SEATD1");
   const runs = [];

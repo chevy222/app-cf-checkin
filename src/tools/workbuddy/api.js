@@ -31,7 +31,6 @@ const TASKS = `${GROWTH}/tasks`;
 // 代码暂不动：平台跑在 copilot.tencent.com，两种前缀都能返回数据（实测过），
 // 换前缀得先在真实账号上验一遍；先把结论记对，免得后人照着错的那句推。
 const TASK_ACCEPT = "/activity/growth/tasks/accept";
-const ENERGY = `${GROWTH}/energy`;
 const STREAK = `${GROWTH}/streak`;
 const REDEEM = `${GROWTH}/redeem`;
 
@@ -224,7 +223,6 @@ export async function ensureAuth(ctx) {
 
 export const readStatus = (ctx) => call(ctx, STATUS);
 export const submitCheckin = (ctx) => call(ctx, CHECKIN);
-export const readEnergy = (ctx) => call(ctx, ENERGY, { method: "GET", body: undefined });
 export const readStreak = (ctx) => call(ctx, STREAK, { method: "GET", body: undefined });
 export const readChances = (ctx) => call(ctx, LOTTERY_CHANCES, { method: "GET", body: undefined });
 export const readQuota = (ctx) => call(ctx, QUOTA, { method: "GET", body: undefined });

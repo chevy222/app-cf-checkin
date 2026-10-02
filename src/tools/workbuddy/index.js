@@ -3,9 +3,9 @@ import { fmtCST, parseWindowEnd } from "../../core/time.js";
 
 // WorkBuddy 签到工具。
 //
-// 这一家的形状与另两家完全不同：不是一个"领取"动作，而是 7 件互相有顺序依赖的事。
-// 7 件事必须分轮跑：全塞进一次调用的话，单账号一轮最坏 33 次上游调用（7 步 cost 之和），
-// 2 个账号串在同一次调用里就 66 次，必然撞穿免费版 50 次外部请求/调用的硬顶。撞顶之后冒出来的
+// 这一家的形状与另两家完全不同：不是一个"领取"动作，而是 6 件互相有顺序依赖的事。
+// 6 件事必须分轮跑：全塞进一次调用的话，单账号一轮最坏 31 次上游调用（6 步 cost 之和），
+// 2 个账号串在同一次调用里就 62 次，必然撞穿免费版 50 次外部请求/调用的硬顶。撞顶之后冒出来的
 // 症状是假的「可能登录态失效，请重新登录」，很多人因此天天重贴凭据，
 // 而真正的原因是配额。
 //
@@ -31,7 +31,7 @@ export default {
   id: "workbuddy",
   name: "WorkBuddy",
   order: 30,
-  summary: "每日签到 + 成长中心（旅行 / 抽奖 / 盲盒 / 任务 / 能量 / 连签兑换）",
+  summary: "每日签到 + 成长中心（旅行 / 盲盒 / 抽奖 / 连签兑换 / 任务）",
 
   config: [
     { key: "timeoutMs", label: "请求超时（毫秒）", type: "text", placeholder: "30000" },
@@ -146,61 +146,6 @@ export default {
       },
     },
     {
-      id: "lottery",
-      label: "抽奖",
-      cost: 1 + DRAWS_PER_ROUND,
-      async run(ctx) {
-        const guarded = await guard(ctx);
-        if (guarded) return guarded;
-        const chances = await api.readChances(ctx);
-        if (api.isAuthFail(chances)) return { status: "login_required", message: "抽奖次数查询被拒", credits: 0, cred: ctx.rotated };
-        const balance = api.num(api.dig(chances.payload, "balance")) || 0;
-        if (balance === 0) return { status: "ok", message: "没有抽奖机会", credits: 0, cred: ctx.rotated };
-
-        const want = Math.min(balance, DRAWS_PER_ROUND);
-        let drew = 0;
-        let credits = 0;
-        // 金额与奖名分开记：抽奖的积分是**异步到账**的（抽奖响应里前端只读
-        // prize_code / prize_name / reward_id，结果弹窗那句「积分已发放，将在几分钟内到账」
-        // 是写死的），所以"响应里没有金额"是常态而不是异常。
-        const named = [];
-        let blank = 0;
-        for (let i = 0; i < want; i += 1) {
-          const drawn = await api.drawOnce(ctx);
-          // HTTP 层失败与业务层失败都要停手。只看 status 会把"上游 200 + code=非0
-          // （机会已被别的端用掉 / 活动关闭 / 被风控）"读成"抽了一次但没中奖"：
-          // 日志里报的次数是假的，后面的 left = balance - drew 也跟着算错，
-          // 而 left 正是 partial 判定的基础。
-          // code 缺失（null）不算失败 —— 那是"上游没给这个字段"，不是"给了个错值"，
-          // 与 codeOf 的语义一致。（blindbox 那边写成 !== 0，是因为它的桩与上游都稳定给 code。）
-          const code = api.codeOf(drawn.payload);
-          if (drawn.status >= 400 || (code !== null && code !== 0)) break;
-          const granted = api.drawCredit(drawn.payload);
-          if (granted) {
-            credits += granted;
-          } else {
-            const name = api.prizeNameOf(drawn.payload);
-            if (name) named.push(name); else blank += 1;
-          }
-          drew += 1;
-        }
-        if (drew === 0) return { status: "error", message: `有 ${balance} 次机会但第一发就没成（响应异常）`, credits: 0, cred: ctx.rotated };
-        const left = balance - drew;
-        // 拿不到金额就报奖名；**绝不用 `+0`** —— 那是拿一个假测量值冒充"没中奖"，
-        // 而用户其实中了（只是几分钟后才到账）。零与"不知道"必须分开说。
-        const bits = [];
-        if (named.length) bits.push(`上游只回奖名：${named.join("、")}`);
-        if (blank) bits.push(`${blank} 次上游没回结果`);
-        const note = bits.length ? `（${bits.join("；")}）` : "";
-        return {
-          status: left > 0 ? "partial" : "claimed",
-          message: `抽 ${drew} 次${credits ? ` +${credits}` : ""}${note}${left > 0 ? `，还剩 ${left} 次下一轮抽` : ""}`,
-          credits,
-          cred: ctx.rotated,
-        };
-      },
-    },
-    {
       id: "blindbox",
       label: "开盲盒",
       // cost 是**预约**：这一步向预算申请的外部请求上界 = 1 次读额度 + OPENS_PER_ROUND 次开盒。
@@ -266,6 +211,99 @@ export default {
         return {
           status: left > 0 ? "partial" : "claimed",
           message: `开 ${opened} 个 +${credits}${labels.length ? `：${labels.join("、")}` : ""}${left > 0 ? `，还能开 ${left} 个下一轮再开` : ""}`,
+          credits,
+          cred: ctx.rotated,
+        };
+      },
+    },
+    {
+      id: "lottery",
+      label: "抽奖",
+      cost: 1 + DRAWS_PER_ROUND,
+      async run(ctx) {
+        const guarded = await guard(ctx);
+        if (guarded) return guarded;
+        const chances = await api.readChances(ctx);
+        if (api.isAuthFail(chances)) return { status: "login_required", message: "抽奖次数查询被拒", credits: 0, cred: ctx.rotated };
+        const balance = api.num(api.dig(chances.payload, "balance")) || 0;
+        if (balance === 0) return { status: "ok", message: "没有抽奖机会", credits: 0, cred: ctx.rotated };
+
+        const want = Math.min(balance, DRAWS_PER_ROUND);
+        let drew = 0;
+        let credits = 0;
+        // 金额与奖名分开记：抽奖的积分是**异步到账**的（抽奖响应里前端只读
+        // prize_code / prize_name / reward_id，结果弹窗那句「积分已发放，将在几分钟内到账」
+        // 是写死的），所以"响应里没有金额"是常态而不是异常。
+        const named = [];
+        let blank = 0;
+        for (let i = 0; i < want; i += 1) {
+          const drawn = await api.drawOnce(ctx);
+          // HTTP 层失败与业务层失败都要停手。只看 status 会把"上游 200 + code=非0
+          // （机会已被别的端用掉 / 活动关闭 / 被风控）"读成"抽了一次但没中奖"：
+          // 日志里报的次数是假的，后面的 left = balance - drew 也跟着算错，
+          // 而 left 正是 partial 判定的基础。
+          // code 缺失（null）不算失败 —— 那是"上游没给这个字段"，不是"给了个错值"，
+          // 与 codeOf 的语义一致。（blindbox 那边写成 !== 0，是因为它的桩与上游都稳定给 code。）
+          const code = api.codeOf(drawn.payload);
+          if (drawn.status >= 400 || (code !== null && code !== 0)) break;
+          const granted = api.drawCredit(drawn.payload);
+          if (granted) {
+            credits += granted;
+          } else {
+            const name = api.prizeNameOf(drawn.payload);
+            if (name) named.push(name); else blank += 1;
+          }
+          drew += 1;
+        }
+        if (drew === 0) return { status: "error", message: `有 ${balance} 次机会但第一发就没成（响应异常）`, credits: 0, cred: ctx.rotated };
+        const left = balance - drew;
+        // 拿不到金额就报奖名；**绝不用 `+0`** —— 那是拿一个假测量值冒充"没中奖"，
+        // 而用户其实中了（只是几分钟后才到账）。零与"不知道"必须分开说。
+        const bits = [];
+        if (named.length) bits.push(`上游只回奖名：${named.join("、")}`);
+        if (blank) bits.push(`${blank} 次上游没回结果`);
+        const note = bits.length ? `（${bits.join("；")}）` : "";
+        return {
+          status: left > 0 ? "partial" : "claimed",
+          message: `抽 ${drew} 次${credits ? ` +${credits}` : ""}${note}${left > 0 ? `，还剩 ${left} 次下一轮抽` : ""}`,
+          credits,
+          cred: ctx.rotated,
+        };
+      },
+    },
+    {
+      id: "redeem",
+      label: "连签兑换",
+      cost: 1 + api.workbuddyRedeemTiers.length,
+      async run(ctx) {
+        const guarded = await guard(ctx);
+        if (guarded) return guarded;
+        const streak = await api.readStreak(ctx);
+        const days = api.num(api.dig(api.dig(streak.payload, "streak"), "days")) || 0;
+        const unlocked = api.workbuddyRedeemTiers.filter((row) => days >= row.days);
+        if (unlocked.length === 0) {
+          // 报 ok（界面显示"正常"）而不是 inactive（"活动未开"）：活动本身开着，
+          // 只是连续使用天数没到 —— 一个月里绝大多数天都在 7 天以下，这是常态，
+          // 与"没有抽奖机会""没有待领的任务奖励"同类。使用者明确指出"活动未开"是误导。
+          return { status: "ok", message: `连续使用 ${days} 天，还没到任何兑换档`, credits: 0, cred: ctx.rotated };
+        }
+
+        let credits = 0;
+        let redeemed = 0;
+        const notes = [];
+        for (const row of unlocked) {
+          const result = await api.redeemTier(ctx, row.tier);
+          // 409 = 这一档已经换过，403 = 天数不够 —— 两种都是"正常无事"，不是失败
+          if (result.status === 409 || result.status === 403) { notes.push(`${row.tier} 已换或不够`); continue; }
+          if (result.status >= 400 || api.codeOf(result.payload) !== 0) { notes.push(`${row.tier} 失败`); continue; }
+          const granted = api.firstCredit(result.payload, null);
+          credits += granted;
+          redeemed += 1;
+          notes.push(`${row.tier} +${granted}`);
+        }
+        return {
+          status: redeemed ? "claimed" : "ok",
+          message: `${redeemed} 档兑换：${notes.join("、")}`,
           credits,
           cred: ctx.rotated,
         };
@@ -413,61 +451,6 @@ export default {
         return {
           status: left > 0 ? "partial" : "claimed",
           message: `领到 ${claimedCount} 个任务奖励 +${credits}${failNote}${blockNote}${acceptedNote}${skipNote}${left > 0 ? `，还有 ${left} 个下一轮领` : ""}`,
-          credits,
-          cred: ctx.rotated,
-        };
-      },
-    },
-    {
-      id: "energy",
-      label: "读能量与连签",
-      cost: 2,
-      async run(ctx) {
-        const guarded = await guard(ctx);
-        if (guarded) return guarded;
-        const [energy, streak] = await Promise.all([api.readEnergy(ctx), api.readStreak(ctx)]);
-        const balance = api.num(api.dig(energy.payload, "balance"));
-        const days = api.num(api.dig(api.dig(streak.payload, "streak"), "days"));
-        if (balance === null && days === null) return { status: "error", message: "能量与连签都读不到（响应异常）", credits: 0, cred: ctx.rotated };
-        // 这一步只负责"看一眼"，但它是下一步 redeem 的前置：
-        // 步骤之间不共享业务对象（内核只记状态与积分），所以 redeem 会自己重读连签天数
-        return { status: "ok", message: `能量 ${balance ?? "?"}，连签 ${days ?? "?"} 天`, credits: 0, cred: ctx.rotated };
-      },
-    },
-    {
-      id: "redeem",
-      label: "连签兑换",
-      cost: 1 + api.workbuddyRedeemTiers.length,
-      dependsOn: ["energy"],
-      async run(ctx) {
-        const guarded = await guard(ctx);
-        if (guarded) return guarded;
-        const streak = await api.readStreak(ctx);
-        const days = api.num(api.dig(api.dig(streak.payload, "streak"), "days")) || 0;
-        const unlocked = api.workbuddyRedeemTiers.filter((row) => days >= row.days);
-        if (unlocked.length === 0) {
-          // 报 ok（界面显示"正常"）而不是 inactive（"活动未开"）：活动本身开着，
-          // 只是连签天数没到 —— 一个月里绝大多数天都在 7 天以下，这是常态，
-          // 与"没有抽奖机会""没有待领的任务奖励"同类。使用者明确指出"活动未开"是误导。
-          return { status: "ok", message: `连签 ${days} 天，还没到任何兑换档`, credits: 0, cred: ctx.rotated };
-        }
-
-        let credits = 0;
-        let redeemed = 0;
-        const notes = [];
-        for (const row of unlocked) {
-          const result = await api.redeemTier(ctx, row.tier);
-          // 409 = 这一档已经换过，403 = 天数不够 —— 两种都是"正常无事"，不是失败
-          if (result.status === 409 || result.status === 403) { notes.push(`${row.tier} 已换或不够`); continue; }
-          if (result.status >= 400 || api.codeOf(result.payload) !== 0) { notes.push(`${row.tier} 失败`); continue; }
-          const granted = api.firstCredit(result.payload, null);
-          credits += granted;
-          redeemed += 1;
-          notes.push(`${row.tier} +${granted}`);
-        }
-        return {
-          status: redeemed ? "claimed" : "ok",
-          message: `${redeemed} 档兑换：${notes.join("、")}`,
           credits,
           cred: ctx.rotated,
         };

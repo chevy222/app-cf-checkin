@@ -1,6 +1,7 @@
 import { escapeHtml } from "../../core/text.js";
 import { fmtCST } from "../../core/time.js";
 import { isOff } from "../../core/flags.js";
+import { missingConfigFields } from "../../core/scheduler.js";
 import { TOOLS } from "../../tools/index.js";
 import { link, navHtml, pageShell } from "../layout.js";
 import { alertBox, badge, button, emptyState, sectionHead } from "../components.js";
@@ -146,18 +147,18 @@ export function renderAccountForm({ pwd, tool, fields, values, existing, errors,
 }
 
 export function renderToolConfig({ pwd, tool, values, errors, flash }) {
-  const filled = tool.config.filter((field) => {
-    const v = values[field.key];
-    return v !== undefined && v !== "";
-  }).length;
+  // 判"缺哪几项"必须与内核那道闸用同一个函数（missingConfigFields）：
+  // 页面自己数一遍"已填 N / 共 M"会与真正的门槛判断走岔 ——
+  // 必填项全填齐、只留可选项没填时，调度器照跑，页面却报警说"会被跳过"。
+  const missing = missingConfigFields(tool, values);
 
   return pageShell({
     title: `${tool.name} · 工具配置`,
     nav: navHtml(pwd, `tool:${tool.id}`, TOOLS),
     body: `${flash ? alertBox(flash.kind, escapeHtml(flash.text)) : ""}
-      ${sectionHead(`${tool.name} · 工具配置`, "原先挤在 Cloudflare 变量里的值，现在都存 KV、界面可改")}
-      ${filled < tool.config.length
-        ? alertBox("warn", `工具配置未完成：已填 ${filled} / ${tool.config.length} 项。缺项时这个工具会被调度器跳过。`)
+      ${sectionHead(`${tool.name} · 工具配置`)}
+      ${missing.length
+        ? alertBox("warn", `工具配置未完成：还缺 ${missing.length} 项（${missing.join("、")}）。缺项时这个工具会被调度器跳过。`)
         : ""}
       ${renderTutorial(tool)}
       <div class="split">
