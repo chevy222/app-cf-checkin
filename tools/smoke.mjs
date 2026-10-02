@@ -3865,7 +3865,7 @@ test("[workbuddy] 旅行在途不落已结：同一天下一轮仍会重读状�
     assert.ok(stub.seen.filter((r) => r.path.endsWith("/travel/status")).length > before,
       "同一天的下一轮没有再读旅行状态 —— 这就是那个 bug");
     assert.equal(wbStep(second.summary, 'travel').status, "waiting");
-    // 其余六步都已结、被复用，所以这一轮只该花 1 次外部请求
+    // 其余五步都已结、被复用，所以这一轮只该花 1 次外部请求
     assert.equal(wbView(second.summary).http, 1, `在途期间每轮该只花 1 次请求，实际 ${wbView(second.summary).http}`);
   } finally { stub.restore(); }
 });
@@ -4023,7 +4023,7 @@ test("[workbuddy] 一轮装不下 6 步时整步顺延，下一轮接着做而�
   } finally { stub.restore(); }
 });
 
-test("[workbuddy] 续期只写一次盘：7 个步骤共用同一个新串不能写 7 回", async () => {
+test("[workbuddy] 续期只写一次盘：6 个步骤共用同一个新串不能写 6 回", async () => {
   const kv = fakeKv();
   seedWorkbuddy(kv, "wb-rot", { expiresAt: cst(10) + 600 });   // 只剩 10 分钟 → 必然触发续期
   let refreshed = 0;
@@ -4151,7 +4151,7 @@ test("[审核P0-1] 预算只够一个账号时，排在后面的账号不许饿�
 
 test("[审核P0-2] 上游改发短票时，一轮的实际子请求不许越过预约上限", async () => {
   // refreshAheadSec 留空 → 兜底 7 天。上游若发 1 小时的短票，"还剩 7 天就别续"恒不成立，
-  // 7 个步骤的 guard 会各换一次票：一次性票据一轮烧 7 张，多出的请求也没算进任何 cost。
+  // 6 个步骤的 guard 会各换一次票：一次性票据一轮烧 6 张，多出的请求也没算进任何 cost。
   const kv = fakeKv();
   seedWorkbuddy(kv, "wb-A", { expiresAt: cst(10) + 300 });
   let refreshes = 0;
@@ -4430,7 +4430,7 @@ test("[停用期间删不得任何东西：重开后当天进度接着做，已�
   const gap = await tickWith(kv, [tool(steps)], 45, cst(12));
   assert.equal(gap.summary.plan[0].skipped, "已停用");
   // 判据 2 的字面要求：这几类键一个都不许少
-  assert.ok(kv.store.has("v1:step:fix:SEATD1"), "停用把步骤进度删了：重开后要从零开始，7 步的账号会重打一遍上游");
+  assert.ok(kv.store.has("v1:step:fix:SEATD1"), "停用把步骤进度删了：重开后要从零开始，6 步的账号会重打一遍上游");
   assert.ok(kv.store.has("v1:acct:fix:SEATD1"), "停用把账号记录删了");
   assert.ok(kv.store.has("v1:schedidx:fix"), "停用把调度索引删了：lastAt 归零会让所有账号挤成同一批");
   assert.deepEqual(Object.keys(JSON.parse(kv.store.get("v1:step:fix:SEATD1")).done), ["a"],

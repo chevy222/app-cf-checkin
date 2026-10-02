@@ -209,8 +209,8 @@ export async function ensureAuth(ctx) {
   const expiresAt = num(ctx.account.cred.expiresAt) || 0;
   const ahead = num(ctx.config.refreshAheadSec) || 7 * 86400;
   // ahead 那句"还剩 7 天就别动"默认了这家发的是长票。上游一旦改发短票（比如 1 小时），
-  // 这个条件恒成立，于是 7 个步骤的 guard 各换一次票：一轮烧掉 7 张一次性 refresh_token，
-  // 多出来的 6 次请求也没算进任何一步的 cost —— 整轮 used 会越过自限的 50，
+  // 这个条件恒成立，于是 6 个步骤的 guard 各换一次票：一轮烧掉 6 张一次性 refresh_token，
+  // 多出来的 5 次请求也没算进任何一步的 cost —— 整轮 used 会越过自限的 50，
   // 而那已是平台硬顶、没有余量，
   // 连带把已经跑完的账号的日志与进度一起丢。本轮换过一次之后，只有真过期才允许再换。
   if (ctx.renewAttempted && expiresAt > ctx.now) return {};

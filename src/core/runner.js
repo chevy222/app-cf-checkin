@@ -191,8 +191,8 @@ async function runOneAccount({ env, budget, tool, uid, config, day, now, trigger
     };
     if (rotated) {
       // 同一个新串可能被后续每一步重复带回来（WorkBuddy 就是这样：续期发生在第一步，
-      // 而每一步都把 ctx.rotated 附上）。不去重的话 7 个步骤会写 7 次同样的 KV ——
-      // 单步 2 笔，7 步就是 14 笔，全是 KV 配额（不再占外部请求额度，但仍值得省）
+      // 而每一步都把 ctx.rotated 附上）。不去重的话 6 个步骤会写 6 次同样的 KV ——
+      // 单步 2 笔，6 步就是 12 笔，全是 KV 配额（不再占外部请求额度，但仍值得省）
       const fresh = Object.fromEntries(Object.entries(rotated).filter(([field, value]) => persistedCred[field] !== value));
       if (Object.keys(fresh).length) {
         let saved = false;
