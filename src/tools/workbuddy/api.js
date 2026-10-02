@@ -24,7 +24,12 @@ const LOTTERY_DRAW = `${GROWTH}/lottery/draw`;
 const QUOTA = `${GROWTH}/buddy/quota`;
 const OPEN = `${GROWTH}/buddy/open`;
 const TASKS = `${GROWTH}/tasks`;
-// 写端点不带 /v2，读端点带 —— 两者不是笔误，是上游真实的分工（实测）
+// /v2 前缀按**接口族**分，不是按读/写分（2026-10-02 从前端 API 模块逐条对拍出来的）：
+// 带 /v2 的只有 profile / subscribe-task/status / tasks / badges 这四个；
+// energy、streak、buddy/*、lottery/*、redeem、heatmap 以及 tasks/accept、
+// tasks/{code}/claim 都不带 —— 所以上面把 GROWTH 一律套成 /v2 是**多了一个前缀**。
+// 代码暂不动：平台跑在 copilot.tencent.com，两种前缀都能返回数据（实测过），
+// 换前缀得先在真实账号上验一遍；先把结论记对，免得后人照着错的那句推。
 const TASK_ACCEPT = "/activity/growth/tasks/accept";
 const ENERGY = `${GROWTH}/energy`;
 const STREAK = `${GROWTH}/streak`;

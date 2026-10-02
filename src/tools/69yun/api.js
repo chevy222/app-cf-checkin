@@ -101,11 +101,11 @@ async function call(ctx, { path, method = "GET", body, cookie, contentType, refe
 // ── 登录 ──────────────────────────────────────────────────────
 // 完整流程：GET 登录页拿初始 Cookie → POST 登录 → 轮询验证 session。
 //
-// 失败必须带 **kind**，因为两种失败的后果完全相反：
-//   auth      = 凭据本身不行（密码错、账号不存在）→ login_required，用户重录才有救
-//   transient = 上游自己的问题（5xx、网络抖动、session 传播慢）→ error/rate_limited，
-//               用户重录密码毫无用处，而且亮红条会误导他以为账号坏了
-// 早先这里只返回 { error }，六条成因全被上层映成 login_required。
+// 失败必须带 **kind**，三种失败的后果完全不同：
+//   auth      = 凭据本身不行（密码错、账号不存在、字段没填全）→ login_required，用户重录才有救
+//   rate      = 上游回 429，被限频 → rate_limited，走 schedule.backoff 退避
+//   transient = 上游自己的问题（5xx、网络抖动、session 传播慢）→ waiting，
+//               用户重录密码毫无用处；报错亮红条、或谎报「限频」都会把他带偏
 export async function login(ctx) {
   const email = ctx.account.cred.email;
   const password = ctx.account.cred.password;
@@ -130,9 +130,10 @@ export async function login(ctx) {
     const msg = login.payload && login.payload.msg
       ? login.payload.msg
       : `HTTP ${login.status} ${truncate(login.text, 80)}`;
-    // 5xx / 429 这类是上游自己的问题；4xx 与业务码才是"密码不对"。
+    // 429 是唯一的"限频"信号；其它 4xx 与业务码才是"密码不对"。
     // SSPanel 登录失败回 ret!=1 且 HTTP 200，所以 HTTP 状态是这里唯一能分开的信号。
-    const kind = login.status >= 500 || login.status === 429 ? "transient" : "auth";
+    const kind = login.status === 429 ? "rate"
+      : login.status >= 500 ? "transient" : "auth";
     return { error: `登录失败：${msg}`, kind };
   }
   cookies = mergeCookies(cookies, login.cookies);

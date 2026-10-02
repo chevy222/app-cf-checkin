@@ -14,8 +14,9 @@ import * as api from "./api.js";
 //   POST /user/checkin  ret=1 → 签到成功（claimed）
 //   POST /user/checkin  ret=0 → 今日已签到（already）
 //   POST /user/checkin  3xx   → Cookie 失效，重新登录后再试一次
-//   登录 ret!==1 且 4xx → 凭据不行（login_required，要用户重录）
-//   登录 5xx/429、轮询异常、session 未就绪 → 上游的问题（rate_limited，等下一轮）
+//   登录 429                  → 被限频（rate_limited，按 schedule.backoff 退避）
+//   登录 5xx / 轮询异常 / session 一直不就绪 → 上游的问题（waiting，等下一轮，不亮红条）
+//   登录 ret!==1 且 4xx        → 凭据不行（login_required，要用户重录）
 
 export default {
   id: "69yun",
@@ -73,21 +74,20 @@ export default {
     minIntervalSec: 1800,
     maxDaily: 10,
     // 退避阶梯，**单位是分钟**（内核的 backoffSec 会 ×60，别写成秒）。
-    // 量级对齐 Trae 的 [30,60,120,240,360]：首次 5 分钟、然后 10、30。
-    // 它只在步骤产出 rate_limited 时生效，而那正是下面 loginTransient 的分支 ——
-    // 早先这里写的是 [300,600,1800]（=5/10/30 小时，大了一个数量级），
-    // 而 69 云从不产出 rate_limited，所以那个阶梯一次都不会被读到（死配置）。
+    // 只有上游回 429（真限频）时步骤才产出 rate_limited，而内核也只在那个状态下读它。
+    // cron 是 30 分钟一轮，所以前两档在下一轮醒来时早已过期 —— 实际节奏由 30 分钟那档
+    // 与 cron 共同决定；留着前两档是为了 cron 变密时不必再动这里。
     backoff: [5, 10, 30],
   },
 
   hosts: api.yun69Hosts,
 
-  // 最坏情况 cost = 7：
+  // 最坏情况 cost = 7（逐笔数得出来）：
   //   1（checkin 被 3xx）+ 1（GET 登录页）+ 1（POST 登录）+ 3（轮询 session）+ 1（再 checkin）
-  // 声明 8，那多出来的 1 笔不是"随便留的"——它防的是轮询第 3 次仍返回 3xx 时
-  // 上游多给的一次重定向探测，以及登录响应里分两次下发 Set-Cookie 的形态。
-  // 往小了改是危险方向：低于真实上界会让 fits() 给出一张装不下的假票。
-  // 正常情况（Cookie 有效）只花 1 次。
+  // 声明 8 = 7 + 1 笔**保守余量**，那 1 笔没有对应的具体代码路径 —— 轮询在最后一次仍是
+  // 3xx 时直接落尾部的 return，不多发请求；Set-Cookie 分几次下发也都在同一个响应里。
+  // 留着它是因为**往小了改才是危险方向**：低于真实上界会让 fits() 发出一张装不下的
+  // 假票，而多预约一次只是让调度少排一个账号。正常情况（Cookie 有效）只花 1 次。
   steps: [
     {
       id: "checkin",
@@ -110,11 +110,16 @@ export default {
         // 重新登录
         const login = await api.login(ctx);
         if (login.error) {
-          // 凭据问题与上游问题必须分开：前者要用户重录（login_required），
-          // 后者重录也没用（亮红条只会误导他）。transient 走 rate_limited ——
-          // 那是唯一会让内核读 schedule.backoff 的状态，于是上面那个阶梯才真正生效。
-          if (login.kind === "transient") {
+          // 三种失败的去向完全不同，不能混：
+          //   rate      —— 被限频，排 retryAt 走 schedule.backoff（内核只在这个状态下读它）
+          //   transient —— 上游自己的问题：不亮红条（重录密码没用），也不谎报「限频」，
+          //                报 waiting 等下一轮
+          //   auth      —— 凭据真不行，要用户重录
+          if (login.kind === "rate") {
             return { status: "rate_limited", message: login.error, credits: 0, cred: null };
+          }
+          if (login.kind === "transient") {
+            return { status: "waiting", message: login.error, credits: 0, cred: null };
           }
           return {
             status: "login_required",
@@ -152,9 +157,11 @@ export default {
   async validate(ctx) {
     const login = await api.login(ctx);
     if (login.error) {
-      return login.kind === "transient"
-        ? { status: "error", message: login.error }
-        : { status: "login_required", message: login.error };
+      // 与步骤同口径：限频与上游故障都不是"凭据不行"。测试是手动点的，
+      // 所以把原文带出来、让用户看到"这次为什么没测成"最有用。
+      if (login.kind === "rate") return { status: "rate_limited", message: login.error };
+      if (login.kind === "transient") return { status: "error", message: login.error };
+      return { status: "login_required", message: login.error };
     }
     // 必须**就地改写** ctx.account.cred，不能把 cookie 放进返回值：
     // validateAccount 的落盘判据是「调用前后 account.cred 的差异」

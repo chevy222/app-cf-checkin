@@ -2615,7 +2615,7 @@ test("[69yun] 点「测试」后新 Cookie 真的落进 KV，不只嘴上说已�
   } finally { stub.restore(); }
 });
 
-test("[69yun] 上游 5xx 报 rate_limited 而不是 login_required（重录密码没用）", async () => {
+test("[69yun] 上游 5xx 报 waiting，不是 login_required 也不是 rate_limited", async () => {
   const kv = fakeKv();
   seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
   const stub = stubUpstream({
@@ -2626,9 +2626,11 @@ test("[69yun] 上游 5xx 报 rate_limited 而不是 login_required（重录密�
   try {
     const { summary } = await yun69Tick(kv);
     const acct = planOf(summary, "69yun").accounts[0];
-    // 5xx 是上游自己的问题：让用户去改密码是白费工夫，亮红条还会误导他以为账号坏了
-    assert.equal(acct.status, "rate_limited", `上游故障不该报 login_required：${acct.message}`);
+    // 5xx 是上游自己的问题：让用户去改密码是白费工夫，亮红条会误导他以为账号坏了。
+    // 但也不许借「限频」那个词 —— 限频是 429 才有的含义。如实报"等待中，下一轮再看"。
+    assert.equal(acct.status, "waiting", `上游故障的去向不对：${acct.status} ${acct.message}`);
     assert.notEqual(acct.status, "login_required");
+    assert.notEqual(acct.status, "rate_limited", "5xx 不是限频，别借那个词");
   } finally { stub.restore(); }
 });
 
@@ -2648,27 +2650,26 @@ test("[69yun] 密码确实错了才报 login_required（auth 与 transient 要�
 
 test("[69yun] 退避阶梯是分钟量级，且真的会被 rate_limited 读到", async () => {
   const tool = findTool("69yun");
-  // 内核 backoffSec 会 ×60，所以声明值必须是分钟。早先写 [300,600,1800]
-  // 实际是 5/10/30 小时，比另两家大一个数量级。
+  // 内核 backoffSec 会 ×60，所以声明值必须是分钟 —— 写成 300/600/1800 就是 5/10/30 小时。
   assert.deepEqual(tool.schedule.backoff, [5, 10, 30], "退避阶梯应是 5/10/30 分钟");
   for (const m of tool.schedule.backoff) {
     assert.ok(m <= 60, `退避阶梯不该出现小时级值（${m} 分钟 = ${m / 60} 小时）`);
   }
-  // 更关键：阶梯必须与「真的产出 rate_limited」配套，否则它一次都不会被读到。
-  // 早先 69 云从不产出 rate_limited，这个声明就是死的。
+  // 阶梯必须与「真的产出 rate_limited」配套，否则它一次都不会被读到。
+  // 触发它的是 **429**（唯一的限频信号）；5xx 走 waiting，不读阶梯（那条在下面另测）。
   const kv = fakeKv();
   seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
   const stub = stubUpstream({
     "POST /user/checkin": { status: 302, body: "" },
     "GET /auth/login": { status: 200, body: "<html>login</html>" },
-    "POST /auth/login": { status: 503, body: "down" },
+    "POST /auth/login": { status: 429, body: "too many requests" },
   });
   try {
     const now = cst(10);
     kv.advanceTo(now * 1000);
     const { summary } = await yun69Tick(kv, now);
     const acct = planOf(summary, "69yun").accounts[0];
-    assert.equal(acct.status, "rate_limited", "先决条件：这条路径要真的产出 rate_limited");
+    assert.equal(acct.status, "rate_limited", "429 必须产出 rate_limited（阶梯的唯一触发点）");
     // 读回调度索引：退避时间必须按分钟落进去（首次 = 5 分钟 = 300 秒）
     const index = JSON.parse(kv.store.get("v1:schedidx:69yun"));
     const entry = index.entries["user69yun.com"] || index.entries["user@69yun.com"];
