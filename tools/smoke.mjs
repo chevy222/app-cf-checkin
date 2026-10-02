@@ -2962,27 +2962,6 @@ test("[trae] checked_in=true 直接收手，一次 claim 都不发", async () =>
   } finally { stub.restore(); }
 });
 
-test("[trae] 领取成功但没回积分时补读一次，界面上要看得见领到了多少", async () => {
-  const kv = fakeKv();
-  seedTrae(kv);
-  let statusCalls = 0;
-  const stub = stubUpstream({
-    "POST /trae/api/v2/ug/checkin_credits/status": () => {
-      statusCalls += 1;
-      return { payload: { checked_in: false, credits: statusCalls === 1 ? 300 : 400, enable: true } };
-    },
-    "POST /trae/api/v2/ug/checkin_credits/claim": { payload: { code: 0, message: "success" } },
-    "POST /trae/api/v2/pay/ide_user_ent_usage": { payload: { user_entitlement_pack_list: [{ entitlement_base_info: { quota: { credits_limit: 600 } }, usage: { credits_amount: 400 } }] } },
-  });
-  try {
-    const { summary } = await traeTick(kv);
-    const view = planOf(summary, "trae").accounts[0];
-    assert.equal(view.status, "claimed");
-    assert.equal(view.credits, 100, "积分该是补读前后的差值");
-    assert.match(view.message, /剩余 200/);
-  } finally { stub.restore(); }
-});
-
 test("[trae] 额度包优先用 usage_summary（pack 的 quota 不带 credits_limit 时不算出 0）", async () => {
   const kv = fakeKv();
   seedTrae(kv);
@@ -2999,42 +2978,6 @@ test("[trae] 额度包优先用 usage_summary（pack 的 quota 不带 credits_li
     const view = planOf(summary, "trae").accounts[0];
     assert.match(view.message, /剩余 5136\.85/, "usage_summary 优先：5200 - 63.15 = 5136.85");
   } finally { stub.restore(); }
-});
-
-test("[trae] 积分算不出来时不许报「本次 +0」—— 那是个假的测量值", async () => {
-  // 三种走法都会算不出本次到账，而它们都不是"确实领到 0"：
-  //   ① 领取前 status 没给 credits（未签到时上游可能不返回该字段）→ pre 是 NaN
-  //   ② 上游入账是异步的，补读那一刻还没涨
-  //   ③ status.credits 不是余额口径，前后相等，差值恒为 0
-  // 旧 Worker 对这三种的处置是"显示当前值，不报 +0"。本文件曾经统一打印 `本次 +0`：
-  // 用户手里明明多了 150 积分，日志写着 +0 —— 比报错更难查，因为它看起来像"测过了，就是 0"。
-  const cases = [
-    { name: "① 领取前没给 credits", first: { checked_in: false, enable: true }, after: { checked_in: true, credits: 150, enable: true }, before: "未给" },
-    { name: "③ 前后相等（非余额口径）", first: { checked_in: false, credits: 150, enable: true }, after: { checked_in: true, credits: 150, enable: true }, before: "150" },
-  ];
-  for (const c of cases) {
-    const kv = fakeKv();
-    seedTrae(kv);
-    let n = 0;
-    const stub = stubUpstream({
-      "POST /trae/api/v2/ug/checkin_credits/status": () => {
-        n += 1;
-        return { payload: n === 1 ? c.first : c.after };
-      },
-      "POST /trae/api/v2/ug/checkin_credits/claim": { payload: { code: 0, message: "success" } },
-      "POST /trae/api/v2/pay/ide_user_ent_usage": { payload: { user_entitlement_pack_list: [] } },
-    });
-    try {
-      const { summary } = await traeTick(kv);
-      const view = planOf(summary, "trae").accounts[0];
-      assert.equal(view.status, "claimed", c.name);
-      assert.ok(!/本次 \+0/.test(view.message), `${c.name}：报了 +0，那是假的测量值（实际「${view.message}」）`);
-      assert.match(view.message, /上游未回/, `${c.name}：没说清积分算不出来`);
-      assert.match(view.message, /150/, `${c.name}：当前签到积分没报出来`);
-      assert.match(view.message, new RegExp(`领取前 ${c.before}`), `${c.name}：领取前的值没报出来，下一轮就没法归因`);
-      assert.equal(view.credits, 0, `${c.name}：算不出来就不许编一个数`);
-    } finally { stub.restore(); }
-  }
 });
 
 test("[trae] 临近到期才换票；换出的新串当场写回，旧串不进日志", async () => {

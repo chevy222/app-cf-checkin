@@ -1287,8 +1287,8 @@ var trae_default = {
     backoff: [30, 60, 120, 240, 360]
   },
   hosts: traeHosts,
-  // 最坏一轮（走一遍算出来的，不是推算）：换票 1 + 状态 1 + [票被提前判死: 强制换票 1 + 重读状态 1]
-  //   + 领取 1 + 额度包 1 = 6。预约低了不会报错，只会把越界的机会留给后面几步，所以宁可报高。
+  // 最坏一轮：换票 1 + 状态 1 + [票被提前判死: 强制换票 1 + 重读状态 1] + 领取 1 + 额度包 1 = 6。
+  // 预约低了不会报错，只会把越界的机会留给后面几步，所以宁可报高。
   steps: [
     {
       id: "checkin",
@@ -1324,25 +1324,12 @@ var trae_default = {
         if (outcome.status === "rate_limited") {
           return { status: "rate_limited", message: `${outcome.message}\uFF08\u6309\u9000\u907F\u9636\u68AF\u7A0D\u540E\u518D\u8BD5\uFF09`, credits: 0, cred };
         }
-        let gained = outcome.credits || 0;
-        let current = null;
-        let before = null;
-        if (!gained && outcome.status === "claimed") {
-          const after = await readStatus(ctx, token);
-          if (!after.error && !after.authFailed) {
-            const pre = Number(status.credits);
-            const post2 = Number(after.credits);
-            if (Number.isFinite(post2)) current = post2;
-            if (Number.isFinite(pre)) before = pre;
-            if (Number.isFinite(pre) && Number.isFinite(post2)) gained = Math.max(0, post2 - pre);
-          }
-        }
-        const credited = outcome.status !== "claimed" ? "" : gained > 0 ? `\uFF0C\u672C\u6B21 +${gained}` : current !== null ? `\uFF0C\u672C\u6B21\u5230\u8D26\u4E0A\u6E38\u672A\u56DE\uFF1B\u5F53\u524D\u7B7E\u5230\u79EF\u5206 ${current}\uFF08\u9886\u53D6\u524D ${before === null ? "\u672A\u7ED9" : before}\uFF09` : "\uFF0C\u672C\u6B21\u5230\u8D26\u4E0A\u6E38\u672A\u56DE\uFF08\u9886\u53D6\u4E0E\u72B6\u6001\u63A5\u53E3\u90FD\u6CA1\u7ED9\u79EF\u5206\uFF09";
+        const gained = outcome.credits || 0;
         const usage = await readUsage(ctx, token);
         const tail = usage.error || usage.authFailed ? "\uFF08\u989D\u5EA6\u5305\u8BFB\u53D6\u5931\u8D25\uFF09" : `\uFF0C\u989D\u5EA6\u5305\u5269\u4F59 ${usage.remaining}`;
         return {
           status: outcome.status,
-          message: `${outcome.message}${credited}${tail}`,
+          message: `${outcome.message}${gained ? `\uFF0C\u672C\u6B21 +${gained}` : ""}${tail}`,
           credits: gained,
           cred
         };
