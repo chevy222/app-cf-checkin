@@ -56,28 +56,7 @@ npx wrangler kv namespace create CHECKIN_KV
 命令输出里有一行 `id = "…"`，用它**替换掉 `wrangler.toml` 里 `kv_namespaces`
 段现有的那个 id** —— 那是原作者自己的命名空间，你的账号用不了，不换部署必失败。
 
-**第 4 步 · 改掉域名配置（不改这一步，部署会失败）**
-
-`wrangler.toml` 里有几行是**原作者自己的**，你的账号用不了：
-
-```toml
-routes = [
-  { pattern = "checkin.chevy.dpdns.org", custom_domain = true }
-]
-workers_dev = false
-```
-
-二选一：
-
-- **用 Cloudflare 送的免费域名**（最省事）：把整个 `routes` 段删掉（或整段注释掉），
-  并把 `workers_dev` 改成 `true`。部署完拿到的是
-  `https://checkin.<你的子域>.workers.dev`。
-- **绑自己的域名**：把 `pattern` 换成你自己的域名（该域名需已托管在这个
-  Cloudflare 账号下，否则 Cloudflare 无权为它签证书），`workers_dev` 保持 `false`。
-
-不改的话，`wrangler deploy` 会因为「这个域名不属于你的账号」直接失败。
-
-**第 5 步 · 设访问口令**
+**第 4 步 · 设访问口令**
 
 ```bash
 npx wrangler secret put PASSWORD
@@ -86,14 +65,19 @@ npx wrangler secret put PASSWORD
 回车后输入你想设的口令再回车。这是打开界面的钥匙，别用弱口令，
 也**不要把它写进任何文件或贴给任何人**。
 
-**第 6 步 · 部署**
+**第 5 步 · 部署**
 
 ```bash
 npm run deploy
 ```
 
-输出里的地址就是你的签到台 —— 第 4 步选免费域名的话是
-`https://checkin.<你的子域>.workers.dev`，绑自有域名的话就是你填的那个。
+**第 6 步 · 绑定访问域名（二选一）**
+
+`wrangler.toml` 里不写 routes、`workers_dev = false`，所以部署完默认没有公开 URL，需要自己绑一个：
+
+- **绑自己的域名**（推荐）：在 Cloudflare 面板 → Workers 和 Pages → 你的 Worker → 设置 → 域名和路由 → 添加自定义域名。该域名需已托管在这个 Cloudflare 账号下。
+- **用 Cloudflare 送的免费域名**：把 `wrangler.toml` 里的 `workers_dev` 改成 `true`，重新部署，拿到 `https://checkin.<你的子域>.workers.dev`。
+
 浏览器打开、输入口令，按「新增账号」页左侧的教程把四家账号加进去，当天就能开始领。
 
 这个命令会先把页面底部的版本号重算成**当前北京时间**（格式 `yyyy-MM-dd:HHMM`，

@@ -3,11 +3,8 @@ main = "src/index.js"
 compatibility_date = "2026-09-30"
 # 面板上手工设的变量（PASSWORD 之外若还有）在 wrangler deploy 时不被抹掉
 keep_vars = true
-# 与面板设置保持一致：wrangler.toml 是部署时的唯一事实源，
-# 这里不写的面板配置（自定义域、开关）会被每次部署抹掉
-routes = [
-  { pattern = "checkin.chevy.dpdns.org", custom_domain = true }
-]
+# 自定义域名不在此配置：在 Cloudflare 面板「 Workers 和 Pages → 你的 Worker → 设置 → 域名和路由 」
+# 里单独绑定即可。wrangler.toml 不写 routes 不会清掉已绑定的域名。
 workers_dev = false
 preview_urls = false
 
