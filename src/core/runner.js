@@ -294,8 +294,11 @@ async function safe(fn) {
 // 空 cred 的壳子就够了 —— 这条消息是内核写的，本来不含凭据。
 async function logOutcome(env, { now, tool, result, view, budget, trigger }) {
   if (!result.account && !result.broken) return;
+  // 日志时间用实际执行时刻而不是 cron 计划时刻：同一轮多个账号依次执行，
+  // 时间戳应有先后差异；调度与逻辑日仍用传入的 now（scheduledTime）。
+  const atMs = Date.now();
   await safe(() => writeRunLog(env, {
-    now, tool,
+    now: Math.floor(atMs / 1000), tool,
     account: result.account || { cred: {} },
     result: { ...view, label: view.label || view.uid },
     budget, trigger,
@@ -303,7 +306,7 @@ async function logOutcome(env, { now, tool, result, view, budget, trigger }) {
   // 请求记录写进**独立的键**（列表页不读它，所以列表成本一分不涨）。
   // 即使一次交互都没有也写：这样详情页能区分"这次运行真的没打上游"与"记录不存在"。
   await safe(() => writeTrace(env, {
-    at: now * 1000, tool,
+    at: atMs, tool,
     account: result.account || { cred: {} },
     uid: result.uid, trigger, steps: view.steps, trace: result.trace,
   }));

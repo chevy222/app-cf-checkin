@@ -3904,8 +3904,9 @@ async function safe(fn) {
 __name(safe, "safe");
 async function logOutcome(env, { now, tool, result, view, budget, trigger }) {
   if (!result.account && !result.broken) return;
+  const atMs = Date.now();
   await safe(() => writeRunLog(env, {
-    now,
+    now: Math.floor(atMs / 1e3),
     tool,
     account: result.account || { cred: {} },
     result: { ...view, label: view.label || view.uid },
@@ -3913,7 +3914,7 @@ async function logOutcome(env, { now, tool, result, view, budget, trigger }) {
     trigger
   }));
   await safe(() => writeTrace(env, {
-    at: now * 1e3,
+    at: atMs,
     tool,
     account: result.account || { cred: {} },
     uid: result.uid,
