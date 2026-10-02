@@ -15,12 +15,13 @@ import { recordExchange } from "./trace.js";
 //
 // ⚠️ 这是明知的选择，后果要记住：官方文档写明「redirect 链里的每一跳都计入，
 // 子请求总数可能超过代码里 fetch() 的调用次数」，而本账本一次 fetch() 只记一笔 ——
-// 两个计数器可能不相等（69 云的登录 GET/POST 就没设 redirect:manual）。
+// 两个计数器可能不相等（Qoder / Trae / WorkBuddy 用默认 follow，万一上游返回重定向链就会多跳；
+// 69 云已全部设 redirect:manual，它不会）。
 // 自设值 = 硬顶时，少记的那几跳会直接撞上平台的硬异常：**整次调用作废、
 // 本轮日志与进度一起丢、且没有日志解释原因**。
 // 出现「日志莫名缺条 / 进度回退」先怀疑它；想退回有余量的状态，
 // 设 env.BUDGET_SUBREQUESTS = 45 即可（不必改代码）。
-export const DEFAULT_LIMIT = 50;
+const DEFAULT_LIMIT = 50;
 
 export function budgetFrom(env) {
   const configured = Number(env && env.BUDGET_SUBREQUESTS);

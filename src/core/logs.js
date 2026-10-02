@@ -23,16 +23,16 @@ const revOf = (ms) => String(REV_BASE - Number(ms)).padStart(13, "0");
 const runKey = (ms, toolId, uid) => `${RUN_PREFIX}${toolId}:${revOf(ms)}:${uid}`;
 const traceKey = (ms, toolId, uid) => `${TRACE_PREFIX}${toolId}:${revOf(ms)}:${uid}`;
 
-export const isLogKey = (key) => String(key).startsWith(RUN_PREFIX) || String(key).startsWith(TICK_PREFIX);
+const isLogKey = (key) => String(key).startsWith(RUN_PREFIX) || String(key).startsWith(TICK_PREFIX);
 export const isRunKey = (key) => String(key).startsWith(RUN_PREFIX);
-export const isTraceKey = (key) => String(key).startsWith(TRACE_PREFIX);
+const isTraceKey = (key) => String(key).startsWith(TRACE_PREFIX);
 // 日志键 → 请求记录键。前缀之外的部分一模一样（工具、反转毫秒、uid），所以直接换前缀。
 export const traceKeyOf = (logKey) => TRACE_PREFIX + String(logKey).slice(RUN_PREFIX.length);
 
 // 从键名解析出这一条的身份与时刻：kind / tool / uid / at(ms)。
 // 界面上的"这是谁的哪一轮"一律取自键名而不是 metadata —— 键名是我们自己写的、必然正确，
 // metadata 只是省子请求的摘要，缺了它这一行也该认得出是谁。
-export function partsOf(key) {
+function partsOf(key) {
   const text = String(key ?? "");
   if (text.startsWith(TICK_PREFIX)) {
     return { kind: "tick", tool: "*", uid: null, at: REV_BASE - Number(text.slice(TICK_PREFIX.length)) };

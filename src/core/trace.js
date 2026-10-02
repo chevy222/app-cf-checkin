@@ -10,8 +10,8 @@
 //   ② body 有大小上限，超了**如实标注**截断（保留多少 / 原文多少），绝不静默砍掉。
 //
 // 收集与落盘分开：这里只管收；脱敏与写 KV 在 logs.js（与 writeRunLog 同一个出口）。
-export const TRACE_BODY_MAX = 32 * 1024;    // 单次 body 的字符数上限
-export const TRACE_TOTAL_MAX = 128 * 1024;  // 一轮的字符数上限，超了就只记"丢了几次"
+const TRACE_BODY_MAX = 32 * 1024;    // 单次 body 的字符数上限
+const TRACE_TOTAL_MAX = 128 * 1024;  // 一轮的字符数上限，超了就只记"丢了几次"
 
 const SAFE_REQ_HEADERS = new Set(["content-type", "referer", "origin", "user-agent", "accept"]);
 

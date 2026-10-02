@@ -17,7 +17,7 @@ export function configComplete(tool, config) {
   return missingConfigFields(tool, config).length === 0;
 }
 
-export function cstHour(sec) {
+function cstHour(sec) {
   return new Date((sec + CST_OFFSET) * 1000).getUTCHours();
 }
 

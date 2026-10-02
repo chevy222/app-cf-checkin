@@ -200,7 +200,7 @@ export async function uidFromToken(ctx) {
 
 // 录入阶段从 access token 的 JWT 里读 exp 补上到期时间。Trae 的到期时间上游只在换票时给，
 // 所以这里读不到就留空 —— 让第一次运行去换一次票，而不是猜一个日期假装知道。
-export const expiresFromToken = (token) => expiresAtOf(readJwtClaims(token));
+const expiresFromToken = (token) => expiresAtOf(readJwtClaims(token));
 
 export const traeHosts = [OAUTH_HOST, CLAIM_HOST];
 export const traeDefaults = { clientId: DEFAULT_CLIENT_ID, appVersion: DEFAULT_APP_VERSION };

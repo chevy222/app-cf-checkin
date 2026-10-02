@@ -77,7 +77,7 @@ const wellFormed = (rec) => !!rec && typeof rec === "object" && !!rec.cred && ty
 // 一次调用里 KV 的写/删/list 只有 1000 次，1 list + N get 在 N=999 时整页 500。
 // 这里默认只取前 20 条，剩下的用 total 如实告诉用户"还有多少个没显示"。
 // 账号只有 2–3 个时这条永远不触发，它挡的是"某天手滑加了五十个号"这种把界面永久变砖的情况。
-export const ACCOUNT_LIST_CAP = 20;
+const ACCOUNT_LIST_CAP = 20;
 
 export async function listAccounts(env, toolId, cap = ACCOUNT_LIST_CAP) {
   const kv = requireKv(env);

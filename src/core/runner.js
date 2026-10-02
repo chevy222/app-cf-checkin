@@ -348,7 +348,7 @@ export async function runTick({ env, budget, tools, trigger = "cron", now = nowS
     const day = dayOf(tool, now);
     // 到期判定全部走内存里的调度索引：每工具固定 1 次 list + 1 次 get，与账号数无关。
     // 到期队列按"最久没被服务"排序，不是按 uid 字典序。
-    // 字典序配上全局预算闸 = 排在末尾的账号永远饿死：WorkBuddy 一个账号最坏 33 次外部请求，
+    // 字典序配上全局预算闸 = 排在末尾的账号永远饿死：WorkBuddy 一个账号最坏 31 次外部请求，
     // 上限 50 只装得下 1 个，而前两个每轮都以 partial 收（resumable 豁免节流，立刻再来），
     // 于是它们每轮把额度吃干、第三个永远排在闸外 —— 它连一条调度索引都拿不到，
     // 表现是红条不亮、首页进度不计入、/runs 里查无此人，用户只能逐个点进工具页才发现。

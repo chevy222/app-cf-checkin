@@ -1,6 +1,6 @@
 const SCHEMA = "v1";
 
-export const kvOf = (env) => (env && env.CHECKIN_KV) || null;
+const kvOf = (env) => (env && env.CHECKIN_KV) || null;
 
 // 缺绑定要大声失败：静默降级会让人以为平台在跑，其实什么都没存
 export function requireKv(env) {

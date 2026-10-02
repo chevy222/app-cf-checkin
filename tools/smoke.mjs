@@ -4842,6 +4842,7 @@ test("[教程里 PowerShell 脚本能真的抳出对应的凭据字段", async (
     qoder: [/runtime-info\.exe/, /auth\.v1\.dat/, /machineToken/, /refreshToken/],
     trae: [/iCubeAuthInfo/, /icube-dc/, /userJwt/, /refreshToken/, /UnescapeDataString/],
     workbuddy: [/send-sms/, /login\/token/, /sms_code/, /accessToken/, /refreshToken/],
+    "69yun": [/auth\/login/, /passwd/, /remember_me/, /ret -eq 1/],
   };
   for (const [id, patterns] of Object.entries(expect)) {
     const t = TUTORIALS[id];
@@ -5033,6 +5034,44 @@ test("[trace] 每一步的原始请求与响应都进独立键，凭据掩掉，
     assert.ok(!runBody.includes('"resBody"'), "run 键里不该出现响应体");
     // 步骤记录带着 calls 计数，详情页的「看请求 (N)」不用为它多读一个键
     assert.equal(JSON.parse(runBody).steps[0].calls, 1);
+  } finally { stub.restore(); }
+});
+
+test("[trace] 请求体里的凭据也必须洗掉（69 云登录把密码放进 POST body）", async () => {
+  // 上一条只测了请求头与响应体：它的 reqBody 是 {code:"C1"}，不含凭据。
+  // 69 云是唯一把密码写进请求体的工具（/auth/login 的 {email, passwd}），
+  // 如果 writeTrace 漏洗 reqBody，密码会明文落进 v1:trace: 键。
+  // 这条专门构造一个"请求体含 secret"的场景，守那一行脱敏。
+  const kv = fakeKv();
+  const env = envFor(kv);
+  const tool = TRACE_TOOL([{
+    id: "login", label: "登录", cost: 2,
+    async run(ctx) {
+      await ctx.fetch("https://stub.test/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "a@b.com", passwd: "SECRETVALUE", remember_me: "on" }),
+      });
+      return { status: "claimed", message: "登录成功", credits: 0 };
+    },
+  }]);
+  kv.store.set("v1:tool:traceable", JSON.stringify({}));
+  kv.store.set("v1:acct:traceable:S1", JSON.stringify({
+    label: "t", cred: { seatId: "S1", apiKey: "SECRETVALUE" }, updatedAt: 1,
+  }));
+  kv.store.set("v1:schedidx:traceable", JSON.stringify({ day: null, entries: {} }));
+  const stub = stubUpstream({ "POST /auth/login": { payload: { ret: 1 } } });
+  try {
+    await tickWith(kv, [tool]);
+    const traceKey = [...kv.store.keys()].find((k) => k.startsWith("v1:trace:"));
+    assert.ok(traceKey, "该有一条 trace 记录");
+    const payload = JSON.parse(kv.store.get(traceKey));
+    const reqBody = payload.steps[0].calls[0].reqBody;
+    assert.ok(reqBody, "请求体要记下来");
+    assert.ok(!reqBody.includes("SECRETVALUE"), "请求体里的密码必须被洗掉，不能明文落 trace");
+    assert.ok(reqBody.includes("a@b.com"), "非敏感的邮箱要保留（不能整段洗没）");
+    assert.ok(reqBody.includes("remember_me"), "非敏感字段要保留");
+    assert.ok(!kv.store.get(traceKey).includes("SECRETVALUE"), "整个 trace 键都不能含凭据原文");
   } finally { stub.restore(); }
 });
 
