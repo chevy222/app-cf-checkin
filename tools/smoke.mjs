@@ -4418,16 +4418,25 @@ test("[说明页不许出现开发进度", async () => {
 
 test("页面底部有版本号与 GitHub 链接", async () => {
   const res = await authed("/", envFor(fakeKv()));
-  // 版本号 yyyy-MM-dd:NN 由 tools/bump-version.mjs 在部署前写入，footer 全站共用
-  assert.match(res.text, /class="ft">\d{4}-\d{2}-\d{2}:\d{2}</, "版本号缺失或格式不对");
+  // 版本号 yyyy-MM-dd:HHMM（北京时间）由 tools/bump-version.mjs 在部署前写入，footer 全站共用
+  assert.match(res.text, /class="ft">\d{4}-\d{2}-\d{2}:\d{4}</, "版本号缺失或格式不对");
   assert.ok(res.text.includes('href="https://github.com/chevy222/app-cf-checkin"'), "GitHub 链接缺失");
   assert.ok(res.text.includes("Powered by GitHub"));
 });
 
-test("版本号递增：当天 +1，跨天回 01", () => {
-  assert.equal(nextVersion("2026-10-01:01", "2026-10-01"), "2026-10-01:02");
-  assert.equal(nextVersion("2026-10-01:09", "2026-10-01"), "2026-10-01:10");
-  assert.equal(nextVersion("2026-09-30:07", "2026-10-01"), "2026-10-01:01");
+test("版本号按北京时间 HHMM：跨天取当天时刻，钟慢了才进位", () => {
+  // 正常情况：直接取当前北京时间的 HHMM
+  assert.equal(nextVersion("2026-10-01:09:12", "2026-10-02T14:47"), "2026-10-02:1447");
+  // 跨天且现版本的数字更大（10:05 > 09:30）：仍取当天时刻，不能被旧值压住
+  assert.equal(nextVersion("2026-10-01T10:05", "2026-10-02T09:30"), "2026-10-02:0930");
+  // 同一分钟内重跑：号不变（这是允许的极端情况，重跑一次即可）
+  assert.equal(nextVersion("2026-10-02:1447", "2026-10-02T14:47"), "2026-10-02:1447");
+  // 时钟回拨（部署机器时区不对、系统时间被改）：版本号不许倒退，进位一分钟
+  assert.equal(nextVersion("2026-10-02:1447", "2026-10-02T09:00"), "2026-10-02:1448");
+  // 进位要按真实分钟数算，不能拼出 2360 这种不存在的时刻：23:59 +1 分 = 次日 00:00
+  assert.equal(nextVersion("2026-10-02:2359", "2026-10-02T09:00"), "2026-10-03:0000");
+  // 旧格式（两位序号）不该再被认成合法版本，改动前后的构建都能被正确重算
+  assert.equal(nextVersion("2026-10-01:01", "2026-10-02T14:47"), "2026-10-02:1447");
 });
 
 test("[注册表里只有四家真实工具，夹具不许留在里面", async () => {
