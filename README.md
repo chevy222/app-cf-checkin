@@ -39,7 +39,7 @@
 
 #### A. 用仓库自带的 `worker.js`（推荐）
 
-仓库根目录自带打包好的单文件 **`worker.js`**（262 KB，每次发版同步更新），直接下载用。
+仓库根目录自带打包好的单文件 **`worker.js`**，直接下载用。
 
 1. **下载 `worker.js`**：在仓库页面点 `worker.js` → Raw → 另存为，或 `git clone` 后取这个文件。
 2. **创建 Worker**：Cloudflare 面板 → Workers 和 Pages → 创建 → 命名（比如 `checkin`）→ 选「Hello World」模板 → 部署。
