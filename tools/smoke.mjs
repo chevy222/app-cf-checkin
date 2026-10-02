@@ -1927,7 +1927,7 @@ function stubUpstream(routes) {
   const saved = globalThis.fetch;
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url);
-    const record = { host: url.hostname, path: url.pathname, method: (init.method || "GET").toUpperCase(), headers: init.headers || {}, body: init.body };
+    const record = { host: url.hostname, path: url.pathname, method: (init.method || "GET").toUpperCase(), headers: init.headers || {}, body: init.body, redirect: init.redirect };
     seen.push(record);
     const handler = routes[`${record.method} ${record.path}`] || routes[url.pathname];
     if (!handler) return new Response(JSON.stringify({ error: "stub 没配这条路由" }), { status: 599 });
@@ -2613,6 +2613,44 @@ test("[69yun] 点「测试」后新 Cookie 真的落进 KV，不只嘴上说已�
     assert.match(view.message, /新凭据已写回/, `内核应自动追加写回提示，实际：${view.message}`);
     assert.ok(!view.message.includes("Cookie 已保存"), "工具仍在自夸「已保存」，那句应由内核说");
   } finally { stub.restore(); }
+});
+
+test("[69yun] 登录 GET/POST 也必须 redirect:manual；被 3xx 时归上游问题而不是凭据问题", async () => {
+  // 默认的 follow 有两个害处：① 上游若用 302 表示结果，跟随会把 /user 的 HTML 当登录响应
+  // （payload 解析成 null），报出一句与真实原因无关的「登录失败」；② 302 上的 Set-Cookie
+  // 会随跟随丢掉。而不跟随少一跳 —— 每一跳都计入平台那 50 个子请求的硬顶，自限已无余量。
+  const kv = fakeKv();
+  seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
+  const stub = stubUpstream({
+    "POST /user/checkin": { status: 302, body: "" },
+    "GET /auth/login": { status: 200, body: "<html>login</html>" },
+    "POST /auth/login": { status: 200, payload: { ret: 1 }, headers: { "set-cookie": "uid=1; email=user@69yun.com; key=abc" } },
+    "GET /user": { status: 200, body: "<html>user</html>" },
+  });
+  try {
+    await yun69Tick(kv);
+    const logins = stub.seen.filter((r) => r.path === "/auth/login");
+    assert.equal(logins.length, 2, "该有 GET 登录页与 POST 登录两次");
+    for (const r of logins) assert.equal(r.redirect, "manual", `${r.method} /auth/login 没设 redirect:manual`);
+    // 签到与轮询本来就设了，一并钉住，免得以后被顺手改掉
+    for (const r of stub.seen.filter((x) => x.path === "/user/checkin" || x.path === "/user")) {
+      assert.equal(r.redirect, "manual", `${r.method} ${r.path} 没设 redirect:manual`);
+    }
+  } finally { stub.restore(); }
+
+  // 3xx 的失败分类：不是"凭据不行"，归上游问题（waiting，不亮红条），且报出状态码
+  const kv2 = fakeKv();
+  seed69yun(kv2, "user@69yun.com", { cookie: "old=expired" });
+  const stub2 = stubUpstream({
+    "POST /user/checkin": { status: 302, body: "" },
+    "GET /auth/login": { status: 200, body: "<html>login</html>" },
+    "POST /auth/login": { status: 302, body: "" },
+  });
+  try {
+    const acct = planOf((await yun69Tick(kv2)).summary, "69yun").accounts[0];
+    assert.equal(acct.status, "waiting", `3xx 不该报 login_required：${acct.status} ${acct.message}`);
+    assert.match(acct.message, /302/, `该把状态码报出来：${acct.message}`);
+  } finally { stub2.restore(); }
 });
 
 test("[69yun] 上游 5xx 报 waiting，不是 login_required 也不是 rate_limited", async () => {

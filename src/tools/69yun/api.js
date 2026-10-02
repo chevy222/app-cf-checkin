@@ -113,10 +113,16 @@ export async function login(ctx) {
   if (!email || !password) return { error: "账号缺少邮箱或密码", kind: "auth" };
 
   // Step 1: GET 登录页，拿初始 session cookie
-  const init = await call(ctx, { path: LOGIN_PAGE, referer: BASE });
+  // redirect: "manual" 与下面的 POST、轮询、签到保持一致。这一步**不看状态码**
+  // （只要 Set-Cookie），所以 3xx 不会变成误报；不跟随还能少一跳 ——
+  // 每一跳都计入平台那 50 个子请求的硬顶，而自限已经等于硬顶、没有余量。
+  const init = await call(ctx, { path: LOGIN_PAGE, referer: BASE, redirect: "manual" });
   let cookies = init.cookies;
 
   // Step 2: POST 登录
+  // 同样 manual：上游若用 302 表示结果，跟随会把 /user 的 HTML 当登录响应
+  // （payload 解析成 null），报出一句与真实原因无关的「登录失败」；
+  // 不跟随至少能报出 `HTTP 302`，而且 302 上的 Set-Cookie 不会随跟随丢掉。
   const login = await call(ctx, {
     path: LOGIN_PAGE,
     method: "POST",
@@ -124,16 +130,18 @@ export async function login(ctx) {
     contentType: "application/json",
     cookie: cookies,
     referer: BASE + LOGIN_PAGE,
+    redirect: "manual",
   });
 
   if (login.status !== 200 || !login.payload || login.payload.ret !== 1) {
     const msg = login.payload && login.payload.msg
       ? login.payload.msg
       : `HTTP ${login.status} ${truncate(login.text, 80)}`;
-    // 429 是唯一的"限频"信号；其它 4xx 与业务码才是"密码不对"。
+    // 429 是唯一的"限频"信号；3xx 也算上游自己的问题（用重定向表示结果的那种版本
+    // 不是"凭据不行"）；其它 4xx 与业务码才是"密码不对"。
     // SSPanel 登录失败回 ret!=1 且 HTTP 200，所以 HTTP 状态是这里唯一能分开的信号。
     const kind = login.status === 429 ? "rate"
-      : login.status >= 500 ? "transient" : "auth";
+      : login.status >= 500 || (login.status >= 300 && login.status < 400) ? "transient" : "auth";
     return { error: `登录失败：${msg}`, kind };
   }
   cookies = mergeCookies(cookies, login.cookies);
