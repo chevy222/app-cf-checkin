@@ -1143,7 +1143,14 @@ async function readUsage(ctx, token) {
   const result = await post(ctx, USAGE, CLAIM_HOST, claimHeaders(ctx, token), { require_usage: true, req_source: 2 });
   if (httpAuthFail(result)) return { authFailed: true };
   if (result.status >= 400) return { error: `\u989D\u5EA6\u5305\u67E5\u8BE2\u5931\u8D25\uFF1AHTTP ${result.status}` };
-  const packs = result.payload && result.payload.user_entitlement_pack_list || [];
+  const root = result.payload || {};
+  const summary = root.usage_summary || {};
+  const total = Number(summary.total_amount) || 0;
+  const consumed = Number(summary.consumed_amount) || 0;
+  const packs = root.user_entitlement_pack_list || [];
+  if (total > 0) {
+    return { limit: total, used: consumed, remaining: total - consumed, packs: packs.length };
+  }
   let limit = 0;
   let used = 0;
   for (const pack of packs) {

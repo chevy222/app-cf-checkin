@@ -139,12 +139,22 @@ export async function claimOnce(ctx, token) {
   return { code, msg, credits: body.credits, status: result.status, body };
 }
 
-// 「剩余积分」只是观测，不是领取动作
+// 「剩余积分」只是观测，不是领取动作。
+// 优先用 usage_summary（总额 - 已用）：上游的 pack_list 里 quota 不一定带 credits_limit
+// （免费包的 quota 只有功能开关布尔值），只遍历 pack 会算出 0。
 export async function readUsage(ctx, token) {
   const result = await post(ctx, USAGE, CLAIM_HOST, claimHeaders(ctx, token), { require_usage: true, req_source: 2 });
   if (httpAuthFail(result)) return { authFailed: true };
   if (result.status >= 400) return { error: `额度包查询失败：HTTP ${result.status}` };
-  const packs = (result.payload && result.payload.user_entitlement_pack_list) || [];
+  const root = result.payload || {};
+  const summary = root.usage_summary || {};
+  const total = Number(summary.total_amount) || 0;
+  const consumed = Number(summary.consumed_amount) || 0;
+  const packs = root.user_entitlement_pack_list || [];
+  if (total > 0) {
+    return { limit: total, used: consumed, remaining: total - consumed, packs: packs.length };
+  }
+  // 兜底：usage_summary 没给时遍历 pack_list
   let limit = 0;
   let used = 0;
   for (const pack of packs) {

@@ -2983,6 +2983,24 @@ test("[trae] 领取成功但没回积分时补读一次，界面上要看得见�
   } finally { stub.restore(); }
 });
 
+test("[trae] 额度包优先用 usage_summary（pack 的 quota 不带 credits_limit 时不算出 0）", async () => {
+  const kv = fakeKv();
+  seedTrae(kv);
+  const stub = stubUpstream({
+    "POST /trae/api/v2/ug/checkin_credits/status": { payload: { checked_in: false, credits: 0, enable: true } },
+    "POST /trae/api/v2/ug/checkin_credits/claim": { payload: { code: 0, message: "success", credits: 100 } },
+    "POST /trae/api/v2/pay/ide_user_ent_usage": { payload: {
+      usage_summary: { total_amount: 5200, consumed_amount: 63.15 },
+      user_entitlement_pack_list: [{ entitlement_base_info: { quota: { enable_solo_agent: true } }, usage: {} }],
+    } },
+  });
+  try {
+    const { summary } = await traeTick(kv);
+    const view = planOf(summary, "trae").accounts[0];
+    assert.match(view.message, /剩余 5136\.85/, "usage_summary 优先：5200 - 63.15 = 5136.85");
+  } finally { stub.restore(); }
+});
+
 test("[trae] 积分算不出来时不许报「本次 +0」—— 那是个假的测量值", async () => {
   // 三种走法都会算不出本次到账，而它们都不是"确实领到 0"：
   //   ① 领取前 status 没给 credits（未签到时上游可能不返回该字段）→ pre 是 NaN
