@@ -15,7 +15,7 @@ const CLAIM = "/trae/api/v2/ug/checkin_credits/claim";
 const USAGE = "/trae/api/v2/pay/ide_user_ent_usage";
 
 const DEFAULT_CLIENT_ID = "en1oxy7wnw8j9n";
-const DEFAULT_APP_VERSION = "0.1.43";
+const DEFAULT_APP_VERSION = "1.107.1";
 // ClientSecret 的字面量就是单个 "-"：这个端点要求这个 key 必须存在，值本身是占位。
 // 不是漏填，别"修"它。
 const CLIENT_SECRET_PLACEHOLDER = "-";
@@ -75,12 +75,17 @@ async function exchangeToken(ctx, refreshToken) {
 
 // 签到侧的头。x-device-id 必须是真实 Aha 设备号：风控按它判定，
 // 随手填一个能过格式校验，之后每天稳定返回 9074「服务器繁忙」，看上去像限频，其实是设备号错了。
+// 设备头（x-device-type / x-os-version / x-app-version）与客户端同款，缺了会被拒成 9074。
 function claimHeaders(ctx, token) {
+  const appVersion = ctx.config.appVersion || DEFAULT_APP_VERSION;
   return {
     Authorization: `Cloud-IDE-JWT ${token}`,
     "x-device-id": String(ctx.account.cred.ahaDeviceId || ""),
+    "x-device-type": "Windows",
+    "x-os-version": "10.0.19045",
+    "x-app-version": appVersion,
     "X-User-Region": "CN",
-    "User-Agent": `Trae/${ctx.config.appVersion || DEFAULT_APP_VERSION}`,
+    "User-Agent": `Trae/${appVersion}`,
   };
 }
 
@@ -115,7 +120,7 @@ export async function ensureToken(ctx, { force = false } = {}) {
 const httpAuthFail = (result) => result.status === 401 || result.status === 403;
 
 export async function readStatus(ctx, token) {
-  const result = await post(ctx, STATUS, CLAIM_HOST, claimHeaders(ctx, token), {});
+  const result = await post(ctx, STATUS, CLAIM_HOST, claimHeaders(ctx, token), { req_source: 1 });
   if (httpAuthFail(result)) return { authFailed: true, status: result.status };
   if (result.status >= 400) return { error: `签到状态查询失败：HTTP ${result.status}` };
   const body = result.payload || {};
@@ -123,7 +128,7 @@ export async function readStatus(ctx, token) {
 }
 
 export async function claimOnce(ctx, token) {
-  const result = await post(ctx, CLAIM, CLAIM_HOST, claimHeaders(ctx, token), {});
+  const result = await post(ctx, CLAIM, CLAIM_HOST, claimHeaders(ctx, token), { req_source: 1 });
   if (httpAuthFail(result)) return { authFailed: true, status: result.status };
   // 4xx 的 body 里带着业务码与中文 message，直接当失败丢掉就把"已签到"读成了故障
   const body = result.payload || {};

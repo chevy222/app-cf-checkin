@@ -1041,7 +1041,7 @@ var STATUS = "/trae/api/v2/ug/checkin_credits/status";
 var CLAIM = "/trae/api/v2/ug/checkin_credits/claim";
 var USAGE = "/trae/api/v2/pay/ide_user_ent_usage";
 var DEFAULT_CLIENT_ID = "en1oxy7wnw8j9n";
-var DEFAULT_APP_VERSION = "0.1.43";
+var DEFAULT_APP_VERSION = "1.107.1";
 var CLIENT_SECRET_PLACEHOLDER = "-";
 var TOKEN_LIFETIME_FALLBACK = 14 * 86400;
 var timeoutMs2 = /* @__PURE__ */ __name((config) => {
@@ -1089,11 +1089,15 @@ async function exchangeToken(ctx, refreshToken2) {
 }
 __name(exchangeToken, "exchangeToken");
 function claimHeaders(ctx, token) {
+  const appVersion = ctx.config.appVersion || DEFAULT_APP_VERSION;
   return {
     Authorization: `Cloud-IDE-JWT ${token}`,
     "x-device-id": String(ctx.account.cred.ahaDeviceId || ""),
+    "x-device-type": "Windows",
+    "x-os-version": "10.0.19045",
+    "x-app-version": appVersion,
     "X-User-Region": "CN",
-    "User-Agent": `Trae/${ctx.config.appVersion || DEFAULT_APP_VERSION}`
+    "User-Agent": `Trae/${appVersion}`
   };
 }
 __name(claimHeaders, "claimHeaders");
@@ -1119,7 +1123,7 @@ async function ensureToken(ctx, { force = false } = {}) {
 __name(ensureToken, "ensureToken");
 var httpAuthFail = /* @__PURE__ */ __name((result) => result.status === 401 || result.status === 403, "httpAuthFail");
 async function readStatus(ctx, token) {
-  const result = await post(ctx, STATUS, CLAIM_HOST, claimHeaders(ctx, token), {});
+  const result = await post(ctx, STATUS, CLAIM_HOST, claimHeaders(ctx, token), { req_source: 1 });
   if (httpAuthFail(result)) return { authFailed: true, status: result.status };
   if (result.status >= 400) return { error: `\u7B7E\u5230\u72B6\u6001\u67E5\u8BE2\u5931\u8D25\uFF1AHTTP ${result.status}` };
   const body = result.payload || {};
@@ -1127,7 +1131,7 @@ async function readStatus(ctx, token) {
 }
 __name(readStatus, "readStatus");
 async function claimOnce(ctx, token) {
-  const result = await post(ctx, CLAIM, CLAIM_HOST, claimHeaders(ctx, token), {});
+  const result = await post(ctx, CLAIM, CLAIM_HOST, claimHeaders(ctx, token), { req_source: 1 });
   if (httpAuthFail(result)) return { authFailed: true, status: result.status };
   const body = result.payload || {};
   const code = body.code === void 0 || body.code === null ? null : Number(body.code);
