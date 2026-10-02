@@ -54,6 +54,8 @@
 改了 `src/` 源码、想用自己的版本：
 
 ```bash
+git clone https://github.com/chevy222/app-cf-checkin.git
+cd app-cf-checkin
 npm install
 npm run bundle
 ```
