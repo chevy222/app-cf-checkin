@@ -16,7 +16,6 @@
 ## 目录
 
 - [部署](#部署)
-- [本地跑](#本地跑)
 - [界面导览](#界面导览)
 - [凭据怎么取](#凭据怎么取)
 - [停用某个工具](#停用某个工具)
@@ -26,8 +25,50 @@
 
 ## 部署
 
-准备两样东西：一个 Cloudflare 账号（免费版就够），电脑上装好
-[Node.js](https://nodejs.org)（LTS 版本即可）。
+三种方式，选一种：
+
+- **方式一 · 本地文件**：把打包好的单文件 JS 粘贴到 Cloudflare 面板，不用装 Node.js
+- **方式二 · npx wrangler**：CLI 一条命令部署，自动同步 KV / cron / 配置（推荐）
+- **方式三 · 本地跑**：`npm run dev`，仅用于开发调试
+
+---
+
+### 方式一 · 本地文件（面板粘贴）
+
+适合不想装任何工具的人。把单文件 JS 粘贴到 Cloudflare 面板的 Worker 编辑器里，KV、cron、口令都在面板上手动配。
+
+#### A. 用仓库自带的 `worker.js`（推荐）
+
+仓库根目录自带打包好的单文件 **`worker.js`**（262 KB，每次发版同步更新），直接下载用。
+
+1. **下载 `worker.js`**：在仓库页面点 `worker.js` → Raw → 另存为，或 `git clone` 后取这个文件。
+2. **创建 Worker**：Cloudflare 面板 → Workers 和 Pages → 创建 → 命名（比如 `checkin`）→ 选「Hello World」模板 → 部署。
+3. **粘贴代码**：进入刚创建的 Worker → 编辑代码 → 把默认内容全删，把 `worker.js` 的内容整个粘贴进去 → 保存并部署。
+4. **绑定 KV**：Worker → 设置 → 绑定 → KV 命名空间 → 添加绑定 → 变量名填 `CHECKIN_KV`，命名空间选你创建的那个（没有就先去「存储和数据库 → KV」创建一个）。
+5. **配 cron**：Worker → 设置 → 触发器 → Cron 触发器 → 添加 → `*/30 * * * *`。
+6. **设口令**：Worker → 设置 → 变量和机密 → 添加机密 → 名称 `PASSWORD`，值填你想设的口令 → 加密保存。
+7. **绑域名**：Worker → 设置 → 域名和路由 → 添加自定义域名（或把 `workers_dev` 打开用免费域名）。
+
+完成后浏览器打开域名、输入口令即可。
+
+#### B. 自己打包
+
+改了 `src/` 源码、想用自己的版本：
+
+```bash
+npm install
+npm run bundle          # = npx wrangler deploy --dry-run --outdir=dist
+```
+
+取 `dist/index.js`，后续面板操作同上面 A 的第 2–7 步。
+
+> 改了源码后重新跑一次 `npm run bundle`，把 `dist/index.js` 覆盖到根目录 `worker.js`，仓库里的预打包文件就同步了。
+
+---
+
+### 方式二 · npx wrangler（CLI 部署，推荐）
+
+适合想一条命令部署、自动管理 KV / cron / 配置的人。需要本地装 [Node.js](https://nodejs.org)（LTS 即可）。
 
 **第 0 步 · 拿到代码**：在仓库页面点 **Code → Download ZIP**，解压到任意目录。
 后面所有命令都在这个解压出来的文件夹里执行 —— Windows 用户：资源管理器进入该
@@ -71,6 +112,10 @@ npx wrangler secret put PASSWORD
 npm run deploy
 ```
 
+这个命令会先把页面底部的版本号重算成**当前北京时间**（格式 `yyyy-MM-dd:HHMM`，
+比如 `2026-10-02:1447`）—— 版本号本身就是发布时刻，刷新页面看一眼就知道
+有没有更新上。然后再执行部署。
+
 **第 6 步 · 绑定访问域名（二选一）**
 
 `wrangler.toml` 里不写 routes、`workers_dev = false`，所以部署完默认没有公开 URL，需要自己绑一个：
@@ -80,34 +125,9 @@ npm run deploy
 
 浏览器打开、输入口令，按「新增账号」页左侧的教程把四家账号加进去，当天就能开始领。
 
-这个命令会先把页面底部的版本号重算成**当前北京时间**（格式 `yyyy-MM-dd:HHMM`，
-比如 `2026-10-02:1447`）—— 版本号本身就是发布时刻，刷新页面看一眼就知道
-有没有更新上。然后再执行部署。
-
-<details>
-<summary>方法 B：单文件粘贴（不用装 Node.js / wrangler）</summary>
-
-仓库根目录自带打包好的单文件 **`worker.js`**（262 KB，每次发版同步更新），
-不需要本地装任何东西。
-
-1. **下载 `worker.js`**：在仓库页面点 `worker.js` → Raw → 另存为，或直接 `git clone` 后取这个文件。
-2. **创建 Worker**：Cloudflare 面板 → Workers 和 Pages → 创建 → 命名（比如 `checkin`）→ 选「Hello World」模板 → 部署。
-3. **粘贴代码**：进入刚创建的 Worker → 编辑代码 → 把默认内容全删，把 `worker.js` 的内容整个粘贴进去 → 保存并部署。
-4. **绑定 KV**：Worker → 设置 → 绑定 → KV 命名空间 → 添加绑定 → 变量名填 `CHECKIN_KV`，命名空间选你创建的那个（没有就先去「存储和数据库 → KV」创建一个）。
-5. **配 cron**：Worker → 设置 → 触发器 → Cron 触发器 → 添加 → `*/30 * * * *`。
-6. **设口令**：Worker → 设置 → 变量和机密 → 添加机密 → 名称 `PASSWORD`，值填你想设的口令 → 加密保存。
-7. **绑域名**：Worker → 设置 → 域名和路由 → 添加自定义域名（或把 `workers_dev` 打开用免费域名）。
-
-完成后浏览器打开域名、输入口令即可。
-
-> `worker.js` 是 `npm run bundle`（`wrangler deploy --dry-run`）的产物，
-> 与源码功能完全一致；改了源码后重新跑一次 `npm run bundle`，把 `dist/index.js` 覆盖到根目录 `worker.js` 即可。
-
-</details>
-
 ---
 
-## 本地跑
+### 方式三 · 本地跑（开发调试）
 
 ```bash
 printf 'PASSWORD=换成你自己的\n' > .dev.vars    # 这个文件已在 .gitignore 里
