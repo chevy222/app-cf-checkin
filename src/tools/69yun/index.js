@@ -6,6 +6,10 @@ import * as api from "./api.js";
 // 每次签到先拿存的 Cookie 试，被 3xx 重定向就说明失效了，重新走一遍登录流程，
 // 新 Cookie 通过 cred 回写机制存进 KV（跟 Qoder 的 accessToken 续期同构）。
 //
+// 「3xx 即失效」这个判据成立的前提是请求带 redirect: "manual" —— 自动跟随会把
+// 登录页的 200 当成签到响应，解析不出 JSON 就报一个和真实原因无关的错。
+// 下游每一次签到请求都必须带这个参数（api.js 里已写死，勿删）。
+//
 // 上游方言（都翻成内核的状态）：
 //   POST /user/checkin  ret=1 → 签到成功（claimed）
 //   POST /user/checkin  ret=0 → 今日已签到（already）
@@ -108,6 +112,12 @@ export default {
         }
         cookie = login.cookie;
         rotated = { cookie };
+        // rotated 只表示"新串拿到了"，落盘由内核做（runner.js 的凭据轮换段）。
+        // 写回失败时内核会在日志 message 后追加「（新凭据写回失败…）」，
+        // 但这一步的 status 仍是 claimed —— 用户看到的是"签到成功"，
+        // 而 Cookie 没存上，下一轮又要重新登录一遍（多花 5 笔请求）。
+        // 这是内核对三家的统一处理，不在本工具里另开分支：
+        // 要判"写回有没有成"，得看运行日志详情里那句话，不看则无从察觉。
 
         // 登录成功后再签到一次
         const result = await api.checkin(ctx, cookie);

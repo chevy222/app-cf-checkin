@@ -18,11 +18,11 @@ const CHECKIN = "/user/checkin";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36";
 
 // 登录后验证 session 就绪的轮询参数。
-// SSPanel 登录后 session 传播有延迟，立刻打 /user 会 302 回登录页；等 1.5s 再试通常就过了。
-// 原独立 Worker 用 6 次×2s=12s，合并后缩到 3 次×1.5s=4.5s —— 实际使用中 1-2 次就够，
-// 3 次是给极端慢的上游留的余量，再久就是真的登录失败了。
-const SESSION_CHECKS = 3;
-const SESSION_DELAY_MS = 1500;
+// SSPanel 登录后 session 传播有延迟，立刻打 /user 会 302 回登录页。
+// 退避阶梯而不是固定间隔：实测第 1 次（500ms 后）通常就过了，快上游不该被无谓拖住；
+// 真慢的才逐次多等。三次全过共 3s，比原独立 Worker 的 6 次×2s=12s 短得多，
+// 也压在这一步的 cost 上界内（原固定 1.5s×3=4.5s，现在是 0.5+1+1.5=3s）。
+const SESSION_BACKOFF_MS = [500, 1000, 1500];
 
 const timeoutMs = (config) => {
   const raw = Number(config.timeoutMs);
@@ -131,8 +131,8 @@ export async function login(ctx) {
   if (cookies.length === 0) return { error: "登录成功但未获取到 Cookie" };
 
   // Step 3: 轮询验证 session 就绪
-  for (let i = 1; i <= SESSION_CHECKS; i++) {
-    await new Promise((r) => setTimeout(r, SESSION_DELAY_MS));
+  for (let i = 0; i < SESSION_BACKOFF_MS.length; i++) {
+    await new Promise((r) => setTimeout(r, SESSION_BACKOFF_MS[i]));
     const verify = await call(ctx, {
       path: USER_PAGE,
       cookie: cookies,
@@ -143,13 +143,13 @@ export async function login(ctx) {
     if (verify.status === 200 || verify.status === 304) {
       return { cookie: cookieString(cookies) };
     }
-    if (verify.status >= 300 && verify.status < 400 && i < SESSION_CHECKS) continue;
+    if (verify.status >= 300 && verify.status < 400 && i < SESSION_BACKOFF_MS.length - 1) continue;
     // 非 3xx 的异常（如 500）不等了，直接报错
     if (verify.status >= 400) {
       return { error: `会话验证异常：HTTP ${verify.status}` };
     }
   }
-  return { error: `登录成功但 session 始终未就绪（轮询 ${SESSION_CHECKS} 次）` };
+  return { error: `登录成功但 session 始终未就绪（轮询 ${SESSION_BACKOFF_MS.length} 次）` };
 }
 
 // ── 签到 ──────────────────────────────────────────────────────

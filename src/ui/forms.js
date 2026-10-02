@@ -26,6 +26,17 @@ function control(field, { value, masked, id }) {
   if (field.type === "textarea") {
     return `<textarea ${common} ${placeholder} ${field.secret ? "" : `spellcheck="false"`}>${field.secret ? "" : escapeHtml(value || "")}</textarea>`;
   }
+  // 密码框：与 text 分支的差别是控件类型 + 自动填充策略 + **永不预填**。
+  // 分开是因为「敏感」不等于「该用 password 控件」—— token 类敏感字段（JWT、Cookie）
+  // 需要肉眼比对与粘贴，遮住反而碍事；而密码只有服务端认，遮住才是对的。
+  // 永不预填的理由比 text 分支更强：text 预填是为了省用户抄一遍默认值，
+  // 密码没有默认值可抄，而回显已存密码等于让任何能看屏幕的人拿到登录口令。
+  // （secret 字段的 placeholder 走 masked，只露首尾各 4 位。）
+  // autocomplete="new-password" 而不是 "current-password"：编辑态存的是这个账号的密码，
+  // 让浏览器 autofill 当前的登录密码等于替用户把密码泄露给下一个访问该站点的脚本。
+  if (field.type === "password") {
+    return `<input ${common} type="password" ${placeholder} value="" autocomplete="new-password">`;
+  }
   // 有默认值的文本框要**预填**而不是只放进 placeholder：
   // placeholder 灰字一提交就消失，用户会以为那是示例而不是真值，
   // 于是照着 help 去别处抄一个可能已经过期的版本号。

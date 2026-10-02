@@ -2548,6 +2548,27 @@ test("[69yun] 非 200 非 3xx 的签到响应报 error 而不是冒充成功", a
   } finally { stub.restore(); }
 });
 
+test("[69yun] 密码字段渲染成 password 控件，不以明文回显", async () => {
+  const kv = fakeKv();
+  const { uid } = seed69yun(kv);
+  const env = envFor(kv);
+  for (const path of ["/account/new?tool=69yun", `/account/69yun/${encodeURIComponent(uid)}/edit`]) {
+    const html = (await authed(path, env)).text;
+    // 控件类型：password 才遮住。text 会把用户输入的密码明文摆在屏幕上，
+    // 旁边有人或截图都会泄露，而这家凭据就是真密码（另三家的 token 遮不遮无所谓）
+    assert.match(html, /id="f-password"[^>]*type="password"/,
+      `${path} 的密码字段不是 password 控件，密码明文显示`);
+    // 自动填充策略：编辑态存的是这个账号的密码，让浏览器 autofill 当前的登录密码
+    // 等于把密码主动递给了下一个访问该站点的脚本
+    assert.match(html, /id="f-password"[^>]*autocomplete="new-password"/,
+      `${path} 的密码字段会让浏览器自动填充当前密码`);
+  }
+  // 更关键的一层：password 控件也不能把已存的值塞进 value —— 那等于换个控件继续泄露
+  const edit = (await authed(`/account/69yun/${encodeURIComponent(uid)}/edit`, env)).text;
+  assert.doesNotMatch(edit, /id="f-password"[^>]*value="[^"]+"/,
+    "编辑页把已存密码写进了 value 属性");
+});
+
 // ═══════════ Trae ═══════════
 //
 // Trae 的方言比 Qoder 更刁：两家域名、两套鉴权头、业务码藏在中文 message 里、
