@@ -103,13 +103,28 @@ export function firstCredit(body, item) {
   return 0;
 }
 
+// 抽奖的到账金额。**不能用 firstCredit**：那个列表是**盲盒**的形状
+// （body 的 credit_amount / credit_granted / reward_credit + item/instance/template 三层的 credit），
+// 少了 draw 响应里的 plain `credit` —— 而旧脚本（workbuddy-cf-checkin/worker.js:635）对
+// 抽奖读的就是 `credit_amount` / `credit` / `reward_credit`，并注明
+// "不同接口版本把积分挂在 credit_amount / credit / reward_credit 等不同字段上，只能逐个试"。
+// 逐项取第一个非 0：某项给 0 / 非数字就继续试下一项。
+export function drawCredit(payload) {
+  for (const key of ["credit_amount", "credit", "reward_credit"]) {
+    const n = num(dig(payload, key));
+    if (n) return n;
+  }
+  return 0;
+}
+
 // 抽奖结果里**有前端佐证**的字段只有 `prize_code` / `prize_name` / `reward_id` ——
 // 前端的结果弹窗读 `prize_name`，而它的描述是**写死的**「积分已发放，将在几分钟内到账」：
 // 金额本来就异步到账，响应里可能根本没有。所以"拿不到金额"不是异常，
 // 调用方据此如实报奖名，而不是拿 +0 冒充"没中奖"（0 是"确实没领到"，两者不是一回事）。
+// `name` 是旧脚本的兜底（`prize_name || name`），一并保留。
 export function prizeNameOf(payload) {
-  const name = dig(payload, "prize_name");
-  return typeof name === "string" && name.trim() ? name.trim() : "";
+  const raw = dig(payload, "prize_name") ?? dig(payload, "name");
+  return typeof raw === "string" && raw.trim() ? raw.trim() : "";
 }
 
 // code 归一：没给才是 null，给了就按数字比。

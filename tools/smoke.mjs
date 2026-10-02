@@ -3611,6 +3611,14 @@ test("[workbuddy] 抽奖金额上游没回时报奖名，不许拿 +0 冒充没�
       expect: /\+10（上游只回奖名：谢谢参与）/, credits: 10 },
     { name: "什么都没回", draw: { payload: { code: 0 } },
       expect: /上游没回结果/, credits: 0 },
+    // 旧脚本（workbuddy-cf-checkin/worker.js:635）对抽奖读的是 credit_amount / credit /
+    // reward_credit 三处，firstCredit 的列表里**没有 plain credit** —— 只读它会把
+    // "上游把积分挂在 credit 上"读成"没回结果"，又是一个假 0。
+    { name: "金额挂在 plain credit 上",
+      draw: { payload: { code: 0, credit: 7 } }, expect: /\+14/, credits: 14 },
+    // 奖名的兜底：旧脚本是 `prize_name || name`，只读 prize_name 会漏掉后一种。
+    { name: "奖名只有 name 兜底",
+      draw: { payload: { code: 0, name: "谢谢参与" } }, expect: /上游只回奖名：谢谢参与/, credits: 0 },
   ];
   for (const c of cases) {
     const kv = fakeKv();

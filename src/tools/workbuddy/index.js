@@ -176,7 +176,7 @@ export default {
           // 与 codeOf 的语义一致。（blindbox 那边写成 !== 0，是因为它的桩与上游都稳定给 code。）
           const code = api.codeOf(drawn.payload);
           if (drawn.status >= 400 || (code !== null && code !== 0)) break;
-          const granted = api.num(api.firstCredit(drawn.payload, null));
+          const granted = api.drawCredit(drawn.payload);
           if (granted) {
             credits += granted;
           } else {
