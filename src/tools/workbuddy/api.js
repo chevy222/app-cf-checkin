@@ -209,15 +209,24 @@ export const readTravelConfig = (ctx) => call(ctx, TRAVEL_CONFIG, { method: "GET
 // 抽奖机会**，而机会只会减少不会回来。按 (账号, 逻辑日, 序号) 派生后，
 // 同一轮重放发的是同一个键，上游自己就把重复请求判成重放。
 // 这是把它的防重放字段拿来当我们的幂等键用。
-export function idemKey(scope, uid, day, ...parts) {
-  const dayTag = String(day).replace(/-/g, "");
-  const who = String(uid).replace(/[^0-9a-zA-Z]/g, "").slice(-10);
-  return [scope, who, dayTag, ...parts].join("-").slice(0, 60);
+// 幂等键：**每次调用现生成一个新的**，形如 `draw-<uuid>`。
+// 上游要的是"客户端生成的唯一串"—— 前端的 `M("draw")` 就是 `draw-${crypto.randomUUID()}`，
+// 每点一次抽奖换一个，本项目照办。
+//
+// ⚠️ **不能**按 `(账号, 逻辑日, 序号)` 这类可重复的派生键：序号每轮都从 0 重新开始，
+// 于是第二轮的第一次抽奖会复用第一轮的 token —— 上游按 token 去重就把它当成重放，
+// 机会没被消耗、余额不降，而我们报"抽了"，下一轮继续撞同一个 token，
+// **直到当天结束都在反复打上游**。
+// "重跑会不会重复消耗"这个顾虑不成立：上游的 `balance` 是权威（上一轮真抽掉的次数
+// 已经扣过了），而 `call()` 从不重试同一发请求。
+export function idemKey(scope) {
+  const uuid = typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  return `${scope}-${uuid}`;
 }
 
-export async function drawOnce(ctx, index) {
-  return call(ctx, LOTTERY_DRAW, { body: { client_token: idemKey("draw", ctx.account.uid, ctx.day, index) } });
-}
+export const drawOnce = (ctx) => call(ctx, LOTTERY_DRAW, { body: { client_token: idemKey("draw") } });
 
 export async function openBlindbox(ctx) {
   // 这个接口**没有任何幂等字段**：每调一次服务端就扣 10 点能量。
@@ -228,7 +237,10 @@ export async function openBlindbox(ctx) {
 
 // 到站礼物的领取不需要参数：服务端按当前账号的行程记录自己找。
 // 多传 record_id 属于自作多情：上游没报错不代表它认这个字段。
-export const claimTravel = (ctx) => call(ctx, TRAVEL_CLAIM, { method: "POST", body: undefined });
+// 领奖**要带一个空的 JSON 体**（`{}`）：前端的 axios `e.post(url, {})` 就是发 `{}`，
+// 而不是"没有体"（只有一个空表单体是抓包工具常有的显示歧义）。
+// 我们的 call() 只有显式给 body 才会发体，所以这里必须显式给 {}。
+export const claimTravel = (ctx) => call(ctx, TRAVEL_CLAIM, { body: {} });
 export const departTravel = (ctx, locationId) => call(ctx, TRAVEL_DEPART, { body: { location_id: locationId } });
 
 // depart 被拒时上游给的是**消息文本**而不是业务码，所以只能按短语判 ——
@@ -298,7 +310,7 @@ export function prerequisiteHint(text) {
 // 传空对象会序列化成 "{}"，与实测形状不符。
 // 响应里积分与能量叫 credit / energy，不叫 *_granted。
 export const claimTask = (ctx, taskCode) => call(ctx, `/activity/growth/tasks/${encodeURIComponent(taskCode)}/claim`, { method: "POST", body: undefined });
-export const redeemTier = (ctx, tier) => call(ctx, REDEEM, { body: { tier, client_token: idemKey("redeem", ctx.account.uid, ctx.day, tier) } });
+export const redeemTier = (ctx, tier) => call(ctx, REDEEM, { body: { tier, client_token: idemKey("redeem") } });
 
 // 签到的判定方言，分两段。顺序不能变：401/403 必须排在"空 body 算已领"之前，
 // 否则登录失效会被读成"今天已经签过了"并返回成功码。

@@ -3174,26 +3174,33 @@ test("[workbuddy] active=false 是活动未开，不是已领也不是失败", a
   } finally { stub.restore(); }
 });
 
-test("[workbuddy] 幂等键按 (账号, 逻辑日, 序号) 派生：同轮内不重复、跨轮换键", async () => {
-  const day = logicalDay(0, cst(10));
-  const key = (d, i) => idemKey("draw", "wb-77002", d, i);
-  assert.equal(key(day, 0), key(day, 0), "同一天同一序号必须是同一个键，否则重放就是再抽一次");
-  assert.notEqual(key(day, 0), key(day, 1), "序号要进键：一轮里两次抽奖共键会被上游判成同一发");
-  assert.notEqual(key(day, 0), key(logicalDay(0, cst(10) + 86400), 0), "换天了就得换键");
+test("[workbuddy] client_token 每次现生成：同轮内不重复，跨轮也不许撞", async () => {
+  // 上游要的是"客户端生成的唯一串"：前端的 `M("draw")` = `draw-${crypto.randomUUID()}`，
+  // 每点一次抽奖换一个。**不能**按 (账号, 逻辑日, 序号) 派生 —— 序号每轮从 0 重新开始，
+  // 第二轮的第一次抽奖会复用第一轮的 token，上游按 token 去重即当成重放：
+  // 机会没被消耗、余额不降，而我们报"抽了"，下一轮继续撞，整天反复打上游。
+  assert.notEqual(idemKey("draw"), idemKey("draw"), "两次调用必须是两个不同的串");
+  assert.ok(idemKey("draw").startsWith("draw-"), "前缀要能看出是哪个接口");
+  assert.ok(idemKey("redeem").startsWith("redeem-"));
 
   const kv = fakeKv();
   seedWorkbuddy(kv);
   const stub = stubUpstream(wbIdleRoutes({
-    "GET /v2/activity/growth/lottery/chances": { payload: { balance: 2 } },
+    // balance 6 > 一轮上限 5 → 第一轮 partial、第二轮接着抽，
+    // 这正是"跨轮撞 token"会被触发的地方（桩的余额不递减，所以两轮各抽 5 次）。
+    "GET /v2/activity/growth/lottery/chances": { payload: { balance: 6 } },
     "POST /v2/activity/growth/lottery/draw": { payload: { credit: 5 } },
   }));
   try {
-    await wbTick(kv);
+    const first = await wbTick(kv, cst(10));
+    assert.equal(wbView(first.summary).steps[2].status, "partial", "前提：第一轮没抽完");
+    const lock = [...kv.store.keys()].find((k) => k.startsWith("v1:lock:workbuddy:"));
+    if (lock) kv.store.delete(lock);
+    await wbTick(kv, cst(10, 31));
+
     const tokens = stub.seen.filter((r) => r.path.endsWith("/lottery/draw")).map((r) => JSON.parse(r.body).client_token);
-    assert.equal(tokens.length, 2);
-    assert.equal(new Set(tokens).size, 2, "同一轮两次抽奖共用了幂等键");
-    assert.ok(tokens[0].startsWith("draw-"), tokens[0]);
-    assert.ok(tokens[0].includes(day.replace(/-/g, "")), "逻辑日要进键，跨天才能自然换键");
+    assert.equal(tokens.length, 10, "两轮各抽 5 次");
+    assert.equal(new Set(tokens).size, tokens.length, "跨轮撞了 token —— 第二轮会被上游当成重放，整天卡住");
   } finally { stub.restore(); }
 });
 
@@ -3647,9 +3654,11 @@ test("[workbuddy] 顶层字段是 null 时要能穿透到包装层取到真值",
     const travel = wbView(summary).steps[1];
     assert.match(travel.message, /\+8/, `顶层 null 让到站礼物没领到（${travel.status}：${travel.message}）`);
     assert.equal(stub.seen.filter((r) => r.path.endsWith("/buddy/travel/claim")).length, 1, "到站了却没发领取请求");
-    // 实测形状：到站领取不带任何参数，多传 record_id 属于自作多情
+    // 实测形状：到站领取**要带一个空的 JSON 体** —— 前端是 axios 的 `e.post(url, {})`，
+    // 那会发出字面 `{}`，不是"没有体"。别和 tasks/{code}/claim 搞混：那个前端连第二参都没传，
+    // 两边形状不同（见下方「claim 不该带请求体」那条）。
     const claimReq = stub.seen.find((r) => r.path.endsWith("/buddy/travel/claim"));
-    assert.equal(claimReq.body, undefined, `到站领取不该带请求体，实际 ${claimReq.body}`);
+    assert.equal(claimReq.body, "{}", `到站领取该带一个空的 JSON 体，实际 ${claimReq.body}`);
   } finally { stub.restore(); }
 });
 

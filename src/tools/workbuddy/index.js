@@ -167,7 +167,7 @@ export default {
         const named = [];
         let blank = 0;
         for (let i = 0; i < want; i += 1) {
-          const drawn = await api.drawOnce(ctx, i);
+          const drawn = await api.drawOnce(ctx);
           // HTTP 层失败与业务层失败都要停手。只看 status 会把"上游 200 + code=非0
           // （机会已被别的端用掉 / 活动关闭 / 被风控）"读成"抽了一次但没中奖"：
           // 日志里报的次数是假的，后面的 left = balance - drew 也跟着算错，
