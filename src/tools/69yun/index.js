@@ -14,7 +14,8 @@ import * as api from "./api.js";
 //   POST /user/checkin  ret=1 → 签到成功（claimed）
 //   POST /user/checkin  ret=0 → 今日已签到（already）
 //   POST /user/checkin  3xx   → Cookie 失效，重新登录后再试一次
-//   登录 ret!==1        → 登录失败（error / login_required）
+//   登录 ret!==1 且 4xx → 凭据不行（login_required，要用户重录）
+//   登录 5xx/429、轮询异常、session 未就绪 → 上游的问题（rate_limited，等下一轮）
 
 export default {
   id: "69yun",
@@ -71,15 +72,21 @@ export default {
     notBeforeHour: 0,
     minIntervalSec: 1800,
     maxDaily: 10,
-    // SSPanel 没有 429/9074 这类限频方言，但登录失败可能是临时的，给个退避阶梯。
-    backoff: [300, 600, 1800],
+    // 退避阶梯，**单位是分钟**（内核的 backoffSec 会 ×60，别写成秒）。
+    // 量级对齐 Trae 的 [30,60,120,240,360]：首次 5 分钟、然后 10、30。
+    // 它只在步骤产出 rate_limited 时生效，而那正是下面 loginTransient 的分支 ——
+    // 早先这里写的是 [300,600,1800]（=5/10/30 小时，大了一个数量级），
+    // 而 69 云从不产出 rate_limited，所以那个阶梯一次都不会被读到（死配置）。
+    backoff: [5, 10, 30],
   },
 
   hosts: api.yun69Hosts,
 
-  // 最坏情况 cost：
-  //   1（checkin 被 3xx）+ 1（GET 登录页）+ 1（POST 登录）+ 3（轮询 session）+ 1（再 checkin）= 7
-  // 留 1 余量给可能的重定向或额外请求，声明 8。
+  // 最坏情况 cost = 7：
+  //   1（checkin 被 3xx）+ 1（GET 登录页）+ 1（POST 登录）+ 3（轮询 session）+ 1（再 checkin）
+  // 声明 8，那多出来的 1 笔不是"随便留的"——它防的是轮询第 3 次仍返回 3xx 时
+  // 上游多给的一次重定向探测，以及登录响应里分两次下发 Set-Cookie 的形态。
+  // 往小了改是危险方向：低于真实上界会让 fits() 给出一张装不下的假票。
   // 正常情况（Cookie 有效）只花 1 次。
   steps: [
     {
@@ -103,6 +110,12 @@ export default {
         // 重新登录
         const login = await api.login(ctx);
         if (login.error) {
+          // 凭据问题与上游问题必须分开：前者要用户重录（login_required），
+          // 后者重录也没用（亮红条只会误导他）。transient 走 rate_limited ——
+          // 那是唯一会让内核读 schedule.backoff 的状态，于是上面那个阶梯才真正生效。
+          if (login.kind === "transient") {
+            return { status: "rate_limited", message: login.error, credits: 0, cred: null };
+          }
           return {
             status: "login_required",
             message: login.error,
@@ -138,8 +151,22 @@ export default {
   // 「测试」按钮：只登录，不发签到请求。验证邮箱密码是否正确。
   async validate(ctx) {
     const login = await api.login(ctx);
-    if (login.error) return { status: "login_required", message: login.error };
-    return { status: "ok", message: "登录成功，Cookie 已保存" };
+    if (login.error) {
+      return login.kind === "transient"
+        ? { status: "error", message: login.error }
+        : { status: "login_required", message: login.error };
+    }
+    // 必须**就地改写** ctx.account.cred，不能把 cookie 放进返回值：
+    // validateAccount 的落盘判据是「调用前后 account.cred 的差异」
+    // （runner.js 的 validateAccount），它根本不看 outcome.cred ——
+    // 返回 { cookie } 的话新 Cookie 会被直接丢掉，而下面这句话还会撒谎。
+    // 三家都是就地 Object.assign（Trae ensureToken / Qoder authorized /
+    // WorkBuddy refresh），这里跟着同构。SSPanel 登录多半会覆盖 session，
+    // 不写回的话旧 Cookie 可能当场作废，下一轮必然又是 3xx。
+    ctx.account.cred.cookie = login.cookie;
+    // 不写「已保存」——写没保存由内核决定，它会在后面自动追加
+    // 「（本次测试顺带续了期，新凭据已写回）」或「（没能写回…）」。自己写等于抢它的话。
+    return { status: "ok", message: "登录成功" };
   },
 };
 

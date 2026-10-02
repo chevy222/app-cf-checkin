@@ -6,7 +6,7 @@ import { maskSecret } from "../src/core/text.js";
 import { coerceFields, saveAccount, schedOf } from "../src/core/accounts.js";
 import { listUids } from "../src/core/store.js";
 import { commitSchedEntries, loadSchedIndex } from "../src/core/accounts.js";
-import { aggregate, runAccountNow, runTick } from "../src/core/runner.js";
+import { aggregate, runAccountNow, runTick, validateAccount } from "../src/core/runner.js";
 import { makeBudget, trackedFetch } from "../src/core/budget.js";
 import { listRunLog, readRunLog, scrubSecrets, writeRunLog } from "../src/core/logs.js";
 import { logicalDay, cstDate } from "../src/core/time.js";
@@ -2586,6 +2586,95 @@ test("[69yun] 无 Cookie 时直接登录再签到，不先试一次", async () =
     // 第一步就该是 GET 登录页，而不是先试签到
     assert.equal(stub.seen[0].path, "/auth/login");
     assert.equal(stub.seen[0].method, "GET");
+  } finally { stub.restore(); }
+});
+
+// 「测试」按钮走 validateAccount，而它的落盘判据是**调用前后 account.cred 的差异**，
+// 根本不看 outcome.cred。所以工具必须就地改写 ctx.account.cred ——
+// 早先 69yun 把 cookie 放进返回值，于是新 Cookie 被丢掉，而界面还写着「Cookie 已保存」。
+test("[69yun] 点「测试」后新 Cookie 真的落进 KV，不只嘴上说已保存", async () => {
+  const kv = fakeKv();
+  const { uid } = seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
+  const stub = stubUpstream({
+    "GET /auth/login": { status: 200, body: "<html>login</html>", headers: { "set-cookie": "PHPSESSID=init" } },
+    "POST /auth/login": { payload: { ret: 1 }, headers: { "set-cookie": ["uid=9", "key=fresh999"] } },
+    "GET /user": { status: 200, body: "<html>ok</html>" },
+  });
+  try {
+    const view = await validateAccount({
+      env: envFor(kv), budget: makeBudget(45), tool: findTool("69yun"), uid, now: cst(10),
+    });
+    assert.equal(view.status, "ok", `测试应成功：${view.message}`);
+    // 落盘的判据就是这一条：账号记录里的 cookie 必须真的换了
+    const saved = JSON.parse(kv.store.get(`v1:acct:69yun:${uid}`)).cred.cookie;
+    assert.match(saved, /fresh999/, "新 Cookie 没写进 KV —— validate 只认就地改写，不认返回值");
+    assert.doesNotMatch(saved, /old=expired/, "旧 Cookie 还在，说明新值没覆盖上去");
+    // 「已保存」这句话必须由内核来说，工具自己写就是在抢它的话（且可能撒谎）
+    assert.match(view.message, /新凭据已写回/, `内核应自动追加写回提示，实际：${view.message}`);
+    assert.ok(!view.message.includes("Cookie 已保存"), "工具仍在自夸「已保存」，那句应由内核说");
+  } finally { stub.restore(); }
+});
+
+test("[69yun] 上游 5xx 报 rate_limited 而不是 login_required（重录密码没用）", async () => {
+  const kv = fakeKv();
+  seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
+  const stub = stubUpstream({
+    "POST /user/checkin": { status: 302, body: "" },
+    "GET /auth/login": { status: 200, body: "<html>login</html>" },
+    "POST /auth/login": { status: 503, body: "upstream down" },
+  });
+  try {
+    const { summary } = await yun69Tick(kv);
+    const acct = planOf(summary, "69yun").accounts[0];
+    // 5xx 是上游自己的问题：让用户去改密码是白费工夫，亮红条还会误导他以为账号坏了
+    assert.equal(acct.status, "rate_limited", `上游故障不该报 login_required：${acct.message}`);
+    assert.notEqual(acct.status, "login_required");
+  } finally { stub.restore(); }
+});
+
+test("[69yun] 密码确实错了才报 login_required（auth 与 transient 要分得开）", async () => {
+  const kv = fakeKv();
+  seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
+  const stub = stubUpstream({
+    "POST /user/checkin": { status: 302, body: "" },
+    "GET /auth/login": { status: 200, body: "<html>login</html>" },
+    "POST /auth/login": { status: 401, body: "" },
+  });
+  try {
+    const { summary } = await yun69Tick(kv);
+    assert.equal(planOf(summary, "69yun").accounts[0].status, "login_required");
+  } finally { stub.restore(); }
+});
+
+test("[69yun] 退避阶梯是分钟量级，且真的会被 rate_limited 读到", async () => {
+  const tool = findTool("69yun");
+  // 内核 backoffSec 会 ×60，所以声明值必须是分钟。早先写 [300,600,1800]
+  // 实际是 5/10/30 小时，比另两家大一个数量级。
+  assert.deepEqual(tool.schedule.backoff, [5, 10, 30], "退避阶梯应是 5/10/30 分钟");
+  for (const m of tool.schedule.backoff) {
+    assert.ok(m <= 60, `退避阶梯不该出现小时级值（${m} 分钟 = ${m / 60} 小时）`);
+  }
+  // 更关键：阶梯必须与「真的产出 rate_limited」配套，否则它一次都不会被读到。
+  // 早先 69 云从不产出 rate_limited，这个声明就是死的。
+  const kv = fakeKv();
+  seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
+  const stub = stubUpstream({
+    "POST /user/checkin": { status: 302, body: "" },
+    "GET /auth/login": { status: 200, body: "<html>login</html>" },
+    "POST /auth/login": { status: 503, body: "down" },
+  });
+  try {
+    const now = cst(10);
+    kv.advanceTo(now * 1000);
+    const { summary } = await yun69Tick(kv, now);
+    const acct = planOf(summary, "69yun").accounts[0];
+    assert.equal(acct.status, "rate_limited", "先决条件：这条路径要真的产出 rate_limited");
+    // 读回调度索引：退避时间必须按分钟落进去（首次 = 5 分钟 = 300 秒）
+    const index = JSON.parse(kv.store.get("v1:schedidx:69yun"));
+    const entry = index.entries["user69yun.com"] || index.entries["user@69yun.com"];
+    const gap = entry.retryAt - now;
+    assert.ok(gap > 0, "rate_limited 后必须排 retryAt，否则会每 30 分钟重试一次");
+    assert.ok(gap <= 31 * 60, `退避应落在分钟量级，实际 ${gap} 秒（${(gap / 3600).toFixed(1)} 小时）`);
   } finally { stub.restore(); }
 });
 

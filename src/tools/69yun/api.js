@@ -100,12 +100,17 @@ async function call(ctx, { path, method = "GET", body, cookie, contentType, refe
 
 // ── 登录 ──────────────────────────────────────────────────────
 // 完整流程：GET 登录页拿初始 Cookie → POST 登录 → 轮询验证 session。
-// 返回 { cookie } 或 { error }。
-
+//
+// 失败必须带 **kind**，因为两种失败的后果完全相反：
+//   auth      = 凭据本身不行（密码错、账号不存在）→ login_required，用户重录才有救
+//   transient = 上游自己的问题（5xx、网络抖动、session 传播慢）→ error/rate_limited，
+//               用户重录密码毫无用处，而且亮红条会误导他以为账号坏了
+// 早先这里只返回 { error }，六条成因全被上层映成 login_required。
 export async function login(ctx) {
   const email = ctx.account.cred.email;
   const password = ctx.account.cred.password;
-  if (!email || !password) return { error: "账号缺少邮箱或密码" };
+  // 缺字段是数据问题（用户没填全），归 auth：提示他补全，而不是让他干等退避
+  if (!email || !password) return { error: "账号缺少邮箱或密码", kind: "auth" };
 
   // Step 1: GET 登录页，拿初始 session cookie
   const init = await call(ctx, { path: LOGIN_PAGE, referer: BASE });
@@ -125,10 +130,13 @@ export async function login(ctx) {
     const msg = login.payload && login.payload.msg
       ? login.payload.msg
       : `HTTP ${login.status} ${truncate(login.text, 80)}`;
-    return { error: `登录失败：${msg}` };
+    // 5xx / 429 这类是上游自己的问题；4xx 与业务码才是"密码不对"。
+    // SSPanel 登录失败回 ret!=1 且 HTTP 200，所以 HTTP 状态是这里唯一能分开的信号。
+    const kind = login.status >= 500 || login.status === 429 ? "transient" : "auth";
+    return { error: `登录失败：${msg}`, kind };
   }
   cookies = mergeCookies(cookies, login.cookies);
-  if (cookies.length === 0) return { error: "登录成功但未获取到 Cookie" };
+  if (cookies.length === 0) return { error: "登录成功但未获取到 Cookie", kind: "transient" };
 
   // Step 3: 轮询验证 session 就绪
   for (let i = 0; i < SESSION_BACKOFF_MS.length; i++) {
@@ -144,12 +152,14 @@ export async function login(ctx) {
       return { cookie: cookieString(cookies) };
     }
     if (verify.status >= 300 && verify.status < 400 && i < SESSION_BACKOFF_MS.length - 1) continue;
-    // 非 3xx 的异常（如 500）不等了，直接报错
+    // 4xx/5xx 是上游的问题（session 没建起来），不是密码错了
     if (verify.status >= 400) {
-      return { error: `会话验证异常：HTTP ${verify.status}` };
+      return { error: `会话验证异常：HTTP ${verify.status}`, kind: "transient" };
     }
   }
-  return { error: `登录成功但 session 始终未就绪（轮询 ${SESSION_BACKOFF_MS.length} 次）` };
+  // 轮询用完仍 3xx：凭据已通过认证（ret=1），只是 session 传播得比预期慢 ——
+  // 归 transient 而非 auth：让用户去改密码是白费工夫，等下一轮重试才对。
+  return { error: `登录成功但 session 始终未就绪（轮询 ${SESSION_BACKOFF_MS.length} 次）`, kind: "transient" };
 }
 
 // ── 签到 ──────────────────────────────────────────────────────
