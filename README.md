@@ -130,15 +130,9 @@ npm run deploy
 ### 方式三 · 本地跑（开发调试）
 
 ```bash
-printf 'PASSWORD=换成你自己的\n' > .dev.vars    # 这个文件已在 .gitignore 里
+cp .dev.vars.example .dev.vars    # 然后把 PASSWORD 改成自己的
 npm run dev
 ```
-
-两个坑：
-
-1. `PASSWORD` **不会从 shell 环境继承**，只能通过 `.dev.vars` 或 `--var PASSWORD:x` 传入。
-2. 残留的 dev 进程会占住共享的 `.wrangler/state` 导致新实例假死。
-   起之前确认没有残留 worker 进程，且**只起一个**。
 
 ---
 
