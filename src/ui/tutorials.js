@@ -299,7 +299,7 @@ Write-Host "=================================" -ForegroundColor Cyan
       + "签到台会自动保存登录后的 Cookie，失效时用邮箱密码重新登录，不需要手动维护。",
     steps: [
       step("确认能登录 69 云官网",
-        "在浏览器里打开 **https://69yun69.com**，用你的邮箱密码登录。"
+        "在浏览器里打开 https://69yun69.com，用你的邮箱密码登录。"
         + "能进到用户中心就说明凭据有效——签到台用的就是这对凭据。"),
       step("（可选）用 PowerShell 验证登录接口",
         "把 `your@email.com` 和 `your_password` 换成你自己的。"
