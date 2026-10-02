@@ -85,18 +85,23 @@ npm run deploy
 有没有更新上。然后再执行部署。
 
 <details>
-<summary>单文件粘贴（备用方式）</summary>
+<summary>方法 B：单文件粘贴（不用装 Node.js / wrangler）</summary>
 
-```bash
-npx wrangler deploy --dry-run --outdir=dist
-```
+仓库根目录自带打包好的单文件 **`worker.js`**（262 KB，每次发版同步更新），
+不需要本地装任何东西。
 
-结尾那行 `--dry-run: exiting now.` 是「到此为止、不真的部署」的正常提示，**不是报错**。
-`dist/` 里会出来 3 个文件，**只需要其中的 `index.js`**，另外两个（`.map` 与
-`README.md`）不用管。在 Cloudflare 控制台的 Workers 编辑器里新建一个 Worker，
-把 `index.js` 的内容整个粘贴进去；再在面板上**创建一个 KV 命名空间**并绑定为
-`CHECKIN_KV`，配好 cron（`*/30 * * * *`），并在「设置 → 变量和机密」里设
-Secret `PASSWORD`。
+1. **下载 `worker.js`**：在仓库页面点 `worker.js` → Raw → 另存为，或直接 `git clone` 后取这个文件。
+2. **创建 Worker**：Cloudflare 面板 → Workers 和 Pages → 创建 → 命名（比如 `checkin`）→ 选「Hello World」模板 → 部署。
+3. **粘贴代码**：进入刚创建的 Worker → 编辑代码 → 把默认内容全删，把 `worker.js` 的内容整个粘贴进去 → 保存并部署。
+4. **绑定 KV**：Worker → 设置 → 绑定 → KV 命名空间 → 添加绑定 → 变量名填 `CHECKIN_KV`，命名空间选你创建的那个（没有就先去「存储和数据库 → KV」创建一个）。
+5. **配 cron**：Worker → 设置 → 触发器 → Cron 触发器 → 添加 → `*/30 * * * *`。
+6. **设口令**：Worker → 设置 → 变量和机密 → 添加机密 → 名称 `PASSWORD`，值填你想设的口令 → 加密保存。
+7. **绑域名**：Worker → 设置 → 域名和路由 → 添加自定义域名（或把 `workers_dev` 打开用免费域名）。
+
+完成后浏览器打开域名、输入口令即可。
+
+> `worker.js` 是 `npm run bundle`（`wrangler deploy --dry-run`）的产物，
+> 与源码功能完全一致；改了源码后重新跑一次 `npm run bundle`，把 `dist/index.js` 覆盖到根目录 `worker.js` 即可。
 
 </details>
 
