@@ -62,10 +62,9 @@ export function renderRuns({ pwd, tools, entries, active = {}, flash }) {
     title: "运行日志",
     nav: navHtml(pwd, "runs", tools),
     body: `${flash ? alertBox(flash.kind, escapeHtml(flash.text)) : ""}
-      ${sectionHead("运行日志", "保留 30 天；列表只读一次 KV，正文点进详情才读",
+      ${sectionHead("运行日志", "",
         `<div class="acts">${clearForm(pwd, active.tool)}${filterBar(pwd, tools, active)}</div>`)}
-      ${table}
-      <p class="tiny mt">列表的摘要存在 KV 的 metadata 里，所以这一页的成本只与「已注册的工具数」有关，与记录条数无关。凭据与访问口令永不写入日志。</p>`,
+      ${table}`,
   });
 }
 
