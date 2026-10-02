@@ -1,6 +1,15 @@
-# 签到台
+<h1 align="center">app-cf-checkin 签到台</h1>
 
-一个跑在 Cloudflare Worker 上的**离线自动签到台**：部署一次后，cron 每 30 分钟无人值守地替你领 **Qoder / Trae / WorkBuddy / 69 云** 四家的免费额度，不需要每天手动操作、不需要一直开着电脑。
+<p align="center">
+  跑在 Cloudflare Worker 上的离线自动签到台，部署一次后 cron 无人值守替你领<br />
+  Qoder / Trae / WorkBuddy / 69 云 四家的免费额度
+</p>
+
+<p align="center">
+  <img src="docs/screenshot.png" alt="签到台界面" width="800" />
+</p>
+
+---
 
 - **离线无人值守**：部署一次后自动签到，不需要每天手动操作、不需要开着电脑
 - **免费运行**：跑在 Cloudflare 免费版上，不花钱
