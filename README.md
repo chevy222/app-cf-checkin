@@ -1,21 +1,23 @@
-<h1 align="center">app-cf-checkin 签到台</h1>
+<div align="center">
 
-<p align="center">
-  跑在 Cloudflare Worker 上的离线自动签到台，部署一次后 cron 无人值守替你领<br />
-  Qoder / Trae / WorkBuddy / 69 云 四家的免费额度
-</p>
+# 🤖 app-cf-checkin 签到台
+
+**跑在 Cloudflare Worker 上的离线自动签到台 · 部署一次后 cron 无人值守**
+
+🔄 离线无人值守 · 🆓 免费运行 · 🔐 口令保护 + 凭据脱敏 · ♻️ 断点续跑不重复领取 · 🛠️ 支持 Qoder / Trae / WorkBuddy / 69 云
+
+<img src="https://img.shields.io/badge/Cloudflare-Worker-F38020?style=for-the-badge&logo=cloudflare&logoColor=white" />
+<img src="https://img.shields.io/badge/Zero%20Runtime%20Deps-0%20package-A78BFA?style=for-the-badge" />
+<img src="https://img.shields.io/badge/Single--file%20Deploy-worker.js-FFC75F?style=for-the-badge&logo=files&logoColor=white" />
+<img src="https://img.shields.io/badge/License-MIT-F472B6?style=for-the-badge" />
+
+</div>
 
 <p align="center">
   <img src="docs/screenshot.png" alt="签到台界面" width="800" />
 </p>
 
 ---
-
-- **离线无人值守**：部署一次后自动签到，不需要每天手动操作、不需要开着电脑
-- **免费运行**：跑在 Cloudflare 免费版上，不花钱
-- **安全**：页面在口令保护后，凭据在日志中自动脱敏
-- **可靠**：签到中断后自动续跑，不会重复领取；每次签到的请求和响应都能在日志里查看
-- **支持四家**：Qoder / Trae / WorkBuddy / 69 云
 
 **给使用者**：部署与日常操作看本文档就够。
 **给开发者**：架构、契约、加新工具的完整模版、预算与 KV 设计都在 [`设计方案.md`](设计方案.md)。
