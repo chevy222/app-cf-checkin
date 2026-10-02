@@ -60,7 +60,7 @@ h2{margin:0;font-size:17px;font-weight:650;letter-spacing:-.2px}
 .card .hd a:not(.btn){margin-left:auto;color:var(--accent);text-decoration:none;font-size:12.5px}
 .card .hd a:not(.btn):hover{text-decoration:underline}
 /* 图标是内联 data URI（见 icons.js 的理由：必须在口令闸后）。64×64 缩到 22px，
-   交给浏览器双线性插值；只做圆角与去白边，不加滤镜 —— 样式 B 里图标是配角。 */
+   交给浏览器双线性插值；只做圆角与去白边，不加滤镜 —— 图标是配角。 */
 .ico{width:22px;height:22px;border-radius:5px;flex:none;display:block}
 .card .bd{padding:14px 16px 18px}
 .pane{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
