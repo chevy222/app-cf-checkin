@@ -3817,6 +3817,7 @@ test("[workbuddy] 旅行在途不落已结：同一天下一轮仍会重读状�
   try {
     const first = await wbTick(kv, cst(10));
     assert.equal(wbStep(first.summary, 'travel').status, "waiting");
+    const runKeysAfterFirst = [...kv.store.keys()].filter((k) => k.startsWith("v1:run:workbuddy:")).length;
 
     const before = stub.seen.filter((r) => r.path.endsWith("/travel/status")).length;
     const lock = [...kv.store.keys()].find((k) => k.startsWith("v1:lock:workbuddy:"));
@@ -3828,6 +3829,10 @@ test("[workbuddy] 旅行在途不落已结：同一天下一轮仍会重读状�
     assert.equal(wbStep(second.summary, 'travel').status, "waiting");
     // 其余五步都已结、被复用，所以这一轮只该花 1 次外部请求
     assert.equal(wbView(second.summary).http, 1, `在途期间每轮该只花 1 次请求，实际 ${wbView(second.summary).http}`);
+    // 无进展轮次不写运行日志：第二轮只有 travel waiting（didWork=false, credits=0），
+    // 每 30 分钟一条"等待中"会刷屏。trace 仍写（详情页需要），但 v1:run:* 不增加。
+    const runKeysAfterSecond = [...kv.store.keys()].filter((k) => k.startsWith("v1:run:workbuddy:")).length;
+    assert.equal(runKeysAfterSecond, runKeysAfterFirst, "无进展轮次不该写运行日志（等待中刷屏）");
   } finally { stub.restore(); }
 });
 
