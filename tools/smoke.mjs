@@ -3589,6 +3589,39 @@ test("[workbuddy] 抽奖/兑换给 0 的那层要跳过，不能被 ?? 短路吃
   } finally { stub2.restore(); }
 });
 
+test("[workbuddy] 抽奖金额上游没回时报奖名，不许拿 +0 冒充没中奖", async () => {
+  // 抽奖的积分是**异步到账**的：抽奖响应里前端只读 prize_code / prize_name / reward_id，
+  // 结果弹窗那句「积分已发放，将在几分钟内到账」是写死的。所以响应里没有金额是常态，
+  // 报 `+0` 等于用一个假测量值说"没中奖"—— 而用户其实中了（只是几分钟后到账）。
+  // "零"与"不知道"必须分开说。
+  const cases = [
+    { name: "只回奖名", draw: { payload: { code: 0, prize_name: "50 Credits" } },
+      expect: /上游只回奖名：50 Credits/, credits: 0 },
+    { name: "金额与奖名混合",
+      draw: (() => { let n = 0; return () => (++n === 1
+        ? { payload: { code: 0, reward_credit: 10 } }
+        : { payload: { code: 0, prize_name: "谢谢参与" } }); })(),
+      expect: /\+10（上游只回奖名：谢谢参与）/, credits: 10 },
+    { name: "什么都没回", draw: { payload: { code: 0 } },
+      expect: /上游没回结果/, credits: 0 },
+  ];
+  for (const c of cases) {
+    const kv = fakeKv();
+    seedWorkbuddy(kv);
+    const stub = stubUpstream(wbIdleRoutes({
+      "GET /v2/activity/growth/lottery/chances": { payload: { balance: 2 } },
+      "POST /v2/activity/growth/lottery/draw": c.draw,
+    }));
+    try {
+      const { summary } = await wbTick(kv);
+      const msg = wbView(summary).steps[2].message;
+      assert.match(msg, c.expect, `${c.name}：${msg}`);
+      assert.ok(!/\+0\b/.test(msg), `${c.name} 拿 +0 冒充了没中奖：${msg}`);
+      assert.equal(wbView(summary).credits, c.credits, `${c.name} 的积分不该是编出来的`);
+    } finally { stub.restore(); }
+  }
+});
+
 test("[workbuddy] 顶层字段是 null 时要能穿透到包装层取到真值", async () => {
   // dig 命中 null/undefined 时必须穿透到包装层：{state:null, data:{state:"arrived"}}
   // 若读出 null，travel 走不进"到站领奖"分支，一次能白拿的到站礼物无声过期，

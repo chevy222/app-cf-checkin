@@ -103,6 +103,15 @@ export function firstCredit(body, item) {
   return 0;
 }
 
+// 抽奖结果里**有前端佐证**的字段只有 `prize_code` / `prize_name` / `reward_id` ——
+// 前端的结果弹窗读 `prize_name`，而它的描述是**写死的**「积分已发放，将在几分钟内到账」：
+// 金额本来就异步到账，响应里可能根本没有。所以"拿不到金额"不是异常，
+// 调用方据此如实报奖名，而不是拿 +0 冒充"没中奖"（0 是"确实没领到"，两者不是一回事）。
+export function prizeNameOf(payload) {
+  const name = dig(payload, "prize_name");
+  return typeof name === "string" && name.trim() ? name.trim() : "";
+}
+
 // code 归一：没给才是 null，给了就按数字比。
 // 两处不能写 `body.code || 0`（空 body 会被当成 0 = 成功），
 // 也不能在 `=== 0` 之外再加字符串宽松比较（那会把错误响应读成成功）。

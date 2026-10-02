@@ -161,6 +161,11 @@ export default {
         const want = Math.min(balance, DRAWS_PER_ROUND);
         let drew = 0;
         let credits = 0;
+        // 金额与奖名分开记：抽奖的积分是**异步到账**的（抽奖响应里前端只读
+        // prize_code / prize_name / reward_id，结果弹窗那句「积分已发放，将在几分钟内到账」
+        // 是写死的），所以"响应里没有金额"是常态而不是异常。
+        const named = [];
+        let blank = 0;
         for (let i = 0; i < want; i += 1) {
           const drawn = await api.drawOnce(ctx, i);
           // HTTP 层失败与业务层失败都要停手。只看 status 会把"上游 200 + code=非0
@@ -171,15 +176,26 @@ export default {
           // 与 codeOf 的语义一致。（blindbox 那边写成 !== 0，是因为它的桩与上游都稳定给 code。）
           const code = api.codeOf(drawn.payload);
           if (drawn.status >= 400 || (code !== null && code !== 0)) break;
-          const granted = api.firstCredit(drawn.payload, null);
-          credits += api.num(granted) || 0;
+          const granted = api.num(api.firstCredit(drawn.payload, null));
+          if (granted) {
+            credits += granted;
+          } else {
+            const name = api.prizeNameOf(drawn.payload);
+            if (name) named.push(name); else blank += 1;
+          }
           drew += 1;
         }
         if (drew === 0) return { status: "error", message: `有 ${balance} 次机会但第一发就没成（响应异常）`, credits: 0, cred: ctx.rotated };
         const left = balance - drew;
+        // 拿不到金额就报奖名；**绝不用 `+0`** —— 那是拿一个假测量值冒充"没中奖"，
+        // 而用户其实中了（只是几分钟后才到账）。零与"不知道"必须分开说。
+        const bits = [];
+        if (named.length) bits.push(`上游只回奖名：${named.join("、")}`);
+        if (blank) bits.push(`${blank} 次上游没回结果`);
+        const note = bits.length ? `（${bits.join("；")}）` : "";
         return {
           status: left > 0 ? "partial" : "claimed",
-          message: `抽 ${drew} 次 +${credits}${left > 0 ? `，还剩 ${left} 次下一轮抽` : ""}`,
+          message: `抽 ${drew} 次${credits ? ` +${credits}` : ""}${note}${left > 0 ? `，还剩 ${left} 次下一轮抽` : ""}`,
           credits,
           cred: ctx.rotated,
         };
