@@ -2841,7 +2841,7 @@ test("[trae] 两个域名的鉴权头不共用：换票/用户信息用 x-cloudi
   const stub = stubUpstream({
     "POST /trae/api/v2/ug/checkin_credits/status": statusOf(false, 0),
     "POST /trae/api/v2/ug/checkin_credits/claim": { payload: { code: 0, message: "success", credits: 100 } },
-    "POST /trae/api/v2/pay/ide_user_ent_usage": { payload: { user_entitlement_pack_list: [{ entitlement_base_info: { quota: { credits_limit: 500, credits_amount: 120 } } }] } },
+    "POST /trae/api/v2/pay/ide_user_ent_usage": { payload: { user_entitlement_pack_list: [{ entitlement_base_info: { quota: { credits_limit: 500 } }, usage: { credits_amount: 120 } }] } },
   });
   try {
     await traeTick(kv);
@@ -2972,7 +2972,7 @@ test("[trae] 领取成功但没回积分时补读一次，界面上要看得见�
       return { payload: { checked_in: false, credits: statusCalls === 1 ? 300 : 400, enable: true } };
     },
     "POST /trae/api/v2/ug/checkin_credits/claim": { payload: { code: 0, message: "success" } },
-    "POST /trae/api/v2/pay/ide_user_ent_usage": { payload: { user_entitlement_pack_list: [{ entitlement_base_info: { quota: { credits_limit: 600, credits_amount: 400 } } }] } },
+    "POST /trae/api/v2/pay/ide_user_ent_usage": { payload: { user_entitlement_pack_list: [{ entitlement_base_info: { quota: { credits_limit: 600 } }, usage: { credits_amount: 400 } }] } },
   });
   try {
     const { summary } = await traeTick(kv);

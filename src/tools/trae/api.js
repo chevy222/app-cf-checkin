@@ -141,7 +141,7 @@ export async function claimOnce(ctx, token) {
 
 // 「剩余积分」只是观测，不是领取动作
 export async function readUsage(ctx, token) {
-  const result = await post(ctx, USAGE, CLAIM_HOST, claimHeaders(ctx, token), {});
+  const result = await post(ctx, USAGE, CLAIM_HOST, claimHeaders(ctx, token), { require_usage: true, req_source: 2 });
   if (httpAuthFail(result)) return { authFailed: true };
   if (result.status >= 400) return { error: `额度包查询失败：HTTP ${result.status}` };
   const packs = (result.payload && result.payload.user_entitlement_pack_list) || [];
@@ -151,7 +151,7 @@ export async function readUsage(ctx, token) {
     const quota = (pack.entitlement_base_info || {}).quota || {};
     const usage = pack.usage || {};
     limit += Number(quota.credits_limit) || 0;
-    used += Number(quota.credits_amount ?? usage.credits_amount) || 0;
+    used += Number(usage.credits_amount) || 0;
   }
   return { limit, used, remaining: limit - used, packs: packs.length };
 }
