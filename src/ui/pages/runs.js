@@ -1,5 +1,5 @@
 import { escapeHtml } from "../../core/text.js";
-import { fmtCST } from "../../core/time.js";
+import { fmtCST, fmtCSTSec } from "../../core/time.js";
 import { CLEAR_BUDGET } from "../../core/logs.js";
 import { link, navHtml, pageShell } from "../layout.js";
 import { alertBox, badge, button, emptyState, sectionHead } from "../components.js";
@@ -37,7 +37,7 @@ export function renderRuns({ pwd, tools, entries, active = {}, flash }) {
     // data-label 供窄屏卡片式排版用（见 layout.js 的 @media）：窄屏下 thead 隐藏，
     // 字段名由 CSS 从 data-label 生成，宽屏上这个属性没有任何副作用。
     return `<tr>
-      <td class="mono dim" data-label="时间">${escapeHtml(fmtCST(Math.floor(entry.at / 1000)))}</td>
+      <td class="mono dim" data-label="时间">${escapeHtml(fmtCSTSec(Math.floor(entry.at / 1000)))}</td>
       <td data-label="对象">${who}</td>
       <td data-label="结果">${badge(meta.status || "error")}</td>
       <td class="dim" data-label="摘要">${escapeHtml(meta.message || "（无摘要）")}</td>
@@ -113,9 +113,9 @@ export function renderRunDetail({ pwd, tools, entry, key, missing }) {
   const isTick = entry.kind === "tick";
   const head = isTick
     ? `<b class="cap">整轮调度</b> ${badge(entry.ran > 0 ? "ok" : "skipped", entry.ran > 0 ? `跑了 ${entry.ran} 个账号` : "无账号执行")}
-       <span class="spacer"></span><span class="mono dim">${escapeHtml(fmtCST(Math.floor(entry.at / 1000)))} · ${escapeHtml(entry.trigger || "")}</span>`
+       <span class="spacer"></span><span class="mono dim">${escapeHtml(fmtCSTSec(Math.floor(entry.at / 1000)))} · ${escapeHtml(entry.trigger || "")}</span>`
     : `<b class="cap">${escapeHtml(entry.label || entry.uid)}</b> ${badge(entry.status)}
-       <span class="spacer"></span><span class="mono dim">${escapeHtml(entry.tool)}/${escapeHtml(entry.uid)} · ${escapeHtml(fmtCST(Math.floor(entry.at / 1000)))} · ${escapeHtml(entry.trigger || "")}</span>`;
+       <span class="spacer"></span><span class="mono dim">${escapeHtml(entry.tool)}/${escapeHtml(entry.uid)} · ${escapeHtml(fmtCSTSec(Math.floor(entry.at / 1000)))} · ${escapeHtml(entry.trigger || "")}</span>`;
 
   const steps = isTick
     ? (entry.plan || []).map((p) => `<tr>

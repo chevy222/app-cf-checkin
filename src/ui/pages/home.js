@@ -1,5 +1,5 @@
 import { escapeHtml } from "../../core/text.js";
-import { fmtCST } from "../../core/time.js";
+import { fmtCST, fmtCSTSec } from "../../core/time.js";
 import { link, navHtml, pageShell } from "../layout.js";
 import { alertBox, badge, button, chip, emptyState, sectionHead } from "../components.js";
 import { iconImg } from "../icons.js";
@@ -74,7 +74,7 @@ export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, b
     return `<a class="flowitem" href="${escapeHtml(href)}">
       <span class="who">${escapeHtml(who)}</span>${badge(m.status || "error")}
       <span class="m">${escapeHtml(m.message || "")}</span>
-      <span class="when">${escapeHtml(fmtCST(Math.floor(entry.at / 1000)))}</span></a>`;
+      <span class="when">${escapeHtml(fmtCSTSec(Math.floor(entry.at / 1000)))}</span></a>`;
   }).join("");
 
   return pageShell({

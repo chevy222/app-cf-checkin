@@ -14,6 +14,14 @@ export function fmtCST(sec) {
   return new Date((sec + CST_OFFSET) * 1000).toISOString().replace("T", " ").slice(0, 16);
 }
 
+// 运行日志用：精确到秒。同一天里多次顺延与重试会挤在同一分钟，
+// 只到分钟就分不清是哪一次（列表与详情都对不上「为什么这条和那条隔 30 分钟」）。
+// 其它非日志的时间（账号更新、凭据到期）仍用 fmtCST。
+export function fmtCSTSec(sec) {
+  if (!Number.isFinite(sec)) return "—";
+  return new Date((sec + CST_OFFSET) * 1000).toISOString().replace("T", " ").slice(0, 19);
+}
+
 // 重置在 H 点的工具：把时刻往前推 H 小时再取北京日期，即得当前生效的那个逻辑日。
 // resetHour=0 时退化成纯北京日期。工具不许自己算「今天」，一律用内核注入的值。
 export function logicalDay(resetHour, sec) {
