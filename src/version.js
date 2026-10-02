@@ -1,39 +1,22 @@
-// 版本号：yyyy-MM-dd:HHMM —— 日期与时间都是**北京时间**（UTC+8）。
+// 版本号：yyyy-MM-dd:HHMM —— 日期与时间都是**北京时间**（UTC+8），值就是**这次构建的时刻**。
 //
-// 为什么不用「第几次发布」的序号：那个序号依赖"同一天递增"的假设，
-// 而实际使用中它老是不对 —— 一天里发布几次没人记着，跨天后又回到 01，
-// 页脚上两个不同的构建会显示同一个号，刷新页面也看不出有没有更新。
-// 改成北京时间的 HHMM 之后，版本号本身就是发布时刻：一眼能看出新旧，
-// 同一分钟内重复发布（极罕见）才会撞号，而那种情况重跑一次即可。
+// 它是构建戳，不是"第几次发布"：任何"递增"都要有个能跨构建记住上次数值的状态，而这个
+// 值只活在构建工作区里 —— 构建一结束就随工作区丢掉（Git 集成构建每次都重新 clone），
+// 于是每次构建都从同一个旧值算出同一个新值，页脚刷新也不变。
+// 现在它无条件等于构建时刻、与仓库里这一行**无关**，只有同一分钟内重复发布才会撞号。
 //
-// 不要手改：npm run deploy 会先跑 tools/bump-version.mjs 按当前北京时间重算。
+// 不要手改：仓库里这个值只有本地 `npm run dev` / `npm run check` 会渲染，
+// 线上由 tools/bump-version.mjs 在构建期按当前北京时间重写。
 
-export const VERSION = "2026-10-02:1447";
+export const VERSION = "2026-10-02:1500";
 
-// 下一个版本号 = 今天的北京时间 HHMM。
-// 纯函数单独导出，冒烟测试直接测它，不测文件读写与系统时钟。
+// 构建戳 = 传入时刻的 `yyyy-MM-dd:HHMM`。nowCst 形如 "2026-10-02T14:47"，
+// 调用方负责按 UTC+8 算好（时区换算不在这一层）。
 //
-// 时钟回拨（用户改系统时间、或部署机器时区不对）不该让版本号倒退，
-// 所以同一天里若算出的 HHMM **小于**现版本，就用现版本 +1 分钟 ——
-// 那说明钟慢了，用「至少比上一次新」这个方向修正，而不是让页脚显示的时间倒退。
-// 跨天时无条件取当天 HHMM，即便现版本的数字更大（10:05 > 09:30）。
-export function nextVersion(current, nowCst) {
-  // nowCst 形如 "2026-10-02T14:47"，调用方负责按 UTC+8 算好。
-  const day = nowCst.slice(0, 10);
-  const hm = nowCst.slice(11, 13) + nowCst.slice(14, 16);
-  const m = /^(\d{4}-\d{2}-\d{2}):(\d{2})(\d{2})$/.exec(current);
-  if (!m || m[1] !== day) return `${day}:${hm}`;
-
-  // 比较必须走"分钟数"，不能把 HHMM 当整数比：Number("0900")=900 分钟是 15:00，
-  // 比 14:47（887分钟）还晚 —— 而 09:00 明明早于 14:47。整数比较在这里是错的。
-  const nowMin = Number(hm.slice(0, 2)) * 60 + Number(hm.slice(2));
-  const curMin = Number(m[2]) * 60 + Number(m[3]);
-  if (nowMin >= curMin) return `${day}:${hm}`;
-  // 钟慢了：进位一分钟，而且**日期必须一起进位** —— 23:59 +1 分是次日 00:00，
-  // 只改时间会拼出「10-02:0000」这种不存在的时刻。用 UTC 做日期运算：这里的
-  // 分钟数只是"当天第几分钟"，与时区无关，交给 Date 算最省事。
-  const bumped = curMin + 1;
-  const nextDay = new Date(`${day}T00:00:00Z`);
-  nextDay.setUTCMinutes(bumped);
-  return `${nextDay.toISOString().slice(0, 10)}:${String(nextDay.getUTCHours()).padStart(2, "0")}${String(nextDay.getUTCMinutes()).padStart(2, "0")}`;
+// 刻意**不看现版本、不递增、也不"防倒退"**：唯一能跨构建保存状态的地方是仓库，而版本号
+// 一旦依赖仓库里的值，下一次构建就会拿同一个值把它重新算出来 —— 那正是"刷新页面看不出
+// 有没有更新"的来源。所以这里不引入任何跨构建的状态。
+// 构建戳也不需要单调性：钟被往回拨时显示真实时刻，比显示一个被修正过的假时间诚实。
+export function stampFor(nowCst) {
+  return `${nowCst.slice(0, 10)}:${nowCst.slice(11, 13)}${nowCst.slice(14, 16)}`;
 }

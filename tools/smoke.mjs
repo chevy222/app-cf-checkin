@@ -16,7 +16,7 @@ import { expiresAtOf, subjectOf } from "../src/core/jwt.js";
 import { ICONS, iconImg } from "../src/ui/icons.js";
 import { TUTORIALS, renderTutorial } from "../src/ui/tutorials.js";
 import { dayOf, isDue } from "../src/core/scheduler.js";
-import { nextVersion } from "../src/version.js";
+import { stampFor } from "../src/version.js";
 
 const PASSWORD = "correct-horse-battery";
 const SECRET_VALUE = "eyJhbGciOiJIUzI1NiJ9.SUPERSECRETVALUE.doNotLeak";
@@ -4425,19 +4425,13 @@ test("页面底部有版本号与 GitHub 链接", async () => {
   assert.ok(res.text.includes("Powered by GitHub"));
 });
 
-test("版本号按北京时间 HHMM：跨天取当天时刻，钟慢了才进位", () => {
-  // 正常情况：直接取当前北京时间的 HHMM
-  assert.equal(nextVersion("2026-10-01:09:12", "2026-10-02T14:47"), "2026-10-02:1447");
-  // 跨天且现版本的数字更大（10:05 > 09:30）：仍取当天时刻，不能被旧值压住
-  assert.equal(nextVersion("2026-10-01T10:05", "2026-10-02T09:30"), "2026-10-02:0930");
-  // 同一分钟内重跑：号不变（这是允许的极端情况，重跑一次即可）
-  assert.equal(nextVersion("2026-10-02:1447", "2026-10-02T14:47"), "2026-10-02:1447");
-  // 时钟回拨（部署机器时区不对、系统时间被改）：版本号不许倒退，进位一分钟
-  assert.equal(nextVersion("2026-10-02:1447", "2026-10-02T09:00"), "2026-10-02:1448");
-  // 进位要按真实分钟数算，不能拼出 2360 这种不存在的时刻：23:59 +1 分 = 次日 00:00
-  assert.equal(nextVersion("2026-10-02:2359", "2026-10-02T09:00"), "2026-10-03:0000");
-  // 旧格式（两位序号）不该再被认成合法版本，改动前后的构建都能被正确重算
-  assert.equal(nextVersion("2026-10-01:01", "2026-10-02T14:47"), "2026-10-02:1447");
+test("版本号 = 构建时刻（北京时间 HHMM）：只看时钟，不看现版本", () => {
+  assert.equal(stampFor("2026-10-02T14:47"), "2026-10-02:1447");
+  assert.equal(stampFor("2026-10-02T09:05"), "2026-10-02:0905", "个位数的时/分要补零，footer 的格式断言盯着它");
+  assert.equal(stampFor("2026-10-03T00:00"), "2026-10-03:0000");
+  // 契约锁：这个函数**不许**再接收"现版本"参数。一旦加回来，版本号又会被仓库里
+  // 那个陈旧值钉住（刷新看不出更新的来源），或者退化成"同一个值算两次还是它"。
+  assert.equal(stampFor.length, 1, "不要重新引入「现版本」参数");
 });
 
 test("[注册表里只有四家真实工具，夹具不许留在里面", async () => {
