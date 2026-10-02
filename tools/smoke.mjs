@@ -5075,7 +5075,7 @@ test("[trace] 请求体里的凭据也必须洗掉（69 云登录把密码放进
   } finally { stub.restore(); }
 });
 
-test("[trace] 请求记录页渲染原样文本，凭据不出现在页面上", async () => {
+test("[trace] 请求记录页渲染格式化文本，凭据不出现在页面上", async () => {
   const kv = fakeKv();
   const env = envFor(kv);
   const runKey = "v1:run:traceable:0000000000123:S1";
@@ -5093,8 +5093,7 @@ test("[trace] 请求记录页渲染原样文本，凭据不出现在页面上", 
   const page = await hit(`/runs/${encodeURIComponent(runKey)}/trace?pwd=${PASSWORD}`, { env });
   assert.equal(page.status, 200);
   assert.match(page.text, /\/api\/claim/, "页面上要能看到请求的 URL");
-  assert.match(page.text, /请求体（原样）/, "要标出哪个是原样");
-  assert.match(page.text, /请求体（格式化）/, "能解析的 JSON 要给一个格式化视图");
+  assert.match(page.text, /&quot;credit&quot;: 12/, "JSON 要格式化展示（带缩进空格）");
   assert.match(page.text, /已截断：只保留 32 字符（原文 99 字符）/, "截断要如实标注");
   assert.match(page.text, /<a id="trace-claim">/, "锚点要在，详情页的链接才能落到对应步骤");
   assert.ok(!page.text.includes("SECRETVALUE"), "凭据值不能出现在页面上");

@@ -149,9 +149,8 @@ export function renderRunDetail({ pwd, tools, entry, key, missing }) {
 }
 
 // ── 请求记录页 ─────────────────────────────────────────────
-// 每一步的上游交互，请求体与响应体**原样**展示。零 JavaScript：
-// 展开/收起用原生的 <details>，「原样 / 格式化」两个视图都是服务端渲染好的
-// （格式化不落库，只花渲染时的 CPU；原样永远是权威 —— 它才能区分"字段是空的"与"被裁了"）。
+// 每一步的上游交互，请求体与响应体展示。零 JavaScript：
+// 展开/收起用原生的 <details>，JSON 自动格式化（非 JSON 直接显示原文）。
 
 const JSON_DISPLAY_MAX = 200 * 1024;
 
@@ -173,16 +172,15 @@ function prettyJson(text) {
   }
 }
 
-// 原样 +（能解析时的）格式化。超长的只给"原样"——把一份 200KB 的 JSON 再美化一遍没有意义。
+// 单视图：JSON 且不超长时格式化展示，否则直接显示原文。
 function bodyBlocks(label, text, noBodyNote) {
   if (text === undefined || text === null) {
     return `<details class="dt"><summary>${escapeHtml(label)}</summary><pre class="mono">${escapeHtml(noBodyNote || "（这个请求没有请求体）")}</pre></details>`;
   }
-  const raw = `<details class="dt" open><summary>${escapeHtml(label)}（原样）</summary><pre class="mono">${escapeHtml(text)}</pre></details>`;
-  const pretty = isJsonText(text) && text.length <= JSON_DISPLAY_MAX
-    ? `<details><summary>${escapeHtml(label)}（格式化）</summary><pre class="mono">${escapeHtml(prettyJson(text))}</pre></details>`
-    : "";
-  return raw + pretty;
+  const display = isJsonText(text) && text.length <= JSON_DISPLAY_MAX
+    ? prettyJson(text)
+    : text;
+  return `<details class="dt" open><summary>${escapeHtml(label)}</summary><pre class="mono">${escapeHtml(display)}</pre></details>`;
 }
 
 export function renderTrace({ pwd, tools, key, trace, missing }) {
@@ -235,7 +233,7 @@ export function renderTrace({ pwd, tools, key, trace, missing }) {
     title: `请求记录 · ${trace.toolName || trace.tool}`,
     nav: navHtml(pwd, "runs", tools),
     body: sectionHead("请求记录",
-      "请求体与响应体都是原样文本；凭据值已替换成 ***，响应头不记（set-cookie 是会话凭据）", back)
+      "请求体与响应体；凭据值已替换成 ***，响应头不记（set-cookie 是会话凭据）", back)
       + `${banner}<div class="card"><div class="bd row">${head}</div></div>${steps}`,
   });
 }

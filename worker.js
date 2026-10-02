@@ -3597,9 +3597,8 @@ function bodyBlocks(label, text, noBodyNote) {
   if (text === void 0 || text === null) {
     return `<details class="dt"><summary>${escapeHtml(label)}</summary><pre class="mono">${escapeHtml(noBodyNote || "\uFF08\u8FD9\u4E2A\u8BF7\u6C42\u6CA1\u6709\u8BF7\u6C42\u4F53\uFF09")}</pre></details>`;
   }
-  const raw = `<details class="dt" open><summary>${escapeHtml(label)}\uFF08\u539F\u6837\uFF09</summary><pre class="mono">${escapeHtml(text)}</pre></details>`;
-  const pretty = isJsonText(text) && text.length <= JSON_DISPLAY_MAX ? `<details><summary>${escapeHtml(label)}\uFF08\u683C\u5F0F\u5316\uFF09</summary><pre class="mono">${escapeHtml(prettyJson(text))}</pre></details>` : "";
-  return raw + pretty;
+  const display = isJsonText(text) && text.length <= JSON_DISPLAY_MAX ? prettyJson(text) : text;
+  return `<details class="dt" open><summary>${escapeHtml(label)}</summary><pre class="mono">${escapeHtml(display)}</pre></details>`;
 }
 __name(bodyBlocks, "bodyBlocks");
 function renderTrace({ pwd, tools, key, trace, missing }) {
@@ -3642,7 +3641,7 @@ function renderTrace({ pwd, tools, key, trace, missing }) {
     nav: navHtml(pwd, "runs", tools),
     body: sectionHead(
       "\u8BF7\u6C42\u8BB0\u5F55",
-      "\u8BF7\u6C42\u4F53\u4E0E\u54CD\u5E94\u4F53\u90FD\u662F\u539F\u6837\u6587\u672C\uFF1B\u51ED\u636E\u503C\u5DF2\u66FF\u6362\u6210 ***\uFF0C\u54CD\u5E94\u5934\u4E0D\u8BB0\uFF08set-cookie \u662F\u4F1A\u8BDD\u51ED\u636E\uFF09",
+      "\u8BF7\u6C42\u4F53\u4E0E\u54CD\u5E94\u4F53\uFF1B\u51ED\u636E\u503C\u5DF2\u66FF\u6362\u6210 ***\uFF0C\u54CD\u5E94\u5934\u4E0D\u8BB0\uFF08set-cookie \u662F\u4F1A\u8BDD\u51ED\u636E\uFF09",
       back
     ) + `${banner}<div class="card"><div class="bd row">${head}</div></div>${steps}`
   });
