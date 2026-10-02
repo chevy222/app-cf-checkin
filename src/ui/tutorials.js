@@ -289,7 +289,7 @@ Write-Host "=================================" -ForegroundColor Cyan
     ],
     fields: [
       ["**Access Token**", "第 1 步（`.info`）或第 3 步（短信）的 `Access Token`",
-        "填进表单的 Access Token 那一栏，到期时间平台自动从 `exp` 解。旧版桌面端的凭据文件里可能是包装格式 `{\"$wbEncrypted\":1,\"envelope\":\"…\"}`，原样粘进来即可，平台会自动展开"],
+        "填进表单的 Access Token 那一栏，到期时间平台自动从 `exp` 解。旧版桌面端凭据是明文可直接粘；新版是 `{\"$wbEncrypted\":1,\"envelope\":\"…\"}` 加密格式，不能直接粘，需走短信登录"],
       ["**Refresh Token**", "第 1 步（`.info`）或第 3 步（短信）的 `Refresh Token`", "填进 Refresh Token 那一栏。旧串用过一次即废，续期后平台当场写回"],
     ],
   },
