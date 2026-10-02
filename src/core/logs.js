@@ -105,10 +105,9 @@ function metaOf(entry) {
     status: entry.status,
     message: truncate(scrubSecrets(entry.message, secrets), META_MESSAGE_MAX),
     credits: entry.credits || 0,
-    // 这两个数进 metadata（而不是等详情页再读正文）——列表页有这一列，
-    // 而列表页只读 metadata。账本分成两本，两个数各走各的额度。
+    // 这个数进 metadata（而不是等详情页再读正文）——列表页有这一列，
+    // 而列表页只读 metadata。
     http: entry.http || 0,
-    kv: entry.kv || 0,
   };
 }
 
@@ -121,8 +120,8 @@ export async function writeRunLog(env, { now, tool, account, result, budget, tri
   const meta = metaOf({
     kind: "run", at, tool: tool.id, uid: result.uid, label: result.label,
     status: result.status, message: result.message, credits: result.credits, secrets,
-    // 账号级的两个读数（不是整轮累计）：列表页那一列显示它们
-    http: result.http, kv: result.kv,
+    // 账号级的读数（不是整轮累计）：列表页那一列显示它
+    http: result.http,
   });
   const body = {
     kind: "run",
@@ -136,11 +135,11 @@ export async function writeRunLog(env, { now, tool, account, result, budget, tri
     // 正文留全量（内核已截到 200），metadata 才是给列表用的短摘要
     message: scrubSecrets(result.message, secrets),
     credits: result.credits || 0,
-    // 本账号这一轮的用量（各走各的额度）与整轮累计的账本快照。
+    // 本账号这一轮的外部请求数，与整轮累计的账本快照。
     // 两个都要：前者回答"这条记录花了多少"，后者回答"这次调用总共花了多少"。
-    usage: { http: result.http || 0, kv: result.kv || 0 },
+    usage: { http: result.http || 0 },
     budget: {
-      used: budget.used, kv: budget.kv, limit: budget.limit,
+      used: budget.used, limit: budget.limit,
       left: budget.left(), over: budget.over,
     },
     // 步骤明细属于账号日志，汇总键里没有

@@ -7,7 +7,7 @@ import { coerceFields, saveAccount, schedOf } from "../src/core/accounts.js";
 import { listUids } from "../src/core/store.js";
 import { commitSchedEntries, loadSchedIndex } from "../src/core/accounts.js";
 import { aggregate, runAccountNow, runTick } from "../src/core/runner.js";
-import { makeBudget, trackedFetch, trackedKv } from "../src/core/budget.js";
+import { makeBudget, trackedFetch } from "../src/core/budget.js";
 import { listRunLog, readRunLog, scrubSecrets, writeRunLog } from "../src/core/logs.js";
 import { logicalDay, cstDate } from "../src/core/time.js";
 import * as wbApi from "../src/tools/workbuddy/api.js";
@@ -403,8 +403,7 @@ function tick(env, { now = cst(10), limit = 45, tools = [FIX] } = {}) {
   return { budget, run: async () => {
     // 让 KV 的虚拟时钟跟着测试的模拟时间走，否则 90 秒的锁永远不会过期
     if (env.CHECKIN_KV.advanceTo) env.CHECKIN_KV.advanceTo(now * 1000);
-    const scoped = { ...env, CHECKIN_KV: trackedKv(env.CHECKIN_KV, budget) };
-    return runTick({ env: scoped, budget, tools, trigger: "manual", now });
+    return runTick({ env, budget, tools, trigger: "manual", now });
   } };
 }
 // 按工具 id 取那一摊，不假设 plan 的顺序
@@ -636,20 +635,20 @@ test("注册表自检：没声明 hosts 或 hosts 为空一律挡住", () => {
   assert.throws(() => checkToolContract(noSched), /必须声明 schedule/);
 });
 
-// 账本分成两本（外部 HTTP / KV），官方给的是两个独立上限
-// （50 外部子请求 + 1000 Cloudflare 内部服务）。所以这里分别对齐两个读数。
-test("一次调用两本账：KV 次数等于实际调用数，外部请求单独记", async () => {
+// 账本只记外部 HTTP：KV 走 Cloudflare 自家每天 1000 次的独立额度，不参与闸门。
+// 这条不变量不需要计数器来证明 —— 「KV 操作不增加 budget.used」本身就是它的全部内容，
+// 而 budget 里已不存在任何 KV 计数器（没有可断言的读数，只有 fits/charge 这条通路）。
+test("账本只算外部请求：跑一轮真实调度，used 精确等于发生的 fetch 次数", async () => {
   const kv = fakeKv(); const env = envFor(kv);
   seedAccount(kv, "SEATB3");
   seedAccount(kv, "SEATB4");
   const budget = makeBudget(45);
-  const scoped = { ...env, CHECKIN_KV: trackedKv(kv, budget) };
   kv.calls.length = 0;
-  await runTick({ env: scoped, budget, tools: TOOLS, trigger: "manual", now: cst(10) });
-  assert.equal(budget.kv, kv.calls.length, "KV 账本与实际 KV 调用数必须一致");
-  assert.ok(budget.kv > 0, "这轮确实该碰 KV");
-  // 夹具工具 hosts 为空、不打上游，所以外部请求必须是 0 —— 而 KV 次数远大于它。
+  await runTick({ env, budget, tools: TOOLS, trigger: "manual", now: cst(10) });
+  // 夹具工具 hosts 为空、不打上游，所以外部请求必须是 0 —— 而这一轮碰了上百次 KV。
+  // 这正是「两个池子」的关键行为：KV 用量再多也不该动外部请求的额度。
   assert.equal(budget.used, 0, "不联网的夹具不该产生任何外部请求");
+  assert.ok(kv.calls.length > 0, "这一轮确实该碰 KV");
 });
 
 test("配置未完成的工具被整体跳过；补齐后同一年号即可执行", async () => {
@@ -928,19 +927,20 @@ fixtureTest("[P1-6] 首页子请求数与账号数无关", async () => {
 });
 
 fixtureTest("[P1-6] 调度索引读取也不随账号数增长", async () => {
-  // 账本分成两本后要盯的是 **KV 次数**，而它分两部分：
+  // KV 次数分两部分：
   //   · 枚举（列账号 + 读调度索引）= 每工具常数笔，**不随账号数变** ← 本条守这个
   //   · 每账号的固定开销（取锁、进度、凭据、收尾）= 随账号数线性增长，那是设计
   // 所以不能断言总额不变，要断言**每新增一个账号的边际成本是常数**，而不是随 N 变大。
+  // 直接数桩上的调用次数 —— 内核的账本只记外部 HTTP，不再有 KV 计数器可用。
   const kvCostWith = async (n) => {
     const kv = fakeKv(); const env = envFor(kv);
     seedConfig(kv);
     for (let i = 0; i < n; i += 1) {
       kv.store.set(`v1:acct:fix:S${i}`, JSON.stringify({ label: "x", cred: { seatId: `S${i}` }, updatedAt: 1 }));
     }
-    const budget = makeBudget(1000);
-    await runTick({ env: { ...env, CHECKIN_KV: trackedKv(kv, budget) }, budget, tools: TOOLS, trigger: "manual", now: cst(10) });
-    return budget.kv;
+    kv.calls.length = 0;
+    await runTick({ env, budget: makeBudget(1000), tools: TOOLS, trigger: "manual", now: cst(10) });
+    return kv.calls.length;
   };
   const one = await kvCostWith(1);
   const many = await kvCostWith(41);
@@ -1012,7 +1012,7 @@ function syntheticTool(id, steps) {
 async function tickWith(kv, tools, limit = 45, now = cst(10)) {
   const budget = makeBudget(limit);
   if (kv.advanceTo) kv.advanceTo(now * 1000); // 虚拟时钟要跟着走，否则 90 秒的锁永不过期
-  const env = { ...envFor(kv), CHECKIN_KV: trackedKv(kv, budget) };
+  const env = { ...envFor(kv) };
   return { budget, summary: await runTick({ env, budget, tools, trigger: "manual", now }) };
 }
 
@@ -1026,9 +1026,8 @@ test("[P0-1] 调度枚举与账号数无关：3 工具 × 16 账号不撞 50 硬
     }
   }
   const { budget, summary } = await tickWith(kv, tools);
-  // 账本分两本：这里盯 KV 次数（它有 1000/天）
-  // 与外部请求次数（夹具不联网，应为 0）两个读数，而不是混一个数字比 50。
-  assert.ok(budget.kv < 1000, `真实 KV 操作 ${budget.kv} 次，超过 1000 的额度`);
+  // 夹具不联网，外部请求必须是 0 —— 而这一轮为了枚举与收尾碰了上百次 KV。
+  // 两者各走各的额度，所以 KV 多少都不该影响 fits() 的判定。
   assert.equal(budget.used, 0, "夹具不联网，不该产生外部请求");
   assert.ok(summary.ran > 0, "一个账号都没跑到，说明枚举把整轮炸了");
 });
@@ -1099,12 +1098,15 @@ test("[P1-4] 账本耗尽时 ctx.fetch 拒答，而不是让第 51 次请求炸�
   await assert.rejects(
     () => trackedFetch(budget, ["ok.example.com"])("https://ok.example.com/x"),
     /额度已用尽/,
-    "拒答文案要说清是「外部请求额度」，不是笼统的「预算」—— 现在有两个池子",
+    "拒答文案要说清是「外部请求额度」，不是笼统的「预算」",
   );
-  // KV 花掉不影响外部请求额度：这才是"两个池子"的关键行为
+  // KV 的写入完全不经过 fits()：budget 里没有 KV 计数器，闸门只被 charge 触发。
+  // 所以「KV 用量吃掉外部请求额度」这件事在结构上已经不可能发生 ——
+  // 这条断言守的就是这个结构性事实：额度还剩 2 笔时，闸门对任何 n 都放行。
   const b2 = makeBudget(2);
-  b2.chargeKv(99);
-  assert.equal(b2.fits(1), true, "KV 用量不该吃掉外部请求额度");
+  assert.equal(b2.fits(2), true, "额度未用尽时闸门必须放行");
+  b2.charge(2);
+  assert.equal(b2.fits(1), false, "额度用尽后必须拒答，与 KV 无关");
 });
 
 // 账号级 KV 帧（取锁 2 + 进度 + 凭据 + 收尾）不参与闸门，「账号框架开销纳入预约」
@@ -1419,7 +1421,7 @@ test("[运行日志带 30 天 TTL", async () => {
     },
   };
   const budget = makeBudget(45);
-  await runTick({ env: { PASSWORD, CHECKIN_KV: trackedKv(wrapped, budget) }, budget, tools: [leakyTool(okStep())], trigger: "manual", now: cst(10) });
+  await runTick({ env: { ...envFor(kv), CHECKIN_KV: wrapped }, budget, tools: [leakyTool(okStep())], trigger: "manual", now: cst(10) });
   assert.equal(ttls.length, 1, "账号日志该带 TTL");
   assert.ok(ttls.every((t) => t === 30 * 86400), `TTL 应为 30 天，实际 ${ttls.join(", ")}`);
 });
@@ -1450,8 +1452,9 @@ test("[详情页展示步骤与预算", async () => {
   // 详情页把「外部请求」与「KV」分成两个读数：各走各的额度，
   // 混在一个「子请求」里会让人以为 KV 也在那 50 里面。
   assert.ok(res.text.includes("本账号外部请求"), "应显示这一条记录自己花掉的外部请求");
-  assert.ok(res.text.includes("本次调用 KV"), "应单独显示 KV 次数");
-  // 笼统的「子请求」标签不许留着：它对应两者混算的口径
+  // 账本已收敛成一本（只记外部 HTTP），KV 不再计数，所以不该有 KV 那一行
+  assert.ok(!res.text.includes("本次调用 KV"), "详情页不该再有 KV 次数（账本已不记它）");
+  // 笼统的「子请求」标签不许留着：那个口径已经不存在
   assert.ok(!/>子请求</.test(res.text), "不该再出现笼统的「子请求」标签");
 });
 
@@ -1595,7 +1598,7 @@ fixtureTest("[「执行」跳过到期判定立刻跑，但仍受预算约束", 
   seedFull(kv, "MANUAL1");
   const tool = leakyTool(okStep());
   const budget = makeBudget(45);
-  await runTick({ env: { ...envFor(kv), CHECKIN_KV: trackedKv(kv, budget) }, budget, tools: [tool], trigger: "manual", now: cst(10) });
+  await runTick({ env: { ...envFor(kv) }, budget, tools: [tool], trigger: "manual", now: cst(10) });
   assert.equal(JSON.parse(kv.store.get("v1:schedidx:fix")).entries.MANUAL1.lastStatus, "claimed");
   kv.calls.length = 0;
   const res = await hit("/account/fix/MANUAL1/run", { method: "POST", body: form({ pwd: PASSWORD }), env: envFor(kv) });
@@ -1731,7 +1734,7 @@ test("[索引写回只覆盖自己改过的那几位", async () => {
   seedFull(kv, "PARA2");
   const stale = await loadSchedIndex(env, "fix");          // A 轮次开始时读的快照
   await runAccountNow({
-    env: { ...env, CHECKIN_KV: trackedKv(kv, makeBudget(45)) }, budget: makeBudget(45),
+    env: { ...env }, budget: makeBudget(45),
     tool: leakyTool(okStep()), uid: "PARA2", now: cst(10),
   });                                                        // B 在 A 运行期间写完并落了条目
   stale.entries.PARA1 = { ...schedOf(stale.entries.PARA1), lastStatus: "claimed", lastStatusDate: logicalDay(0, cst(10)) };
@@ -2306,8 +2309,9 @@ test("[qoder] 一轮一号的真实用量不超过预约（步骤 cost 是纯 HT
     assert.ok(budget.used <= stepCost, `真实 ${budget.used} 超过步骤 cost 上界 ${stepCost}`);
     assert.equal(budget.over, 0);
     // 顺带确认账本没把 KV 混进来：这个夹具一轮要碰十几次 KV，
-    // 若混算，used 会是 KV+HTTP 的和、远超 stepCost。
-    assert.ok(budget.kv > 0, "这轮确实碰了 KV");
+    // 若混算，used 会是 KV+HTTP 的和、远超 stepCost。所以这里钉的是
+    //「恰好等于真实 fetch 次数」—— 上界 6 是预约值，实际 4 才是账本该记的。
+    assert.equal(budget.used, 4, `账本只该记真实发生的外部请求，实际 ${budget.used}`);
   } finally { stub.restore(); }
 });
 
@@ -3934,17 +3938,15 @@ test("[审核P0-2b] 收尾写入不许把 used 顶过自限上限（预约不占
   });
   try {
     for (let i = 0; i < 8; i += 1) {
-      const kvBefore = kv.count; const netBefore = stub.seen.length;
+      const netBefore = stub.seen.length;
       const { budget } = await wbTick(kv, cst(8) + i * 1800);
       assert.equal(budget.over, 0, `t${i}：used=${budget.used} 越过了自限 ${budget.limit}`);
       assert.ok(budget.used <= budget.limit, `t${i}：used=${budget.used}`);
-      // 账本必须与真实发生的一致 —— 账本分成两本，要分别对齐：
-      // used 只数外部 fetch（会撞平台 50 硬顶、抛异常作废整轮），kv 只数 KV 操作
-      // （各有 1000 额度，撞了只是那一次失败）。把两者相加去比 used 会差 KV 那一半。
+      // 账本必须与真实发生的一致：used 只数外部 fetch
+      // （撞平台 50 硬顶会抛异常作废整轮）。KV 走自家每天 1000 次的独立额度，
+      // 不进账本，所以拿 KV 次数去比 used 只会差出那一半。
       const net = stub.seen.length - netBefore;
-      const kvOps = kv.count - kvBefore;
       assert.equal(budget.used, net, `t${i}：账本记了 ${budget.used} 笔外部请求，实际发生 ${net} 笔`);
-      assert.equal(budget.kv, kvOps, `t${i}：账本记了 ${budget.kv} 次 KV，实际发生 ${kvOps} 次`);
     }
     // 就地顺延不许花钱：被账号闸挡下的账号不该留下锁、进度、日志三笔写
     const logs = [...kv.store.keys()].filter((k) => k.startsWith("v1:run:workbuddy:"));
@@ -4018,10 +4020,9 @@ test("[审核P0-2c] 一轮跑完（含收尾）外部请求仍未越限", async 
     assert.ok(budget.used <= budget.limit, `used=${budget.used}`);
     assert.equal(view.status, "claimed", "额度够 40 笔就该做完");
     // 这一轮的收尾动作确实发生了（凭据换了新串并落盘），而它们没把账本顶穿：
-    // 收尾全是 KV，所以 budget.used 停在 40（那 40 笔外部请求），KV 另记十几笔。
+    // 收尾全是 KV，外部请求账本不该被它污染 —— 停在 40（那 40 笔真实 fetch）
     const saved = JSON.parse(kv.store.get("v1:acct:rot:R1")).cred.session;
     assert.equal(saved, "NEW-SESSION-STRING", "凭据轮换本该写回");
-    assert.ok(budget.kv > 0, `收尾的 KV 写入该照常发生，实际 ${budget.kv}`);
     assert.equal(budget.used, 40, `外部请求账本不该被 KV 污染，实际 ${budget.used}`);
   } finally { stub.restore(); }
 });

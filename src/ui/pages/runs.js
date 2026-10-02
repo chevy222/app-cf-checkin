@@ -29,10 +29,10 @@ export function renderRuns({ pwd, tools, entries, active = {}, flash }) {
     const who = entry.kind === "tick"
       ? '<span class="mono dim">整轮调度</span>'
       : `<span>${escapeHtml(entry.tool)}/${escapeHtml(meta.label || entry.uid)}</span>`;
-    // 「请求」列：直接读 metadata 里的账号级读数 —— 这一条记录自己花了多少
-    // 外部请求 + 多少次 KV（两者各走各的额度，所以并排列出）。
-    const usage = meta.http !== undefined || meta.kv !== undefined
-      ? `<span class="num dim" title="外部请求 / KV 操作">${meta.http || 0} / ${meta.kv || 0}</span>`
+    // 「请求」列：这一条记录自己花了多少外部请求。取自 metadata 里的账号级读数
+    // （不是整轮累计 —— 那样越到后面的账号数字越离谱）。
+    const usage = meta.http !== undefined
+      ? `<span class="num dim" title="本条记录的外部请求数">${meta.http || 0}</span>`
       : "";
     // data-label 供窄屏卡片式排版用（见 layout.js 的 @media）：窄屏下 thead 隐藏，
     // 字段名由 CSS 从 data-label 生成，宽屏上这个属性没有任何副作用。
@@ -137,7 +137,6 @@ export function renderRunDetail({ pwd, tools, entry, key, missing }) {
           <p class="sub m0">${escapeHtml(entry.message || "")}</p>
           ${entry.credits ? `<div class="kv"><span class="k">本次积分</span><span class="v">+${escapeHtml(String(entry.credits))}</span></div>` : ""}
           <div class="kv"><span class="k">本账号外部请求</span><span class="v">${escapeHtml(String(u.http ?? "—"))} / 上限 ${escapeHtml(String(b.limit ?? "—"))}${b.over ? ` · <span class="over">超出 ${escapeHtml(String(b.over))}</span>` : ""}</span></div>
-          <div class="kv"><span class="k">本次调用 KV</span><span class="v">${escapeHtml(String(b.kv ?? "—"))} 次（KV 另有 1000 次额度，不占上面那个 50）</span></div>
           <div class="kv"><span class="k">键名</span><span class="v dim">${escapeHtml(key)}（时间那段是反转毫秒，所以键序就是时间倒序）</span></div>
         </div></div>
       ${isTick ? "" : sectionHead("步骤", "「复用」表示这一步在之前的轮次已完成，本轮没有再打上游")}

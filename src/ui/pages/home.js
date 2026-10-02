@@ -85,6 +85,6 @@ export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, b
       + (tools.length === 0 ? emptyState({ title: "还没有接入任何工具", lines: ["注册表是空的。"] }) : `<div class="grid cols3">${cards.join("")}</div>`)
       + sectionHead("最近运行", "", button(link("/runs", pwd), "全部日志 ›"))
       + `<div class="card"><div class="bd">${feed || '<span class="dim">还没有运行记录。</span>'}</div></div>
-      ${budget ? `<p class="tiny mt">本次页面读取：外部请求 ${budget.used} / ${budget.limit}（KV 操作另计 ${budget.kv} 次，走 KV 自己那份额度）。</p>` : ""}`,
+      ${budget ? `<p class="tiny mt">本次页面读取：外部请求 ${budget.used} / ${budget.limit}</p>` : ""}`,
   });
 }

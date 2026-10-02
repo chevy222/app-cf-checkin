@@ -313,7 +313,7 @@ async function apiState(env, budget) {
   return jsonRes({
     ok: true,
     stage: 5,
-    budget: budget ? { used: budget.used, kv: budget.kv, limit: budget.limit, left: budget.left() } : null,
+    budget: budget ? { used: budget.used, limit: budget.limit, left: budget.left() } : null,
     tools: TOOLS.map((tool) => ({
       id: tool.id, name: tool.name, steps: tool.steps.length, accounts: counts[tool.id],
       off: isOff(flags, tool.id),

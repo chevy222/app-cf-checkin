@@ -2,17 +2,15 @@ import { authenticate } from "./core/gateway.js";
 import { htmlRes } from "./core/http.js";
 import { dispatch } from "./core/router.js";
 import { renderFatal, renderGate, renderUnconfigured } from "./ui/pages/gate.js";
-import { budgetFrom, makeBudget, trackedKv } from "./core/budget.js";
+import { budgetFrom, makeBudget } from "./core/budget.js";
 import { runTick } from "./core/runner.js";
 import { TOOLS } from "./tools/index.js";
 import { nowSec } from "./core/time.js";
 
-// 一次调用一本账：页面渲染和调度消费同一个预算对象。
-// HTTP 请求同样只有 50 子请求额度，所以不能只给定时任务记账。
+// 页面渲染和调度消费同一个预算对象。账本只记外部 HTTP ——
+// KV 有 Cloudflare 自家每天 1000 次的独立额度，不参与闸门（理由见 budget.js）。
 function withLedger(env) {
-  const budget = makeBudget(budgetFrom(env));
-  const kv = env && env.CHECKIN_KV;
-  return { budget, env: kv ? { ...env, CHECKIN_KV: trackedKv(kv, budget) } : env };
+  return { budget: makeBudget(budgetFrom(env)), env };
 }
 
 export default {

@@ -31,8 +31,6 @@ const CONTINUABLE = new Set(["deferred", "skipped", "pending", "waiting"]);
 // 而"预留"最容易出错 —— KV 撞顶的表现只是那一次 KV 调用失败（safe()/catch 会吞掉），
 // 不会作废整轮；真正会抛异常作废整轮的只有外部 fetch，而 fetch 全部发生在步骤
 // 内部、由 step.cost 预约。
-//
-// 需要知道某轮碰了多少次 KV 时直接读 budget.kv，不必再维护一份"理论值"。
 
 // 总体状态由步骤结果推导，工具不参与。
 // rate_limited 必须显式列出，否则会掉进 already —— 界面把"被频控"报成"今天已领过"，
@@ -115,7 +113,6 @@ async function runOneAccount({ env, budget, tool, uid, config, day, now, trigger
   let stopped = false;
   // 收尾时要报"这个账号花了多少"，所以先拍下起点。后面的差值才是它的用量
   const httpBefore = budget.used;
-  const kvBefore = budget.kv;
 
   for (const step of tool.steps) {
     if (progress.done[step.id]) {
@@ -233,12 +230,10 @@ async function runOneAccount({ env, budget, tool, uid, config, day, now, trigger
     // 积分只算本轮真做的那些步：复用来的积分再报一次，日志里就是凭空翻倍
     credits: results.reduce((sum, r) => sum + (r.reused ? 0 : (r.credits || 0)), 0),
     steps: results.map((r) => ({ id: r.id, status: r.status, message: r.message, reused: !!r.reused, over: r.over || 0, unreachable: !!r.unreachable })),
-    // 本账号这一轮真实花掉的外部请求数（账本分成两本，KV 不计入）。
-    // 取的是差值而不是 budget.used —— 后者是整轮累计，混进单条日志就成了
-    // "这账号花了整轮那么多请求"，越到后面的账号数字越离谱。
-    // 同时带上 KV 次数，两个数各走各的额度，界面上要分别显示。
+    // 本账号这一轮真实花掉的外部请求数。取的是差值而不是 budget.used ——
+    // 后者是整轮累计，混进单条日志就成了"这账号花了整轮那么多请求"，
+    // 越到后面的账号数字越离谱。列表页那一列显示的就是它。
     http: budget.used - httpBefore,
-    kv: budget.kv - kvBefore,
     sched: {
       didWork: results.some((r) => !r.reused && !CONTINUABLE.has(r.status) && r.status !== "partial"),
       allDone,
@@ -277,9 +272,8 @@ function commitSched(index, tool, uid, result, day, now) {
 const publicResult = (r) => ({
   uid: r.uid, label: r.label, status: r.status,
   message: r.message, credits: r.credits || 0, steps: r.steps || [],
-  // 本账号这一轮的外部请求 / KV 次数。列表页那一列显示的就是它（账本分成两本，
-  // 两个数各走各的额度，所以都要报）
-  http: r.http || 0, kv: r.kv || 0,
+  // 本账号这一轮的外部请求数，列表页那一列显示的就是它
+  http: r.http || 0,
 });
 
 async function safe(fn) {
