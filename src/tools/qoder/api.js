@@ -29,8 +29,8 @@ function deviceHeaders(config) {
     "Cosy-MachineToken": config.machineToken,
     "Cosy-MachineCode": config.machineCode,
     "Cosy-MachineType": config.machineType,
-    "Cosy-MachineOS": config.machineOS,
-    "Cosy-MachineHostname": config.machineHostname,
+    "Cosy-MachineOS": config.machineOS || "x86_64_windows",
+    "Cosy-MachineHostname": config.machineHostname || "pc",
     "Cosy-MachineId": config.machineId,
     "Cosy-Version": config.version,
   };
