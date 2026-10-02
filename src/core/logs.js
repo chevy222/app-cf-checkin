@@ -3,6 +3,9 @@ import { maskSecret, truncate } from "./text.js";
 
 const RUN_PREFIX = "v1:run:";
 const TICK_PREFIX = "v1:tick:";
+// 请求记录（每一步的上游交互）单独一个前缀、与 runKey **完全同构**：拿到日志键换个前缀
+// 就是它的键，不需要在 metadata 里多存一个键名。列表页只 list v1:run: 前缀，天然看不到它。
+const TRACE_PREFIX = "v1:trace:";
 const LOG_TTL_DAYS = 30;
 const LOG_TTL_SEC = LOG_TTL_DAYS * 86400;
 // KV 的 metadata 上限 1024 字节，留出余量：列表页靠它渲染，不该被截断成半条
@@ -18,8 +21,13 @@ const revOf = (ms) => String(REV_BASE - Number(ms)).padStart(13, "0");
 // 工具段放在时间段之前，"按工具筛"才能是一次带前缀的 list（时间在前的话只能扫全量再过滤，
 // 而扫全量必然有页数上限，筛得窄的历史就永远读不到）。
 const runKey = (ms, toolId, uid) => `${RUN_PREFIX}${toolId}:${revOf(ms)}:${uid}`;
+const traceKey = (ms, toolId, uid) => `${TRACE_PREFIX}${toolId}:${revOf(ms)}:${uid}`;
 
 export const isLogKey = (key) => String(key).startsWith(RUN_PREFIX) || String(key).startsWith(TICK_PREFIX);
+export const isRunKey = (key) => String(key).startsWith(RUN_PREFIX);
+export const isTraceKey = (key) => String(key).startsWith(TRACE_PREFIX);
+// 日志键 → 请求记录键。前缀之外的部分一模一样（工具、反转毫秒、uid），所以直接换前缀。
+export const traceKeyOf = (logKey) => TRACE_PREFIX + String(logKey).slice(RUN_PREFIX.length);
 
 // 从键名解析出这一条的身份与时刻：kind / tool / uid / at(ms)。
 // 界面上的"这是谁的哪一轮"一律取自键名而不是 metadata —— 键名是我们自己写的、必然正确，
@@ -146,6 +154,9 @@ export async function writeRunLog(env, { now, tool, account, result, budget, tri
     steps: (result.steps || []).map((s) => ({
       id: s.id, status: s.status, reused: !!s.reused, over: s.over || 0, unreachable: !!s.unreachable,
       message: scrubSecrets(s.message, secrets),
+      // 这一步真实发生的上游交互次数。详情页「看请求 (N)」的 N 就是它：
+      // 放在正文里，详情页不用为它多读一个键；列表页不读正文，成本不变。
+      calls: s.calls || 0,
     })),
   };
   await kv.put(runKey(at, tool.id, result.uid), JSON.stringify(body), {
@@ -184,7 +195,55 @@ export async function readRunLog(env, key) {
   return getJson(requireKv(env), text, null);
 }
 
-// 清空某个工具的运行日志。返回 { deleted, more }。
+// 请求记录：每一步的上游交互（请求原文 + 响应原文）。
+//
+// **独立键**，理由见 TRACE_PREFIX 那段：原始 JSON 一旦塞进 run 键的正文/metadata，
+// 列表页（只读 metadata）与详情页都要为它付体积，而它只在"要深入排查"时才被打开。
+//
+// 落在这一步做脱敏，与 writeRunLog 同一个出口 —— 而**结构与字段一个不动**，
+// 只把"值里出现过的凭据串"替换掉（请求头的掩码在 trace.js 里已经做过）。
+// 逐字段洗而不是整串 JSON 洗：整串洗时，凭据里只要有一个引号就会把外层 JSON 拆坏。
+//
+// 即使一次请求都没有也写：这样页面上能区分"这次运行真的没打上游"与"记录不存在"，
+// 两者是完全不同的结论。
+export async function writeTrace(env, { at, tool, account, uid, trigger, steps, trace }) {
+  if (!trace || !Array.isArray(steps)) return null;
+  const secrets = secretValuesOf(tool, account);
+  const payload = {
+    kind: "trace",
+    at,
+    tool: tool.id,
+    toolName: tool.name,
+    uid,
+    trigger,
+    // 超出总量上限、没记下来的交互数。必须报出来，否则"看起来是完整的"就是假象。
+    dropped: trace.dropped || 0,
+    steps: steps.map((step) => ({
+      id: step.id,
+      status: step.status,
+      reused: !!step.reused,
+      calls: trace.callsOf(step.id).map((call) => {
+        const out = { ...call };
+        for (const field of ["reqBody", "resBody", "bodyError"]) {
+          if (typeof out[field] === "string") out[field] = scrubSecrets(out[field], secrets);
+        }
+        return out;
+      }),
+    })),
+  };
+  const key = traceKey(at, tool.id, uid);
+  await requireKv(env).put(key, JSON.stringify(payload), { expirationTtl: LOG_TTL_SEC });
+  return key;
+}
+
+// 只允许读请求记录键：与 readRunLog 同理，拿 acct / step 前缀来读会把凭据渲到页面上
+export async function readTrace(env, key) {
+  const text = String(key ?? "");
+  if (!isTraceKey(text) || text.includes("..")) return null;
+  return getJson(requireKv(env), text, null);
+}
+
+// 清空某个工具的运行日志。返回 { deleted, traces, more }。
 //
 // 范围必须按工具前缀圈定，不能扫全库再删"看起来像日志"的键：
 // 全库扫要翻到页数上限（KV 每页 1000 键），而日志分布在 30 天里、条数无上界，
@@ -198,24 +257,36 @@ export async function readRunLog(env, key) {
 // 不占外部请求那 50，所以这个上界比"50 个子请求"宽松得多。
 // 但一次调用里删太多会让这一轮跑很久，所以仍要设个上界，
 // 并且**必须如实报剩余**：假装一次能清完 8000 条，结果就是界面说"已清空"而库里还剩几千条。
-export const CLEAR_BUDGET = 28;   // 1 次 list + 28 次 delete，留出收尾写入的余量
+export const CLEAR_BUDGET = 28;   // 每轮最多 2 次 list + 28 次 delete，留出收尾写入的余量
 export async function clearRunLog(env, toolId) {
   const kv = requireKv(env);
-  const prefix = `${RUN_PREFIX}${toolId}:`;
+  // 日志与请求记录**一起清**：留着请求记录的孤儿键会让"清空"名不副实，
+  // 而它们 30 天后才会自己过期。两者按前缀各圈一段，删除量合并计。
+  const prefixes = [`${RUN_PREFIX}${toolId}:`, `${TRACE_PREFIX}${toolId}:`];
   let deleted = 0;
+  let traces = 0;
   // 每轮都从头 list：键在减少，下一次拿到的就是还没删的那批。
   // 用游标翻页是错的 —— 刚删掉的键会让 cursor 指向的位置失效。
-  while (deleted < CLEAR_BUDGET) {
-    const page = await kv.list({ prefix, limit: CLEAR_BUDGET });
-    const keys = (page.keys || []).map((entry) => entry.name).filter(isLogKey);
-    if (keys.length === 0) return { deleted, more: false };
-    for (const key of keys) {
-      if (deleted >= CLEAR_BUDGET) return { deleted, more: true };
+  while (deleted + traces < CLEAR_BUDGET) {
+    const batch = [];
+    for (const prefix of prefixes) {
+      const page = await kv.list({ prefix, limit: CLEAR_BUDGET });
+      for (const entry of page.keys || []) {
+        if (isLogKey(entry.name) || isTraceKey(entry.name)) batch.push(entry.name);
+      }
+    }
+    if (batch.length === 0) return { deleted, traces, more: false };
+    for (const key of batch) {
+      if (deleted + traces >= CLEAR_BUDGET) return { deleted, traces, more: true };
       await kv.delete(key);
-      deleted += 1;
+      if (isTraceKey(key)) traces += 1; else deleted += 1;
     }
   }
-  // 预算正好用完：再 list 一次确认还有没有剩的，这一次只花 1 个子请求。
-  const rest = await kv.list({ prefix, limit: 1 });
-  return { deleted, more: (rest.keys || []).length > 0 };
+  // 预算正好用完：再各 list 一次确认还有没有剩的（这两次只花 2 个子请求）。
+  let more = false;
+  for (const prefix of prefixes) {
+    const rest = await kv.list({ prefix, limit: 1 });
+    if ((rest.keys || []).length > 0) more = true;
+  }
+  return { deleted, traces, more };
 }

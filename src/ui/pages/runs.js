@@ -86,16 +86,20 @@ export function renderRunsClearConfirm({ pwd, tools, tool, count }) {
   });
 }
 
-function stepRow(step) {
+function stepRow(step, key, pwd) {
   const notes = [];
   if (step.reused) notes.push("复用");
   if (step.over) notes.push(`超支 ${step.over}`);
   if (step.unreachable) notes.push("成本超上限");
+  // 请求记录的入口。数字来自步骤记录里的 `calls`（跟正文一起写、不用为它多读一个键）。
+  // 0 请求也要报出来：「这一步没打上游」与「打了但没记录」是两个不同的结论。
+  const traceLink = step.calls === undefined ? "" : `<a class="mono" href="${link(`/runs/${encodeURIComponent(key)}/trace`, pwd)}#trace-${encodeURIComponent(step.id)}">看请求 (${step.calls})</a>`;
+  const noteText = notes.join(" · ");
   return `<tr>
     <td class="mono dim" data-label="步骤">${escapeHtml(step.id)}</td>
     <td data-label="结果">${badge(step.status)}</td>
     <td class="dim" data-label="说明">${escapeHtml(step.message || "")}</td>
-    <td class="num dim" data-label="备注">${escapeHtml(notes.join(" · "))}</td>
+    <td class="num dim" data-label="备注">${escapeHtml(noteText)}${noteText && traceLink ? " · " : ""}${traceLink}</td>
   </tr>`;
 }
 
@@ -123,7 +127,7 @@ export function renderRunDetail({ pwd, tools, entry, key, missing }) {
         <td data-label="处置">${p.skipped ? badge("skipped", p.skipped) : badge("ok", `${p.accounts.length} 个账号`)}</td>
         <td class="dim" data-label="账号结果">${escapeHtml((p.accounts || []).map((a) => `${a.label || a.uid} ${a.status}`).join("；"))}</td>
         <td data-label=""></td></tr>`).join("")
-    : (entry.steps || []).map(stepRow).join("");
+    : (entry.steps || []).map((s) => stepRow(s, key, pwd)).join("");
 
   const b = entry.budget || {};
   const u = entry.usage || {};
@@ -141,5 +145,97 @@ export function renderRunDetail({ pwd, tools, entry, key, missing }) {
         </div></div>
       ${isTick ? "" : sectionHead("步骤", "「复用」表示这一步在之前的轮次已完成，本轮没有再打上游")}
       ${steps ? `<div class="tw"><table class="t"><thead><tr>${heads.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${steps}</tbody></table></div>` : ""}`,
+  });
+}
+
+// ── 请求记录页 ─────────────────────────────────────────────
+// 每一步的上游交互，请求体与响应体**原样**展示。零 JavaScript：
+// 展开/收起用原生的 <details>，「原样 / 格式化」两个视图都是服务端渲染好的
+// （格式化不落库，只花渲染时的 CPU；原样永远是权威 —— 它才能区分"字段是空的"与"被裁了"）。
+
+const JSON_DISPLAY_MAX = 200 * 1024;
+
+function isJsonText(text) {
+  if (typeof text !== "string" || !/^\s*[[{]/.test(text)) return false;
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function prettyJson(text) {
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return text;
+  }
+}
+
+// 原样 +（能解析时的）格式化。超长的只给"原样"——把一份 200KB 的 JSON 再美化一遍没有意义。
+function bodyBlocks(label, text, noBodyNote) {
+  if (text === undefined || text === null) {
+    return `<details class="dt"><summary>${escapeHtml(label)}</summary><pre class="mono">${escapeHtml(noBodyNote || "（这个请求没有请求体）")}</pre></details>`;
+  }
+  const raw = `<details class="dt" open><summary>${escapeHtml(label)}（原样）</summary><pre class="mono">${escapeHtml(text)}</pre></details>`;
+  const pretty = isJsonText(text) && text.length <= JSON_DISPLAY_MAX
+    ? `<details><summary>${escapeHtml(label)}（格式化）</summary><pre class="mono">${escapeHtml(prettyJson(text))}</pre></details>`
+    : "";
+  return raw + pretty;
+}
+
+export function renderTrace({ pwd, tools, key, trace, missing }) {
+  const back = button(link(`/runs/${encodeURIComponent(key)}`, pwd), "‹ 返回运行详情");
+  if (missing || !trace || !Array.isArray(trace.steps)) {
+    return pageShell({
+      title: "请求记录",
+      nav: navHtml(pwd, "runs", tools),
+      body: sectionHead("请求记录", "", back)
+        + emptyState({
+          title: "这次运行没有请求记录",
+          lines: [
+            "可能原因：功能上线之前的旧运行、记录已过保留期（30 天）、或键名不合法。",
+            "运行日志本身在不在，点上面的「返回运行详情」就能确认。",
+          ],
+        }),
+    });
+  }
+
+  const dropped = trace.dropped || 0;
+  const banner = dropped
+    ? alertBox("warn", `本轮超出记录上限，<b>${dropped}</b> 次交互没有记下来 —— 下面的记录看起来是完整的，但它不是。`)
+    : "";
+  const head = `<b class="cap">${escapeHtml(trace.toolName || trace.tool)}</b>
+    <span class="spacer"></span><span class="mono dim">${escapeHtml(trace.uid || "")} · ${escapeHtml(fmtCSTSec(Math.floor(trace.at / 1000)))} · ${escapeHtml(trace.trigger || "")}</span>`;
+
+  const steps = trace.steps.map((step) => {
+    const calls = step.calls || [];
+    const anchor = `<a id="trace-${escapeHtml(step.id)}"></a>`;
+    const items = calls.length
+      ? calls.map((call) => `<div class="card">
+          <div class="bd row"><b class="mono">${escapeHtml(String(call.n))}. ${escapeHtml(call.method)} ${escapeHtml(call.url)}</b>
+          <span class="spacer"></span><span class="mono dim">→ ${escapeHtml(String(call.status))} · ${escapeHtml(String(call.ms))}ms</span></div>
+          <div class="bd flush">
+            ${call.reqTruncated ? alertBox("warn", `请求体已截断：只保留 ${escapeHtml(String(call.reqTruncated.kept))} 字符（原文 ${escapeHtml(String(call.reqTruncated.total))} 字符）。`) : ""}
+            ${call.resTruncated ? alertBox("warn", `响应体已截断：只保留 ${escapeHtml(String(call.resTruncated.kept))} 字符（原文 ${escapeHtml(String(call.resTruncated.total))} 字符）。`) : ""}
+            ${call.bodyError ? alertBox("warn", `响应体读取失败：${escapeHtml(call.bodyError)}。`) : ""}
+            ${bodyBlocks("请求头（敏感值已掩掉）", JSON.stringify(call.reqHeaders ?? {}), "")}
+            ${bodyBlocks("请求体", call.reqBody, "（这个请求没有请求体 —— 与前端一致）")}
+            ${bodyBlocks("响应体", call.resBody, "（响应体是空的）")}
+          </div></div>`).join("")
+      : `<div class="card"><div class="bd"><p class="sub m0">无请求 —— ${step.reused
+          ? "这一步在前面的轮次已完成，本轮复用了结果"
+          : step.status === "deferred" ? "本轮预算装不下，整步顺延了，根本没打上游"
+            : step.status === "skipped" ? "前置步骤未通过，没有发起请求" : "这一步本轮没有打上游"}。</p></div></div>`;
+    return sectionHead(`步骤 ${escapeHtml(step.id)}`, "", badge(step.status)) + anchor + items;
+  }).join("");
+
+  return pageShell({
+    title: `请求记录 · ${trace.toolName || trace.tool}`,
+    nav: navHtml(pwd, "runs", tools),
+    body: sectionHead("请求记录",
+      "请求体与响应体都是原样文本；凭据值已替换成 ***，响应头不记（set-cookie 是会话凭据）", back)
+      + `${banner}<div class="card"><div class="bd row">${head}</div></div>${steps}`,
   });
 }

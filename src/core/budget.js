@@ -8,6 +8,8 @@
 // KV 走 Cloudflare 自家服务的额度（每天 1000 次），与那 50 个名额无关，
 // 撞了也只是那一次调用失败、safe() 吞掉后继续跑 —— 所以**不设闸、不计数**。
 
+import { recordExchange } from "./trace.js";
+
 // 自设上限 = 平台硬顶 50（免费版每次调用的外部子请求数）。**不留余量**（用户决定）：
 // 被挤掉的步骤顺延到下一轮自愈，没必要为它少跑一步。
 //
@@ -51,7 +53,8 @@ export function makeBudget(limit) {
 
 // 每次真实 fetch 记一笔，并且**有拒答权**：账本空了就抛错，而不是照发出去
 // 让第 51 次请求把整轮炸掉 —— 那时异常会以一种无法归因的方式冒出来。
-export function trackedFetch(budget, hosts) {
+// trace 非空时顺带把这次交互（请求原文 + 响应原文）记进步骤记录 —— 旁路，不改变请求本身。
+export function trackedFetch(budget, hosts, trace = null) {
   const allowed = hosts && hosts.length ? new Set(hosts) : null;
   return async function fetchTracked(input, init) {
     const url = new URL(typeof input === "string" ? input : input.url);
@@ -64,6 +67,18 @@ export function trackedFetch(budget, hosts) {
     }
     if (!budget.fits(1)) throw new Error("本轮外部请求额度已用尽，停止发起请求");
     budget.charge(1);
-    return fetch(input, init);
+    const startedAt = Date.now();
+    const response = await fetch(input, init);
+    if (trace) {
+      await recordExchange(trace, {
+        url,
+        method: (init && init.method) || "GET",
+        headers: init && init.headers,
+        body: init && init.body,
+        response,
+        ms: Date.now() - startedAt,
+      });
+    }
+    return response;
   };
 }

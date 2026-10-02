@@ -3,8 +3,9 @@ import { getJson, listUids, lockKey, requireKv, toolKey } from "./store.js";
 import { applyCredPatch, getAccount, loadSchedIndex, commitSchedEntries, schedOf } from "./accounts.js";
 import { isOff, loadFlags } from "./flags.js";
 import { trackedFetch } from "./budget.js";
+import { makeTrace } from "./trace.js";
 import { clearProgress, configComplete, dayOf, isDue, loadProgress, missingConfigFields, saveProgress } from "./scheduler.js";
-import { secretValuesOf, scrubSecrets, writeRunLog } from "./logs.js";
+import { secretValuesOf, scrubSecrets, writeRunLog, writeTrace } from "./logs.js";
 import { nowSec } from "./time.js";
 
 const LOCK_TTL = 90;
@@ -108,13 +109,18 @@ async function runOneAccount({ env, budget, tool, uid, config, day, now, trigger
   let secrets = secretValuesOf(tool, account);
   const stale = [];                 // 被轮换掉的旧串：上游可能把它回显进 message，得继续洗
   const persistedCred = {};         // 本轮已经落盘过的凭据字段，防止同一步的返回值被反复写回
-  const ctx = { account, config, tool, env, kv, budget, now, day, trigger, fetch: trackedFetch(budget, tool.hosts) };
+  // 请求记录：挂到 ctx.fetch 上，工具完全不知道它的存在（工具一行都不用改）
+  const trace = makeTrace();
+  const ctx = { account, config, tool, env, kv, budget, now, day, trigger, fetch: trackedFetch(budget, tool.hosts, trace) };
   const results = [];
   let stopped = false;
   // 收尾时要报"这个账号花了多少"，所以先拍下起点。后面的差值才是它的用量
   const httpBefore = budget.used;
 
   for (const step of tool.steps) {
+    // 每一步都先建一条记录（**包括复用与顺延的**）：这样"这一步为什么没有请求"在详情页
+    // 看得出来，而不是整行凭空消失 —— 静默正是最容易让人以为"它跑过了"的那类假象。
+    trace.enter(step.id);
     if (progress.done[step.id]) {
       results.push({ id: step.id, label: step.label, ...progress.done[step.id], reused: true, over: 0 });
       continue;
@@ -229,7 +235,7 @@ async function runOneAccount({ env, budget, tool, uid, config, day, now, trigger
     message: summarize(results),
     // 积分只算本轮真做的那些步：复用来的积分再报一次，日志里就是凭空翻倍
     credits: results.reduce((sum, r) => sum + (r.reused ? 0 : (r.credits || 0)), 0),
-    steps: results.map((r) => ({ id: r.id, status: r.status, message: r.message, reused: !!r.reused, over: r.over || 0, unreachable: !!r.unreachable })),
+    steps: results.map((r) => ({ id: r.id, status: r.status, message: r.message, reused: !!r.reused, over: r.over || 0, unreachable: !!r.unreachable, calls: trace.callsOf(r.id).length })),
     // 本账号这一轮真实花掉的外部请求数。取的是差值而不是 budget.used ——
     // 后者是整轮累计，混进单条日志就成了"这账号花了整轮那么多请求"，
     // 越到后面的账号数字越离谱。列表页那一列显示的就是它。
@@ -243,6 +249,9 @@ async function runOneAccount({ env, budget, tool, uid, config, day, now, trigger
       resumable: !allDone && status !== "login_required"
         && results.some((r) => (CONTINUABLE.has(r.status) || r.status === "partial") && !r.reused),
     },
+    // 请求记录本体。publicResult 只挑固定字段，所以它不会进 /api/tick 的返回值，
+    // 只在 logOutcome 里被取走写进独立的 KV 键。
+    trace,
   };
 }
 
@@ -290,6 +299,13 @@ async function logOutcome(env, { now, tool, result, view, budget, trigger }) {
     account: result.account || { cred: {} },
     result: { ...view, label: view.label || view.uid },
     budget, trigger,
+  }));
+  // 请求记录写进**独立的键**（列表页不读它，所以列表成本一分不涨）。
+  // 即使一次交互都没有也写：这样详情页能区分"这次运行真的没打上游"与"记录不存在"。
+  await safe(() => writeTrace(env, {
+    at: now * 1000, tool,
+    account: result.account || { cred: {} },
+    uid: result.uid, trigger, steps: view.steps, trace: result.trace,
   }));
 }
 

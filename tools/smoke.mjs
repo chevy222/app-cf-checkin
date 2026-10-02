@@ -945,11 +945,11 @@ fixtureTest("[P1-6] 调度索引读取也不随账号数增长", async () => {
   const one = await kvCostWith(1);
   const many = await kvCostWith(41);
   assert.ok(many > one, "账号多时确实要花更多 KV");
-  // 每账号固定开销：取锁 2 + 读进度 1 + 读凭据 1 + 存/删进度 1 + 写运行日志 1 = 6
-  // 加上枚举的常数笔。若这个斜率超过 6，说明某个账号读出了 O(N) 次记录。
+  // 每账号固定开销：取锁 2 + 读进度 1 + 读凭据 1 + 存/删进度 1 + 写运行日志 1 + 写请求记录 1 = 7
+  // 加上枚举的常数笔。若这个斜率超过 7，说明某个账号读出了 O(N) 次记录。
   const per = (many - one) / 40;
-  assert.ok(per <= 6,
-    `每新增一个账号要多花 ${per.toFixed(1)} 次 KV，超过 6 —— 某个环节在按账号数放大`);
+  assert.ok(per <= 7,
+    `每新增一个账号要多花 ${per.toFixed(1)} 次 KV，超过 7 —— 某个环节在按账号数放大`);
 });
 
 fixtureTest("[P1-6] 工具页按 list+get 取明细，但坏数据不炸", async () => {
@@ -1334,7 +1334,7 @@ test("清空日志只删被点的那个工具，别家与账号凭据原样留�
   // POST 才真删
   const done = await hit(`/runs/qoder/clear?pwd=${PASSWORD}`, { method: "POST", body: form({ pwd: PASSWORD }), env });
   assert.equal(done.status, 303, `删除没走重定向：${done.status}`);
-  assert.match(done.headers.get("location") || "", /cleared=1&more=0/, `回执没带真实数字：${done.headers.get("location")}`);
+  assert.match(done.headers.get("location") || "", /cleared=1&traces=0&more=0/, `回执没带真实数字：${done.headers.get("location")}`);
 
   assert.equal([...kv.store.keys()].filter((k) => k.startsWith("v1:run:qoder:")).length, 0, "被点的工具日志没删干净");
   assert.ok(kv.store.has("v1:run:trae:0000000000456:u1"), "别家工具的日志被误删");
@@ -1342,8 +1342,8 @@ test("清空日志只删被点的那个工具，别家与账号凭据原样留�
 
   // 回执页必须把真实数字说出来。判据是 cleared 参数存在（不是 done=cleared）——
   // 写成后者的话这个分支永远进不去，界面上的回执就成了死代码。
-  const back = await hit(`/runs?tool=qoder&cleared=1&more=0&pwd=${PASSWORD}`, { env });
-  assert.ok(back.text.includes("已删除 1 条运行日志"), `回执没显示真实数字：${back.text.match(/已删除[^<]*/)}`);
+  const back = await hit(`/runs?tool=qoder&cleared=1&traces=0&more=0&pwd=${PASSWORD}`, { env });
+  assert.ok(back.text.includes("已删除 1 条运行日志、0 份请求记录"), `回执没显示真实数字：${back.text.match(/已删除[^<]*/)}`);
 });
 
 test("清空日志删不完时的回执要催你再点一次，不许显示成已清空", async () => {
@@ -1366,12 +1366,12 @@ test("清空日志删到上限时（more=0 但恰好 = 上限）要提醒可能�
   const q = new URL(done.headers.get("location"), "https://x").searchParams;
   assert.equal(q.get("cleared"), "28");
   assert.equal(q.get("more"), "0");
-  const back = await hit(`/runs?tool=qoder&cleared=28&more=0&pwd=${PASSWORD}`, { env });
-  assert.match(back.text, /已删除 28 条运行日志（单次上限 28 条/,
+  const back = await hit(`/runs?tool=qoder&cleared=28&traces=0&more=0&pwd=${PASSWORD}`, { env });
+  assert.match(back.text, /已删除 28 条运行日志、0 份请求记录（单次上限 28 条/,
     `删到上限却没说上限，用户会以为清干净了：${back.text.match(/已删除[^<]*/)}`);
   // 上限以下时不该多这句（每次点都提示上限会很吵）
-  const under = await hit(`/runs?tool=qoder&cleared=3&more=0&pwd=${PASSWORD}`, { env });
-  assert.ok(under.text.includes("已删除 3 条运行日志。"), "没删到上限却多了一句提示");
+  const under = await hit(`/runs?tool=qoder&cleared=3&traces=0&more=0&pwd=${PASSWORD}`, { env });
+  assert.ok(under.text.includes("已删除 3 条运行日志、0 份请求记录。"), "没删到上限却多了一句提示");
   assert.ok(!under.text.includes("单次上限"), "没删到上限却提示了上限");
 });
 
@@ -4927,4 +4927,137 @@ test("[没有教程的工具不渲染空壳", async () => {
   // 界面该由"有没有数据"决定，而不是由"是不是第几个工具"决定。
   assert.equal(renderTutorial({ id: "nope" }), "");
   assert.equal(renderTutorial(FIXTURE), "");
+});
+
+// ═══════════ 请求记录（trace）═══════════
+//
+// 每一步的上游交互（请求原文 + 响应原文）记在独立的 v1:trace: 键里：
+// 列表页只 list v1:run: 前缀，天然读不到它 —— 所以列表页的成本一分不涨。
+// 这条不变量在下面用两个方向都钉住：「run 键里不出现响应体」和「列表页的读数不涨」。
+
+const TRACE_TOOL = (steps) => ({
+  id: "traceable", name: "traceable", order: 1, summary: "", config: [],
+  creds: [
+    { key: "seatId", label: "席位", required: true },
+    { key: "apiKey", label: "密钥", required: true, secret: true },
+  ],
+  schedule: { resetHour: 0, notBeforeHour: 0, minIntervalSec: 1800, maxDaily: 10, backoff: [5, 15] },
+  hosts: ["stub.test"], uidOf: (ctx) => String(ctx.values.seatId || "").trim(),
+  steps,
+});
+
+test("[trace] 每一步的原始请求与响应都进独立键，凭据掩掉，run 键里一个字都不出现", async () => {
+  const kv = fakeKv();
+  const env = envFor(kv);
+  const tool = TRACE_TOOL([{
+    id: "claim", label: "领取", cost: 4,
+    async run(ctx) {
+      const res = await ctx.fetch("https://stub.test/api/claim", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer eyJhbGciOiJmYWtlLnp6" },
+        body: JSON.stringify({ code: "C1" }),
+      });
+      const payload = await res.json();
+      return { status: "claimed", message: `领到 ${payload.credit}`, credits: payload.credit || 0 };
+    },
+  }]);
+  kv.store.set("v1:tool:traceable", JSON.stringify({}));
+  kv.store.set("v1:acct:traceable:S1", JSON.stringify({
+    label: "t", cred: { seatId: "S1", apiKey: "SECRETVALUE" }, updatedAt: 1,
+  }));
+  kv.store.set("v1:schedidx:traceable", JSON.stringify({ day: null, entries: {} }));
+  const stub = stubUpstream({ "POST /api/claim": { payload: { ok: true, credit: 12, echo: "SECRETVALUE" } } });
+  try {
+    await tickWith(kv, [tool]);
+
+    const traceKeys = [...kv.store.keys()].filter((k) => k.startsWith("v1:trace:"));
+    assert.equal(traceKeys.length, 1, `请求记录该有一个独立键，实际 ${traceKeys.length}`);
+    const payload = JSON.parse(kv.store.get(traceKeys[0]));
+    const call = payload.steps[0].calls[0];
+    assert.equal(call.method, "POST");
+    assert.equal(call.url, "https://stub.test/api/claim");
+    assert.equal(call.reqBody, JSON.stringify({ code: "C1" }), "请求体要原样");
+    assert.equal(call.reqHeaders.Authorization, "Bearer ***", "授权头要掩掉");
+    assert.equal(call.reqHeaders["Content-Type"], "application/json", "非敏感请求头要保留");
+    assert.ok(!JSON.stringify(call.reqHeaders).includes("eyJhbGciOiJmYWtl"), "请求头里不该有原文票");
+    assert.ok((call.resBody || "").includes('"credit":12'), "响应体要原样");
+    assert.ok(!(call.resBody || "").includes("SECRETVALUE"), "响应里回显的凭据值必须被洗掉");
+    assert.ok(!traceKeys.some((k) => (kv.store.get(k) || "").includes("SECRETVALUE")), "trace 键里不能有凭据");
+
+    // 成本不变量：run 键里不出现上游 URL 与响应体（它们只住在独立的 trace 键里）
+    const runKey = [...kv.store.keys()].find((k) => k.startsWith("v1:run:traceable:"));
+    const runBody = kv.store.get(runKey) || "";
+    assert.ok(!runBody.includes("stub.test"), "run 键里不该出现上游 URL");
+    assert.ok(!runBody.includes('"resBody"'), "run 键里不该出现响应体");
+    // 步骤记录带着 calls 计数，详情页的「看请求 (N)」不用为它多读一个键
+    assert.equal(JSON.parse(runBody).steps[0].calls, 1);
+  } finally { stub.restore(); }
+});
+
+test("[trace] 请求记录页渲染原样文本，凭据不出现在页面上", async () => {
+  const kv = fakeKv();
+  const env = envFor(kv);
+  const runKey = "v1:run:traceable:0000000000123:S1";
+  kv.store.set(runKey, JSON.stringify({
+    kind: "run", at: 1, tool: "traceable", uid: "S1", status: "claimed",
+    steps: [{ id: "claim", status: "claimed", calls: 2 }],
+  }));
+  kv.store.set("v1:trace:traceable:0000000000123:S1", JSON.stringify({
+    kind: "trace", at: 1, tool: "traceable", toolName: "traceable", uid: "S1", trigger: "manual", dropped: 0,
+    steps: [{ id: "claim", status: "claimed", reused: false, calls: [
+      { n: 1, method: "POST", url: "https://stub.test/api/claim", reqHeaders: { Authorization: "Bearer ***", "Content-Type": "application/json" }, reqBody: '{"code":"C1"}', status: 200, ms: 7, resBody: '{"ok":true,"credit":12,"echo":"***"}' },
+      { n: 2, method: "POST", url: "https://stub.test/api/claim", reqHeaders: {}, reqBody: '{"code":"C2"}', status: 200, ms: 3, resBody: '{"ok":true,"credit":8}', reqTruncated: { kept: 32, total: 99 } },
+    ] }],
+  }));
+  const page = await hit(`/runs/${encodeURIComponent(runKey)}/trace?pwd=${PASSWORD}`, { env });
+  assert.equal(page.status, 200);
+  assert.match(page.text, /\/api\/claim/, "页面上要能看到请求的 URL");
+  assert.match(page.text, /请求体（原样）/, "要标出哪个是原样");
+  assert.match(page.text, /请求体（格式化）/, "能解析的 JSON 要给一个格式化视图");
+  assert.match(page.text, /已截断：只保留 32 字符（原文 99 字符）/, "截断要如实标注");
+  assert.match(page.text, /<a id="trace-claim">/, "锚点要在，详情页的链接才能落到对应步骤");
+  assert.ok(!page.text.includes("SECRETVALUE"), "凭据值不能出现在页面上");
+});
+
+test("[trace] 一次请求都没有的运行也写记录：能区分「真没打上游」与「记录不存在」", async () => {
+  const kv = fakeKv();
+  const env = envFor(kv);
+  const tool = TRACE_TOOL([{ id: "noop", label: "不联网", cost: 1, async run() { return { status: "ok", message: "无事", credits: 0 }; } }]);
+  kv.store.set("v1:tool:traceable", JSON.stringify({}));
+  kv.store.set("v1:acct:traceable:S1", JSON.stringify({ label: "t", cred: { seatId: "S1" }, updatedAt: 1 }));
+  kv.store.set("v1:schedidx:traceable", JSON.stringify({ day: null, entries: {} }));
+  try {
+    await tickWith(kv, [tool]);
+    const traceKeys = [...kv.store.keys()].filter((k) => k.startsWith("v1:trace:"));
+    assert.equal(traceKeys.length, 1, "0 请求的运行也该有记录");
+    const payload = JSON.parse(kv.store.get(traceKeys[0]));
+    assert.equal(payload.steps[0].calls.length, 0);
+    // 路由只认 run 键：从日志键换前缀推出请求记录键，所以这里传的是 **run 键**
+    const runKey = traceKeys[0].replace("v1:trace:", "v1:run:");
+    const page = await hit(`/runs/${encodeURIComponent(runKey)}/trace?pwd=${PASSWORD}`, { env });
+    assert.match(page.text, /无请求/, "页面上要能看出这一步没打上游");
+  } finally { }
+});
+
+test("[trace] 清空日志把请求记录一起删，回执把两笔都说出来", async () => {
+  const kv = fakeKv();
+  const env = envFor(kv);
+  kv.store.set("v1:run:qoder:0000000000123:qdr-clear", "{}");
+  kv.store.set("v1:trace:qoder:0000000000123:qdr-clear", "{}");
+  const done = await hit("/runs/qoder/clear", { method: "POST", env, body: form({ pwd: PASSWORD }) });
+  const q = new URL(done.headers.get("location"), "https://x").searchParams;
+  assert.equal(q.get("cleared"), "1");
+  assert.equal(q.get("traces"), "1");
+  assert.equal([...kv.store.keys()].filter((k) => k.startsWith("v1:trace:")).length, 0, "请求记录成了孤儿键");
+  const back = await hit(`/runs?tool=qoder&cleared=1&traces=1&more=0&pwd=${PASSWORD}`, { env });
+  assert.match(back.text, /已删除 1 条运行日志、1 份请求记录/, "回执要把两笔都说出来");
+});
+
+test("[trace] 没有记录的运行给一句实话，不伪造空记录", async () => {
+  const kv = fakeKv();
+  const env = envFor(kv);
+  const runKey = "v1:run:qoder:0000000000123:qdr-old";
+  kv.store.set(runKey, JSON.stringify({ kind: "run", at: 1, tool: "qoder", uid: "qdr-old", status: "claimed", steps: [] }));
+  const page = await hit(`/runs/${encodeURIComponent(runKey)}/trace?pwd=${PASSWORD}`, { env });
+  assert.match(page.text, /这次运行没有请求记录/, "没有记录就该说没有");
 });

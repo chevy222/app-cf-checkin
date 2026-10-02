@@ -1,7 +1,7 @@
 import { coerceFields, countAccounts, deleteAccount, getAccount, listAccounts, loadSchedIndex, sanitizeUid, saveAccount } from "./accounts.js";
 import { isOff, loadFlags, setToolOff } from "./flags.js";
 import { getJson, putJson, requireKv, toolKey } from "./store.js";
-import { CLEAR_BUDGET, clearRunLog, listRunLog, readRunLog, scrubSecrets } from "./logs.js";
+import { CLEAR_BUDGET, clearRunLog, isRunKey, listRunLog, readRunLog, readTrace, scrubSecrets, traceKeyOf } from "./logs.js";
 import { truncate } from "./text.js";
 import { trackedFetch } from "./budget.js";
 import { htmlRes, jsonRes, redirectRes } from "./http.js";
@@ -10,7 +10,7 @@ import { link } from "../ui/layout.js";
 import { renderHome } from "../ui/pages/home.js";
 import { renderHelp } from "../ui/pages/help.js";
 import { renderAccountForm, renderTool, renderToolConfig } from "../ui/pages/tool.js";
-import { renderRunDetail, renderRuns, renderRunsClearConfirm } from "../ui/pages/runs.js";
+import { renderRunDetail, renderRuns, renderRunsClearConfirm, renderTrace } from "../ui/pages/runs.js";
 import { renderNotFound } from "../ui/pages/gate.js";
 import { runAccountNow, runTick, validateAccount } from "./runner.js";
 
@@ -30,15 +30,17 @@ function flashFrom(url) {
   // deleted/saved 那两个是固定文案、没有数字可带。
   if (url.searchParams.get("cleared") !== null) {
     const n = Number(url.searchParams.get("cleared")) || 0;
+    const traces = Number(url.searchParams.get("traces")) || 0;
     const more = url.searchParams.get("more") === "1";
     return {
       kind: more ? "warn" : "info",
       // 上限要写进文案：只报实测数的话，删到上限（cleared 恰好 = CLEAR_BUDGET）
       // 与"真的删完了"看起来一模一样，用户以为清干净了而库里还剩几百条。
       // 数字来自 CLEAR_BUDGET，不写死 —— 改了上界这里自动跟着走。
+      // 请求记录也在这笔预算里，所以份数必须一起报：不报的话，"清空日志"就漏说了一件删过的事。
       text: more
-        ? `已删除 ${n} 条（单次最多 ${CLEAR_BUDGET} 条，KV 每天 1000 次写/删/list）。再点一次「清空」继续删剩下的。`
-        : `已删除 ${n} 条运行日志${n >= CLEAR_BUDGET ? `（单次上限 ${CLEAR_BUDGET} 条，若库里还有请再点一次「清空」）` : ""}。`,
+        ? `已删除 ${n} 条运行日志、${traces} 份请求记录（单次最多 ${CLEAR_BUDGET} 条，KV 每天 1000 次写/删/list）。再点一次「清空」继续删剩下的。`
+        : `已删除 ${n} 条运行日志、${traces} 份请求记录${n + traces >= CLEAR_BUDGET ? `（单次上限 ${CLEAR_BUDGET} 条，若库里还有请再点一次「清空」）` : ""}。`,
     };
   }
   // 开关切换的回执要说清是哪一家、变成了什么状态。跳转参数里只放工具 id 与 0/1，
@@ -100,6 +102,15 @@ async function runDetailPage(ctx, key) {
   return htmlRes(renderRunDetail({ pwd: ctx.pwd, tools: TOOLS, entry, key, missing: !entry }));
 }
 
+// 请求记录页：键由日志键**换前缀**推出来（两把键同构），所以这里只读 1 个键 ——
+// 不读日志正文，记录里已经带了每一步的状态，够把"这一步发了什么、回了什么"讲清楚。
+async function runTracePage(ctx, key) {
+  const logKey = String(key ?? "");
+  const usable = isRunKey(logKey) && !logKey.includes("..");
+  const trace = usable ? await readTrace(ctx.env, traceKeyOf(logKey)) : null;
+  return htmlRes(renderTrace({ pwd: ctx.pwd, tools: TOOLS, key: logKey, trace, missing: !trace }));
+}
+
 // 清空日志的确认页。GET 只读，不改世界 —— 破坏性操作的入口页必须是 GET，
 // 真正的删除在下面的 POST 上。tool 由 router 按注册表校验过，非法 id 到不了这里。
 async function runsClearPage(ctx, tool) {
@@ -111,8 +122,10 @@ async function runsClearPage(ctx, tool) {
 // 删除走 POST：GET 不该改变世界。执行完重定向回该工具的日志页，
 // cleared=N 让页面自己说出删了几条（真实数字，不猜）。
 async function runsClearDo(ctx, tool) {
-  const { deleted, more } = await clearRunLog(ctx.env, tool.id);
-  return redirectRes(link("/runs", ctx.pwd, { tool: tool.id, cleared: String(deleted), more: more ? "1" : "0" }));
+  const { deleted, traces, more } = await clearRunLog(ctx.env, tool.id);
+  return redirectRes(link("/runs", ctx.pwd, {
+    tool: tool.id, cleared: String(deleted), traces: String(traces), more: more ? "1" : "0",
+  }));
 }
 
 function accountFields(tool) {
@@ -330,8 +343,10 @@ async function apiTick(ctx) {
 
 const NEW_ACCOUNT = /^\/account\/new$/;
 const RUN_DETAIL = /^\/runs\/([^/]+)$/;
+// 请求记录页：/runs/<日志键>/trace。捕获组是**键名**不是工具 id，所以也要列进下面那个集合。
+const RUN_TRACE = /^\/runs\/([^/]+)\/trace$/;
 // 首段捕获组不是工具 id 的路由，不能拿去注册表校验
-const NO_TOOL_ROUTES = new Set([RUN_DETAIL]);
+const NO_TOOL_ROUTES = new Set([RUN_DETAIL, RUN_TRACE]);
 
 const ROUTES = [
   ["GET", /^\/$/, (ctx) => homePage(ctx.env, ctx.pwd, ctx.flash, ctx.budget)],
@@ -342,6 +357,7 @@ const ROUTES = [
   ["GET", /^\/runs\/([^/]+)\/clear$/, (ctx, tool) => runsClearPage(ctx, tool)],
   ["POST", /^\/runs\/([^/]+)\/clear$/, (ctx, tool) => runsClearDo(ctx, tool)],
   ["GET", RUN_DETAIL, (ctx, key) => runDetailPage(ctx, key)],
+  ["GET", RUN_TRACE, (ctx, key) => runTracePage(ctx, key)],
   ["GET", /^\/api\/state$/, (ctx) => apiState(ctx.env, ctx.budget)],
   ["GET", /^\/api\/tick$/, (ctx) => apiTick(ctx)],
   ["POST", /^\/api\/tick$/, (ctx) => apiTick(ctx)],
