@@ -265,6 +265,10 @@ export async function clearRunLog(env, toolId) {
   const prefixes = [`${RUN_PREFIX}${toolId}:`, `${TRACE_PREFIX}${toolId}:`];
   let deleted = 0;
   let traces = 0;
+  // KV 是最终一致性的：delete 之后立即 list，已删的键可能还在结果里。
+  // 不记已删的键名就会重复计数——界面上只有 1 条却报"删了 14 条"。
+  // Set 只在本次调用内有效，不会跨请求残留。
+  const seen = new Set();
   // 每轮都从头 list：键在减少，下一次拿到的就是还没删的那批。
   // 用游标翻页是错的 —— 刚删掉的键会让 cursor 指向的位置失效。
   while (deleted + traces < CLEAR_BUDGET) {
@@ -272,21 +276,28 @@ export async function clearRunLog(env, toolId) {
     for (const prefix of prefixes) {
       const page = await kv.list({ prefix, limit: CLEAR_BUDGET });
       for (const entry of page.keys || []) {
-        if (isLogKey(entry.name) || isTraceKey(entry.name)) batch.push(entry.name);
+        const name = entry.name;
+        if (seen.has(name)) continue;               // 上一轮已删（KV 还没传播），跳过
+        if (isLogKey(name) || isTraceKey(name)) batch.push(name);
       }
     }
     if (batch.length === 0) return { deleted, traces, more: false };
     for (const key of batch) {
       if (deleted + traces >= CLEAR_BUDGET) return { deleted, traces, more: true };
+      seen.add(key);
       await kv.delete(key);
       if (isTraceKey(key)) traces += 1; else deleted += 1;
     }
   }
   // 预算正好用完：再各 list 一次确认还有没有剩的（这两次只花 2 个子请求）。
+  // 这里也要跳过 seen：否则刚删的键还没传播，会误判 more=true。
   let more = false;
   for (const prefix of prefixes) {
     const rest = await kv.list({ prefix, limit: 1 });
-    if ((rest.keys || []).length > 0) more = true;
+    for (const entry of rest.keys || []) {
+      if (!seen.has(entry.name)) { more = true; break; }
+    }
+    if (more) break;
   }
   return { deleted, traces, more };
 }

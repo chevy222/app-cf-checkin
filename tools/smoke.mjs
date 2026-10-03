@@ -1377,6 +1377,36 @@ test("清空日志的删除范围由注册表把关：未注册的工具 id 到�
   assert.ok(kv.store.has("v1:run:evil:0000000000123:u1"), "未注册前缀的键被删了");
 });
 
+test("清空日志在 KV 最终一致性下不重复计数：delete 后 list 仍返回已删键时只数一次", async () => {
+  // 模拟真实 Cloudflare KV：delete 是最终一致性的，之后立即 list 可能还看到已删的键。
+  // 这个 kv 在 delete 后的前 3 次 list 里仍返回该键，第 4 次才消失。
+  const store = new Map();
+  const pending = new Set();   // 已调 delete 但还没传播的键
+  let listCount = 0;
+  const kv = {
+    async get(k) { return store.get(k) ?? null; },
+    async put(k, v) { store.set(k, v); },
+    async delete(k) { pending.add(k); },
+    async list({ prefix, limit }) {
+      listCount += 1;
+      // 前 3 次 list：pending 里的键仍返回（模拟未传播）；第 4 次起：真正删掉
+      const ghost = listCount <= 3;
+      const keys = [...store.keys()]
+        .filter((k) => k.startsWith(prefix) && (ghost || !pending.has(k)))
+        .sort()
+        .slice(0, limit)
+        .map((name) => ({ name, metadata: null }));
+      return { keys, list_complete: true, cursor: "" };
+    },
+  };
+  store.set("v1:run:qoder:8209000000000:u1", "{}");
+  const env = envFor(kv);
+  const res = await hit(`/runs/qoder/clear?pwd=${PASSWORD}`, { method: "POST", body: form({ pwd: PASSWORD }), env });
+  const q = new URL(`https://x${res.headers.get("location")}`).searchParams;
+  assert.equal(Number(q.get("cleared")), 1, `KV 最终一致性下应只数 1 条，实际报 ${q.get("cleared")}`);
+  assert.equal(q.get("more"), "0", "实际只有 1 条且已删，more 应为 0");
+});
+
 test("清空日志删不完时必须说清还剩多少，不许谎报已清空", async () => {
   const kv = fakeKv();
   const env = envFor(kv);
