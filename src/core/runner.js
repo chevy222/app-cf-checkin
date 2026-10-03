@@ -303,7 +303,7 @@ async function logOutcome(env, { now, tool, result, view, budget, trigger }) {
   const atSecMs = Math.floor(atMs / 1000) * 1000;
   // 无进展的轮次不写运行日志：旅行途中、配置未完成、预算顺延等每 30 分钟一条会刷屏。
   // didWork=false 且 credits=0 表示这一轮没有任何实际进展。
-  // trace 仍写：详情页需要区分"这次没打上游"与"记录不存在"。
+  // trace 也一起跳过：没有 run 键用户进不了详情页，写了也是孤儿键。
   const noProgress = result.sched && !result.sched.didWork && (result.credits || 0) === 0;
   if (!noProgress) {
     await safe(() => writeRunLog(env, {
@@ -312,14 +312,13 @@ async function logOutcome(env, { now, tool, result, view, budget, trigger }) {
       result: { ...view, label: view.label || view.uid },
       budget, trigger,
     }));
+    // 请求记录写进**独立的键**（列表页不读它，所以列表成本一分不涨）。
+    await safe(() => writeTrace(env, {
+      at: atSecMs, tool,
+      account: result.account || { cred: {} },
+      uid: result.uid, trigger, steps: view.steps, trace: result.trace,
+    }));
   }
-  // 请求记录写进**独立的键**（列表页不读它，所以列表成本一分不涨）。
-  // 即使一次交互都没有也写：这样详情页能区分"这次运行真的没打上游"与"记录不存在"。
-  await safe(() => writeTrace(env, {
-    at: atSecMs, tool,
-    account: result.account || { cred: {} },
-    uid: result.uid, trigger, steps: view.steps, trace: result.trace,
-  }));
 }
 
 // 只提交这次真正改过的 uid（合并写回的理由见 accounts.js）
