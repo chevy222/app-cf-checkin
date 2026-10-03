@@ -1354,25 +1354,18 @@ test("清空日志删不完时的回执要催你再点一次，不许显示成�
   assert.ok(!res.text.includes("已删除 28 条运行日志。"), "删不完却显示成已清空");
 });
 
-test("清空日志删到上限时（more=0 但恰好 = 上限）要提醒可能没删干净", async () => {
+test("清空日志 more=0 时不提示上限（已确认删完），more=1 时才提示再点一次", async () => {
   const kv = fakeKv();
   const env = envFor(kv);
-  // 库里正好 28 条 → 一次删完、more=0。这与"删到上限"在数字上无法区分，
-  // 所以文案必须把上限说出来，否则用户以为清干净了而库里还剩几百条
-  for (let i = 0; i < 28; i += 1) {
-    kv.store.set(`v1:run:qoder:${String(8209000000000 - i).padStart(13, "0")}:u${i}`, "{}");
-  }
-  const done = await hit("/runs/qoder/clear", { method: "POST", env, body: form({ pwd: PASSWORD }) });
-  const q = new URL(done.headers.get("location"), "https://x").searchParams;
-  assert.equal(q.get("cleared"), "28");
-  assert.equal(q.get("more"), "0");
-  const back = await hit(`/runs?tool=qoder&cleared=28&traces=0&more=0&pwd=${PASSWORD}`, { env });
-  assert.match(back.text, /已删除 28 条运行日志、0 份请求记录（单次上限 28 条/,
-    `删到上限却没说上限，用户会以为清干净了：${back.text.match(/已删除[^<]*/)}`);
-  // 上限以下时不该多这句（每次点都提示上限会很吵）
-  const under = await hit(`/runs?tool=qoder&cleared=3&traces=0&more=0&pwd=${PASSWORD}`, { env });
-  assert.ok(under.text.includes("已删除 3 条运行日志、0 份请求记录。"), "没删到上限却多了一句提示");
-  assert.ok(!under.text.includes("单次上限"), "没删到上限却提示了上限");
+  // more=0：clearRunLog 删完后会再 list 一次确认没有剩余，所以文案不该提示"再点一次"
+  const done = await hit(`/runs?tool=qoder&cleared=28&traces=0&more=0&pwd=${PASSWORD}`, { env });
+  assert.ok(done.text.includes("已删除 28 条运行日志、0 份请求记录。"), "more=0 文案不对");
+  assert.ok(!done.text.includes("再点一次"), "more=0 不该提示再点一次");
+  assert.ok(!done.text.includes("单次上限"), "more=0 不该提示上限");
+  // more=1：预算用完了但库里还有，必须提示再点一次
+  const more = await hit(`/runs?tool=qoder&cleared=6&traces=22&more=1&pwd=${PASSWORD}`, { env });
+  assert.match(more.text, /已删除 6 条运行日志、22 份请求记录（单次最多 28 条/, "more=1 该提示上限");
+  assert.ok(more.text.includes("再点一次"), "more=1 该提示再点一次");
 });
 
 test("清空日志的删除范围由注册表把关：未注册的工具 id 到不了 KV", async () => {
