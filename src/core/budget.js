@@ -71,13 +71,15 @@ export function trackedFetch(budget, hosts, trace = null) {
     const startedAt = Date.now();
     const response = await fetch(input, init);
     if (trace) {
+      const endedAt = Date.now();
       await recordExchange(trace, {
         url,
         method: (init && init.method) || "GET",
         headers: init && init.headers,
         body: init && init.body,
         response,
-        ms: Date.now() - startedAt,
+        ms: endedAt - startedAt,
+        at: endedAt,
       });
     }
     return response;

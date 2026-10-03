@@ -61,7 +61,7 @@ export function makeTrace() {
     get dropped() {
       return dropped;
     },
-    record({ method, url, headers, reqBody, status, ms, resBody, bodyError }) {
+    record({ method, url, headers, reqBody, status, ms, at, resBody, bodyError }) {
       if (!current) return;
       if (used >= TRACE_TOTAL_MAX) {
         dropped += 1;
@@ -77,6 +77,7 @@ export function makeTrace() {
         reqHeaders: maskHeaders(headers),
         status,
         ms,
+        at,
       };
       if (reqBody !== undefined && reqBody !== null) {
         call.reqBody = req.text;
@@ -96,16 +97,16 @@ export function makeTrace() {
 
 // 把一次真实发生的交互记进 trace。**旁路**：读的是克隆体，原响应原样返回给工具；
 // 克隆或读取失败只记"读不到"，绝不影响这一笔请求本身。
-export async function recordExchange(trace, { url, method, headers, body, response, ms }) {
+export async function recordExchange(trace, { url, method, headers, body, response, ms, at }) {
   const reqBody = typeof body === "string" ? body
     : body === undefined || body === null ? undefined
       : `（非文本请求体：${typeof body}）`;
   try {
     const text = await response.clone().text();
-    trace.record({ method, url: url.href, headers, reqBody, status: response.status, ms, resBody: text });
+    trace.record({ method, url: url.href, headers, reqBody, status: response.status, ms, at, resBody: text });
   } catch (error) {
     trace.record({
-      method, url: url.href, headers, reqBody, status: response.status, ms,
+      method, url: url.href, headers, reqBody, status: response.status, ms, at,
       bodyError: String((error && error.message) || error),
     });
   }

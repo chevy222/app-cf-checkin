@@ -213,7 +213,7 @@ export function renderTrace({ pwd, tools, key, trace, missing }) {
     const items = calls.length
       ? calls.map((call) => `<div class="card">
           <div class="bd row"><b class="mono">${escapeHtml(String(call.n))}. ${escapeHtml(call.method)} ${escapeHtml(call.url)}</b>
-          <span class="spacer"></span><span class="mono dim">→ ${escapeHtml(String(call.status))} · ${escapeHtml(String(call.ms))}ms</span></div>
+          <span class="spacer"></span><span class="mono dim">→ ${escapeHtml(String(call.status))} · ${call.at ? escapeHtml(fmtCSTSec(Math.floor(call.at / 1000))) + " · " : ""}${escapeHtml(String(call.ms))}ms</span></div>
           <div class="bd flush">
             ${call.reqTruncated ? alertBox("warn", `请求体已截断：只保留 ${escapeHtml(String(call.reqTruncated.kept))} 字符（原文 ${escapeHtml(String(call.reqTruncated.total))} 字符）。`) : ""}
             ${call.resTruncated ? alertBox("warn", `响应体已截断：只保留 ${escapeHtml(String(call.resTruncated.kept))} 字符（原文 ${escapeHtml(String(call.resTruncated.total))} 字符）。`) : ""}
