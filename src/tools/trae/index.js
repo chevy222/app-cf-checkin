@@ -131,13 +131,14 @@ export default {
           return { status: "rate_limited", message: `${outcome.message}（按退避阶梯稍后再试）`, credits: 0, cred };
         }
 
-        // 领取成功后调额度包接口算余额；claim 返回的 credits 有就显示本次 +N
-        const gained = outcome.credits || 0;
+        // 领取成功后调额度包接口算余额。文案跟 workbuddy 对齐：「签到 +N，额度包剩余 M」。
+        // 积分优先用 claim 返回的（本次获得），没有就用 status 返回的（上游在 claim 里不一定带回）。
+        const gained = outcome.credits || status.credits || 0;
         const usage = await api.readUsage(ctx, token);
         const tail = usage.error || usage.authFailed ? "（额度包读取失败）" : `，额度包剩余 ${usage.remaining}`;
         return {
           status: outcome.status,
-          message: `${outcome.message}${gained ? `，本次 +${gained}` : ""}${tail}`,
+          message: `签到 +${gained}${tail}`,
           credits: gained,
           cred,
         };
