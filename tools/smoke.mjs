@@ -2499,6 +2499,27 @@ test("[69yun] 正常签到：ret=1 → claimed，Cookie 有效时只发一次请
   } finally { stub.restore(); }
 });
 
+test("[69yun] 签到请求超时归 waiting，不亮红条，下一轮再确认", async () => {
+  const kv = fakeKv();
+  seed69yun(kv);
+  const stub = stubUpstream({
+    // 模拟 fetch 超时：AbortSignal.timeout 抛出 TimeoutError
+    "POST /user/checkin": () => {
+      const err = new Error("The operation was aborted due to timeout");
+      err.name = "TimeoutError";
+      throw err;
+    },
+  });
+  try {
+    const { summary } = await yun69Tick(kv);
+    const acct = planOf(summary, "69yun").accounts[0];
+    assert.equal(acct.status, "waiting", `超时应归 waiting，实际 ${acct.status}`);
+    assert.match(acct.message, /超时/, "消息应说明是超时");
+    // 只发了一次请求（签到），超时后不该继续走登录流程
+    assert.equal(stub.seen.length, 1);
+  } finally { stub.restore(); }
+});
+
 // 上游把「等级 + 流量 + 整段营销广告」全塞进 msg 一个字段（真实响应，不是构造的）。
 // 广告每轮一字不变，混进日志只会让人以为是新信息，还会把关键数字挤出内核那 200 字截断。
 const YUN69_AD = "\n\n🎉【69云】中秋国庆季 · 全场 7.8 折!🎉\n📅【活动时间】9月25日 00:00 — 10月2日 00:00\n💥【折扣码】69yun-78%off（有效时间：9/25 — 10/2）";

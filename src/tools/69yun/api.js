@@ -26,7 +26,7 @@ const SESSION_BACKOFF_MS = [500, 1000, 1500];
 
 const timeoutMs = (config) => {
   const raw = Number(config.timeoutMs);
-  return Number.isFinite(raw) && raw > 0 ? raw : 15000;
+  return Number.isFinite(raw) && raw > 0 ? raw : 30000;
 };
 
 // ── Cookie 工具 ──────────────────────────────────────────────
@@ -190,13 +190,23 @@ function resultLine(msg) {
 }
 
 export async function checkin(ctx, cookie) {
-  const result = await call(ctx, {
-    path: CHECKIN,
-    method: "POST",
-    cookie: cookie ? cookie.split("; ").filter(Boolean) : [],
-    referer: BASE + USER_PAGE,
-    redirect: "manual",
-  });
+  let result;
+  try {
+    result = await call(ctx, {
+      path: CHECKIN,
+      method: "POST",
+      cookie: cookie ? cookie.split("; ").filter(Boolean) : [],
+      referer: BASE + USER_PAGE,
+      redirect: "manual",
+    });
+  } catch (err) {
+    // 超时：请求可能已到达上游并执行成功，不能当普通错误抛上去（会被标记为失败亮红条）。
+    // 返回 timeout 标记，由调用方（index.js 的 wrap）归为 waiting，下一轮再确认结果。
+    if (err && (err.name === "TimeoutError" || /timeout|aborted/i.test(err.message || ""))) {
+      return { timeout: true };
+    }
+    throw err;
+  }
 
   // 3xx = Cookie 失效，调用方需要重新登录
   if (result.status >= 300 && result.status < 400) {

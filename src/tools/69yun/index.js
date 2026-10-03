@@ -179,6 +179,11 @@ export default {
 
 // 把 api.checkin 的返回翻成内核方言，同时带上 cred 回写。
 function wrap(result, rotated) {
+  if (result.timeout) {
+    // 超时：请求可能已到达上游并执行成功，不能当 error（亮红条、让用户改密码没用）。
+    // 归 waiting：下一轮上游会返回 ret=0（已签到）或正常签到，两种情况最终结果都正确。
+    return { status: "waiting", message: "签到请求超时，下一轮再确认结果", credits: 0, cred: rotated };
+  }
   if (result.error) {
     return { status: "error", message: result.error, credits: 0, cred: rotated };
   }
