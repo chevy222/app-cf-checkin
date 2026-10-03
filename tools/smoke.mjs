@@ -3841,6 +3841,7 @@ test("[workbuddy] 旅行在途不落已结：同一天下一轮仍会重读状�
     const first = await wbTick(kv, cst(10));
     assert.equal(wbStep(first.summary, 'travel').status, "waiting");
     const runKeysAfterFirst = [...kv.store.keys()].filter((k) => k.startsWith("v1:run:workbuddy:")).length;
+    const traceKeysAfterFirst = [...kv.store.keys()].filter((k) => k.startsWith("v1:trace:workbuddy:")).length;
 
     const before = stub.seen.filter((r) => r.path.endsWith("/travel/status")).length;
     const lock = [...kv.store.keys()].find((k) => k.startsWith("v1:lock:workbuddy:"));
@@ -3852,10 +3853,13 @@ test("[workbuddy] 旅行在途不落已结：同一天下一轮仍会重读状�
     assert.equal(wbStep(second.summary, 'travel').status, "waiting");
     // 其余五步都已结、被复用，所以这一轮只该花 1 次外部请求
     assert.equal(wbView(second.summary).http, 1, `在途期间每轮该只花 1 次请求，实际 ${wbView(second.summary).http}`);
-    // 无进展轮次不写运行日志：第二轮只有 travel waiting（didWork=false, credits=0），
-    // 每 30 分钟一条"等待中"会刷屏。trace 仍写（详情页需要），但 v1:run:* 不增加。
+    // 无进展轮次**run 与 trace 都不写**：第二轮只有 travel waiting（didWork=false, credits=0），
+    // 每 30 分钟一条"等待中"会刷屏。trace 一起跳是因为没有 run 键用户就进不了详情页，
+    // 写了只剩孤儿键（30 天后才自然过期）。
     const runKeysAfterSecond = [...kv.store.keys()].filter((k) => k.startsWith("v1:run:workbuddy:")).length;
+    const traceKeysAfterSecond = [...kv.store.keys()].filter((k) => k.startsWith("v1:trace:workbuddy:")).length;
     assert.equal(runKeysAfterSecond, runKeysAfterFirst, "无进展轮次不该写运行日志（等待中刷屏）");
+    assert.equal(traceKeysAfterSecond, traceKeysAfterFirst, "无进展轮次不该写请求记录（没有 run 键就进不去，写了是孤儿键）");
   } finally { stub.restore(); }
 });
 
