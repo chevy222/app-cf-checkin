@@ -4,3 +4,6 @@ dist/
 .dev.vars
 /.workbuddy/
 /.idea/
+# esbuild 产物（npm run bundle 生成）：手工同步进版本库只会带来"改了源码忘了重跑"
+# 导致的过期副本，而 git diff 里那几千行会盖掉真正的逻辑改动。
+worker.js

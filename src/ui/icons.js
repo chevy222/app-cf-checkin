@@ -23,12 +23,11 @@ export const ICONS = {
 // 工具没登记图标时返回空串，不渲染任何 <img>（不画首字母头像 —— 那要额外造一个
 // 带底色的圆角块，在卡片标题里会显得比没有图标更重）。
 // 图标是可选字段：注册表的启动期自检不检查它（加新工具时不必急着配图）。
-export function iconOf(tool) {
-  return ICONS[tool && tool.id] || null;
-}
-
+//
+// iconOf 不导出：它只在下面被调用一次，导出等于给"绕过 iconImg 直接拿 data URI"
+// 开一个后门（那会让"图标必须内联"这条约定失去唯一的守门人）。
 export function iconImg(tool, size = 22) {
-  const uri = iconOf(tool);
+  const uri = ICONS[tool && tool.id] || null;
   if (!uri) return "";
   return `<img class="ico" src="${uri}" width="${size}" height="${size}" alt="" loading="lazy">`;
 }

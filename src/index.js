@@ -1,11 +1,12 @@
 import { authenticate } from "./core/gateway.js";
-import { htmlRes } from "./core/http.js";
+import { htmlRes, SECURITY_HEADERS } from "./core/http.js";
 import { dispatch } from "./core/router.js";
 import { renderFatal, renderGate, renderUnconfigured } from "./ui/pages/gate.js";
 import { budgetFrom, makeBudget } from "./core/budget.js";
 import { runTick } from "./core/runner.js";
 import { TOOLS } from "./tools/index.js";
 import { nowSec } from "./core/time.js";
+import { FAVICON_B64 } from "./ui/favicon.js";
 
 // 页面渲染和调度消费同一个预算对象。账本只记外部 HTTP ——
 // KV 有 Cloudflare 自家每天 1000 次的独立额度，不参与闸门（理由见 budget.js）。
@@ -20,6 +21,14 @@ export default {
     const { budget, env: scoped } = withLedger(env);
 
     try {
+      // 静态资源不校验口令：浏览器请求 favicon 不带 pwd，被网关 401 拦了就永远显示默认图标。
+      // 安全头仍要与全站一致（复用 SECURITY_HEADERS），只有 cache-control 按语义换成 public ——
+      // 图标是不变的静态资源，缓存一天是对的，而页面正文必须是 no-store。
+      if (url.pathname === "/favicon.png") {
+        return new Response(Uint8Array.from(atob(FAVICON_B64), (c) => c.charCodeAt(0)), {
+          headers: { ...SECURITY_HEADERS, "content-type": "image/png", "cache-control": "public, max-age=86400" },
+        });
+      }
       const auth = await authenticate(request, url, scoped);
       if (auth.verdict === "unconfigured") return htmlRes(renderUnconfigured(), 500);
       if (auth.verdict === "bad_body") {

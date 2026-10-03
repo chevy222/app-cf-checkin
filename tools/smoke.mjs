@@ -3,17 +3,17 @@ import assert from "node:assert/strict";
 import worker from "../src/index.js";
 import { TOOLS, findTool, checkToolContract } from "../src/tools/index.js";
 import { maskSecret } from "../src/core/text.js";
-import { coerceFields, saveAccount, schedOf } from "../src/core/accounts.js";
+import { coerceFields, saveAccount, schedOf, commitSchedEntries, loadSchedIndex } from "../src/core/accounts.js";
 import { listUids } from "../src/core/store.js";
-import { commitSchedEntries, loadSchedIndex } from "../src/core/accounts.js";
 import { aggregate, runAccountNow, runTick, validateAccount } from "../src/core/runner.js";
 import { makeBudget, trackedFetch } from "../src/core/budget.js";
 import { listRunLog, readRunLog, scrubSecrets, writeRunLog, traceKeyOf } from "../src/core/logs.js";
 import { logicalDay, cstDate } from "../src/core/time.js";
 import * as wbApi from "../src/tools/workbuddy/api.js";
-import { idemKey } from "../src/tools/workbuddy/api.js";
+const { idemKey } = wbApi;
 import { expiresAtOf, subjectOf } from "../src/core/jwt.js";
 import { ICONS, iconImg } from "../src/ui/icons.js";
+import { FAVICON_B64 } from "../src/ui/favicon.js";
 import { TUTORIALS, renderTutorial } from "../src/ui/tutorials.js";
 import { dayOf, isDue } from "../src/core/scheduler.js";
 import { stampFor } from "../src/version.js";
@@ -4696,6 +4696,42 @@ test("[图标内联在 data URI 里，且必须是 PNG", async () => {
   assert.ok(help.text.includes('class="ico"'), "说明页的工具清单也该带图标");
   const page = await authed("/tool/qoder", env);
   assert.ok(page.text.includes('class="ico"'), "工具页该带图标");
+});
+
+test("[favicon] 无口令可取，但安全头必须与全站一致（cache-control 除外）", async () => {
+  // 这条路径**故意**绕过口令闸：浏览器请求图标不会带 ?pwd=，被拦了就永远显示默认图标。
+  // 于是它成了全站唯一一条"无凭据即可取"的路径 —— 正因如此，安全头一个都不能少。
+  const env = envFor(fakeKv());
+  // 从真实页面响应里取安全头，而不是抄一份常量 —— 抄的那份会跟着页面改动而腐烂。
+  const htmlPage = await authed("/", env);
+  const res = await hit("/favicon.png", { env });          // 注意：没带 pwd
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("content-type"), "image/png");
+
+  // 1) 真的解出字节（base64 写错的话这里会是空 body，而状态码照样 200）。
+  //    比对方式要注意：hit() 走的是 response.text()，二进制里的非法 UTF-8 字节会被
+  //    替换成 U+FFFD，所以拿 body 长度去比原始字节数必然不等 —— 只能比"同样解码一次"的结果。
+  const bytes = Uint8Array.from(atob(FAVICON_B64), (c) => c.charCodeAt(0));
+  assert.deepEqual([...bytes.slice(0, 4)], [0x89, 0x50, 0x4e, 0x47], "PNG 签名不对");
+  assert.equal(bytes.length, atob(FAVICON_B64).length, "base64 解码长度与编码长度不符");
+  assert.equal(res.text.length, new TextDecoder().decode(bytes).length,
+    `响应体长度 ${res.text.length} 与 base64 解码后按 UTF-8 读的长度不符`);
+
+  // 2) 安全头与页面一致。漏掉的头不会报错，只是静默失效 ——
+  //    所以这里逐条比对，而不是只看"有没有"。
+  for (const name of ["x-content-type-options", "referrer-policy", "x-frame-options", "content-security-policy"]) {
+    assert.equal(res.headers.get(name), htmlPage.headers.get(name), `favicon 缺/错了安全头 ${name}`);
+  }
+  // 3) 但 cache-control 必须换成 public：图标是不变的静态资源，
+  //    页面正文那条 no-store 是给「每次都拿最新」的 HTML 用的，套到图标上会让浏览器每次重下。
+  assert.equal(res.headers.get("cache-control"), "public, max-age=86400");
+  assert.equal(htmlPage.headers.get("cache-control"), "no-store", "页面正文仍应是 no-store");
+
+  // 4) 页面 head 里要真的引用它，否则图标文件在但没人请求
+  assert.match(htmlPage.text, /<link rel="icon" type="image\/png" href="\/favicon\.png">/,
+    "页面 head 该引用 /favicon.png");
+  // 5) 其余路径不许被这条规则放过：带错口令照旧 401
+  assert.equal((await hit("/", { env })).status, 401, "首页仍必须过口令闸");
 });
 
 // 说明页工具清单里图标要与名字同行：.kv .k 必须是 flex 容器，
