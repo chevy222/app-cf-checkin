@@ -8,7 +8,7 @@ import { listUids } from "../src/core/store.js";
 import { commitSchedEntries, loadSchedIndex } from "../src/core/accounts.js";
 import { aggregate, runAccountNow, runTick, validateAccount } from "../src/core/runner.js";
 import { makeBudget, trackedFetch } from "../src/core/budget.js";
-import { listRunLog, readRunLog, scrubSecrets, writeRunLog } from "../src/core/logs.js";
+import { listRunLog, readRunLog, scrubSecrets, writeRunLog, traceKeyOf } from "../src/core/logs.js";
 import { logicalDay, cstDate } from "../src/core/time.js";
 import * as wbApi from "../src/tools/workbuddy/api.js";
 import { idemKey } from "../src/tools/workbuddy/api.js";
@@ -4998,6 +4998,9 @@ test("[trace] 每一步的原始请求与响应都进独立键，凭据掩掉，
     assert.ok(!runBody.includes('"resBody"'), "run 键里不该出现响应体");
     // 步骤记录带着 calls 计数，详情页的「看请求 (N)」不用为它多读一个键
     assert.equal(JSON.parse(runBody).steps[0].calls, 1);
+    // run key 与 trace key 必须同构：traceKeyOf(runKey) 要能对上实际写入的 trace 键，
+    // 否则详情页「看请求」点开为空（writeRunLog 取整到秒、writeTrace 用精确毫秒就会错位）。
+    assert.equal(traceKeys[0], traceKeyOf(runKey), `run 键与 trace 键不同构：${traceKeys[0]} vs ${traceKeyOf(runKey)}`);
   } finally { stub.restore(); }
 });
 

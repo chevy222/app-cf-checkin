@@ -297,13 +297,17 @@ async function logOutcome(env, { now, tool, result, view, budget, trigger }) {
   // 日志时间用实际执行时刻而不是 cron 计划时刻：同一轮多个账号依次执行，
   // 时间戳应有先后差异；调度与逻辑日仍用传入的 now（scheduledTime）。
   const atMs = Date.now();
+  // run key 与 trace key 必须用同一个时间戳：writeRunLog 内部 at = now*1000（取整到秒），
+  // writeTrace 若用精确毫秒，两者 revOf 结果不同，traceKeyOf(runKey) 就对不上实际写入的键，
+  // 详情页「看请求」点开为空。这里统一取整到秒。
+  const atSecMs = Math.floor(atMs / 1000) * 1000;
   // 无进展的轮次不写运行日志：旅行途中、配置未完成、预算顺延等每 30 分钟一条会刷屏。
   // didWork=false 且 credits=0 表示这一轮没有任何实际进展。
   // trace 仍写：详情页需要区分"这次没打上游"与"记录不存在"。
   const noProgress = result.sched && !result.sched.didWork && (result.credits || 0) === 0;
   if (!noProgress) {
     await safe(() => writeRunLog(env, {
-      now: Math.floor(atMs / 1000), tool,
+      now: atSecMs / 1000, tool,
       account: result.account || { cred: {} },
       result: { ...view, label: view.label || view.uid },
       budget, trigger,
@@ -312,7 +316,7 @@ async function logOutcome(env, { now, tool, result, view, budget, trigger }) {
   // 请求记录写进**独立的键**（列表页不读它，所以列表成本一分不涨）。
   // 即使一次交互都没有也写：这样详情页能区分"这次运行真的没打上游"与"记录不存在"。
   await safe(() => writeTrace(env, {
-    at: atMs, tool,
+    at: atSecMs, tool,
     account: result.account || { cred: {} },
     uid: result.uid, trigger, steps: view.steps, trace: result.trace,
   }));

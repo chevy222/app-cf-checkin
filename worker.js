@@ -3887,10 +3887,11 @@ __name(safe, "safe");
 async function logOutcome(env, { now, tool, result, view, budget, trigger }) {
   if (!result.account && !result.broken) return;
   const atMs = Date.now();
+  const atSecMs = Math.floor(atMs / 1e3) * 1e3;
   const noProgress = result.sched && !result.sched.didWork && (result.credits || 0) === 0;
   if (!noProgress) {
     await safe(() => writeRunLog(env, {
-      now: Math.floor(atMs / 1e3),
+      now: atSecMs / 1e3,
       tool,
       account: result.account || { cred: {} },
       result: { ...view, label: view.label || view.uid },
@@ -3899,7 +3900,7 @@ async function logOutcome(env, { now, tool, result, view, budget, trigger }) {
     }));
   }
   await safe(() => writeTrace(env, {
-    at: atMs,
+    at: atSecMs,
     tool,
     account: result.account || { cred: {} },
     uid: result.uid,
