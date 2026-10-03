@@ -48,11 +48,11 @@
 
 适合不想装任何工具的人。把单文件 JS 粘贴到 Cloudflare 面板的 Worker 编辑器里，KV、cron、口令都在面板上手动配。
 
-#### A. 用仓库自带的 `worker.js`（推荐）
+#### A. 从 Releases 下载 `worker.js`（推荐）
 
-仓库根目录自带打包好的单文件 **`worker.js`**，直接下载用。
+每个版本在 GitHub Releases 里附带打包好的单文件 **`worker.js`**，直接下载用。
 
-1. **下载 `worker.js`**：在仓库页面点开 `worker.js` 文件，下载或复制全部内容。
+1. **下载 `worker.js`**：打开 [Releases 页面](https://github.com/chevy222/app-cf-checkin/releases)，下载最新版的 `worker.js`。
 2. **创建 Worker**：Cloudflare 面板 → Workers 和 Pages → 创建 → 命名（比如 `checkin`）→ 选「Hello World」模板 → 部署。
 3. **粘贴代码**：进入刚创建的 Worker → 编辑代码 → 把默认内容全删，把 `worker.js` 的内容整个粘贴进去 → 保存并部署。
 4. **绑定 KV**：Worker → 设置 → 绑定 → KV 命名空间 → 添加绑定 → 变量名填 `CHECKIN_KV`，命名空间选你创建的那个（没有就先去「存储和数据库 → KV」创建一个）。
