@@ -26,3 +26,10 @@ export const CONTINUABLE = new Set(["deferred", "skipped", "pending", "waiting"]
 // 真正需要人动手的两类：凭据失效与失败。首页与工具页的红条只认它 ——
 // rate_limited / deferred / partial / pending / waiting 都会自己恢复，不该亮红。
 export const NEEDS_ACTION = new Set(["login_required", "error"]);
+
+// 界面上归为「等待/进行中」（amber）的状态。CONTINUABLE 是账号级的「下一轮接着做」，
+// 这里额外加两个不属于账号级、但同样「会自己好、不该亮红」的状态：
+//   partial —— 步骤级的部分成功（不是账号级，所以不进 CONTINUABLE）
+//   rate_limited —— 被限流，退避后自动恢复
+// 界面色块（progressTone / stepTone）统一用这一份，不再各自硬编码例外。
+export const AMBER = new Set([...CONTINUABLE, "partial", "rate_limited"]);
