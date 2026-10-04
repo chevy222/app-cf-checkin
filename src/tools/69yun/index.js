@@ -21,8 +21,9 @@ import * as api from "./api.js";
 //   POST /user/checkin  ret=0 → 今日已签到（already）
 //   POST /user/checkin  3xx   → Cookie 失效，重新登录后再试一次
 //   登录 429                  → 被限频（rate_limited，按 schedule.backoff 退避）
-//   登录 5xx / 轮询异常 / session 一直不就绪 → 上游的问题（waiting，等下一轮，不亮红条）
+//   登录 5xx / 3xx            → 上游的问题（waiting，等下一轮，不亮红条）
 //   登录 ret!==1 且 4xx        → 凭据不行（login_required，要用户重录）
+//   重新登录后签到仍 3xx        → 真异常（error，实测无传播延迟，不粉饰成 waiting）
 
 export default {
   id: "69yun",
