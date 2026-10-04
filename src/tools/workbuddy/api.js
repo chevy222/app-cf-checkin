@@ -36,9 +36,11 @@ const REDEEM = `${GROWTH}/redeem`;
 
 const REDEEM_TIERS = [{ tier: "7d", days: 7 }, { tier: "14d", days: 14 }, { tier: "28d", days: 28 }];
 
-// 新版桌面端会把票据包成 {"$wbEncrypted":1,"envelope":"<真 JWT>"}。
-// 这层解包必须留着 —— 它是版本兼容，不是防御性编程：解不开就是每天 401，
-// 而报错只会说"登录态失效"，没人会想到是包装格式变了。
+// 票据解包。只认**明文** JWT：
+//   - 纯字符串（旧版客户端直接存的明文 JWT）
+//   - {"accessToken":"..."} / {"token":"..."} 这种明文包装
+// 新版桌面端存的是 {"$wbEncrypted":1,"envelope":"<密文>"}，envelope 是加密内容，
+// 解出来也不是可用的 JWT —— 遇到这种格式直接返回空串，由调用方报"需要旧版客户端取明文票"。
 function unwrapToken(raw) {
   if (typeof raw === "string") {
     const text = raw.trim();
@@ -50,7 +52,7 @@ function unwrapToken(raw) {
     }
   }
   if (raw && typeof raw === "object") {
-    if (raw["$wbEncrypted"] === 1 && typeof raw.envelope === "string") return raw.envelope.trim();
+    if (raw["$wbEncrypted"] === 1) return "";   // 加密格式，不能用
     if (typeof raw.accessToken === "string") return raw.accessToken.trim();
     if (typeof raw.token === "string") return raw.token.trim();
   }
@@ -151,7 +153,7 @@ async function call(ctx, path, { method = "POST", body, auth = true, extraHeader
   const headers = { Accept: "application/json", "Content-Type": "application/json", "User-Agent": "WorkBuddy" };
   if (auth) {
     const token = unwrapToken(cred.accessToken);
-    if (!token) throw new Error("Access Token 解不出可用内容（可能是包装格式变了），重新取值粘贴");
+    if (!token) throw new Error("Access Token 解不出可用内容（新版桌面端的 token 是加密的，需要用旧版客户端获取明文 JWT），重新取值粘贴");
     headers.Authorization = `Bearer ${token}`;
     headers["X-User-Id"] = String(ctx.account.uid);
   }
@@ -403,12 +405,18 @@ export function judgeClaim(result) {
 // 不要让用户手填 —— 填的和票对不上时，X-User-Id 与 Authorization 不同源，
 // 表现是稳定的 403。
 export function uidFromToken(values) {
-  const text = unwrapToken(values.accessToken);
-  if (!text) throw new Error("先把 Access Token 粘进来");
+  const raw = values.accessToken;
+  const text = unwrapToken(raw);
+  if (!text) {
+    if (typeof raw === "string" && raw.includes('"$wbEncrypted"')) {
+      throw new Error("这是新版桌面端的加密票据（$wbEncrypted），本平台只认旧版客户端的明文 JWT，请用旧版客户端重新取值粘贴");
+    }
+    throw new Error("先把 Access Token 粘进来");
+  }
   // subjectOf 收的是 JWT 原文（内部再解载荷），不是载荷对象
   const uid = subjectOf(text);
   if (!uid) {
-    throw new Error("这张 Access Token 解不出账号标识（sub）：要么不是标准 JWT，要么包装格式变了，请重新取值粘贴");
+    throw new Error("这张 Access Token 解不出账号标识（sub）：要么不是标准 JWT，要么是新版桌面端的加密格式（需要用旧版客户端获取明文 JWT），请重新取值粘贴");
   }
   return { uid, cred: { expiresAt: String(expiresAtOf(text) || 0) } };
 }

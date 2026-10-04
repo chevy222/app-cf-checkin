@@ -3160,11 +3160,9 @@ test("[trae] 域名白名单：两家自家放行，别的一律拒", async () =
 
 const WB_HOST = "copilot.tencent.com";
 
-function seedWorkbuddy(kv, uid = "wb-77002", { exp = cst(60), expiresAt, wrapped } = {}) {
+function seedWorkbuddy(kv, uid = "wb-77002", { exp = cst(60), expiresAt } = {}) {
   kv.store.set("v1:tool:workbuddy", "{}");
-  const token = wrapped
-    ? JSON.stringify({ "$wbEncrypted": 1, envelope: mkJwt({ sub: uid, exp }) })
-    : mkJwt({ sub: uid, exp });
+  const token = mkJwt({ sub: uid, exp });
   kv.store.set(`v1:acct:workbuddy:${uid}`, JSON.stringify({
     label: `WB 主号-${uid}`,
     cred: {
@@ -4061,45 +4059,48 @@ function everyWbLog(kv) {
   return logKeys(kv).map((k) => `${k}${kv.store.get(k)}${JSON.stringify(kv.metas.get(k) || {})}`).join("\n");
 }
 
-test("[workbuddy] 出口只有 copilot.tencent.com，包装格式的票据也能解出 uid", async () => {
+test("[workbuddy] 出口只有 copilot.tencent.com", async () => {
   const kv = fakeKv();
   const stub = stubUpstream(wbIdleRoutes());
   try {
-    seedWorkbuddy(kv, "wb-wrapped", { wrapped: true });
+    seedWorkbuddy(kv, "wb-plain");
     const { summary } = await wbTick(kv);
-    assert.equal(wbView(summary).uid, "wb-wrapped");
+    assert.equal(wbView(summary).uid, "wb-plain");
     assert.ok(stub.seen.length > 0);
     assert.ok(stub.seen.every((r) => r.host === WB_HOST), `打出了白名单外的域名：${[...new Set(stub.seen.map((r) => r.host))].join(", ")}`);
     const header = stub.seen[0].headers;
-    assert.match(header.Authorization, /^Bearer eyJ/, "包装票据没被展开成真 JWT");
-    assert.equal(header["X-User-Id"], "wb-wrapped");
+    assert.match(header.Authorization, /^Bearer eyJ/);
+    assert.equal(header["X-User-Id"], "wb-plain");
     assert.equal(header["X-Enterprise-Id"], undefined, "个人版不发企业头");
     assert.equal(header["X-Tenant-Id"], undefined);
   } finally { stub.restore(); }
 });
 
-test("[workbuddy] 建号走真实入口：明文票据与包装票据都要解出 uid", async () => {
+test("[workbuddy] 新版桌面端加密票据（$wbEncrypted）不能解包，建号时报错", async () => {
+  const kv = fakeKv();
+  const env = envFor(kv);
+  const wrapped = JSON.stringify({ $wbEncrypted: 1, envelope: "encrypted-content-not-a-jwt" });
+  const resp = await hit("/account/workbuddy/new", {
+    method: "POST", env, body: form({ pwd: PASSWORD, label: "加密票", accessToken: wrapped, refreshToken: "rt-1" }),
+  });
+  assert.equal(resp.status, 400, "加密票据建号应该返回 400 带错误，而不是 303 跳转");
+  assert.match(resp.text, /取账号标识失败/, "错误应挂在凭据字段上");
+  assert.match(resp.text, /加密票据|旧版客户端/, "错误提示应说明加密票据不能用");
+});
+
+test("[workbuddy] 建号走真实入口：明文票据解出 uid 和到期时间", async () => {
   // "直接塞 KV"的测试测不到 uidOf：它是每家建号都要过的一道门，
   // 只有走 HTTP 建号才测得到它。
   const kv = fakeKv();
   const env = envFor(kv);
   const plain = mkJwt({ sub: "wb-plain-sub", exp: cst(60) });
-  const wrapped = JSON.stringify({ $wbEncrypted: 1, envelope: mkJwt({ sub: "wb-wrapped-sub", exp: cst(60) }) });
 
   const first = await hit("/account/workbuddy/new", {
     method: "POST", env, body: form({ pwd: PASSWORD, label: "明文", accessToken: plain, refreshToken: "rt-1" }),
   });
   assert.equal(first.status, 303, first.text.match(/class="err">([^<]*)/)?.[1] || "");
   const plainSaved = JSON.parse(kv.store.get("v1:acct:workbuddy:wb-plain-sub"));
-  assert.equal(Number(plainSaved.cred.expiresAt), cst(60), "明文票据也要在建号时就解出到期时间");
-
-  const second = await hit("/account/workbuddy/new", {
-    method: "POST", env, body: form({ pwd: PASSWORD, label: "包装", accessToken: wrapped, refreshToken: "rt-2" }),
-  });
-  assert.equal(second.status, 303, second.text.match(/class="err">([^<]*)/)?.[1] || "");
-  const saved = JSON.parse(kv.store.get("v1:acct:workbuddy:wb-wrapped-sub"));
-  assert.equal(saved.cred.accessToken, wrapped, "包装原文要原样存着，用的时候再展开");
-  assert.equal(Number(saved.cred.expiresAt), cst(60), "到期时间要在建号时就解出来，否则第一次运行会白换一次票");
+  assert.equal(Number(plainSaved.cred.expiresAt), cst(60), "明文票据要在建号时就解出到期时间");
 });
 
 test("[jwt] subjectOf 与 expiresAtOf 收的都是 JWT 原文", async () => {
