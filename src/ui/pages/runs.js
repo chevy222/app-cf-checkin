@@ -141,7 +141,7 @@ export function renderRunDetail({ pwd, tools, entry, key, missing }) {
           <p class="sub m0">${escapeHtml(entry.message || "")}</p>
           ${entry.credits ? `<div class="kv"><span class="k">本次积分</span><span class="v">+${escapeHtml(String(entry.credits))}</span></div>` : ""}
           <div class="kv"><span class="k">本账号外部请求</span><span class="v">${escapeHtml(String(u.http ?? "—"))} / 上限 ${escapeHtml(String(b.limit ?? "—"))}${b.over ? ` · <span class="over">超出 ${escapeHtml(String(b.over))}</span>` : ""}</span></div>
-          <div class="kv"><span class="k">键名</span><span class="v dim">${escapeHtml(key)}（时间那段是反转毫秒，所以键序就是时间倒序）</span></div>
+          <div class="kv"><span class="k">键名</span><span class="v dim">${escapeHtml(key)}</span></div>
         </div></div>
       ${isTick ? "" : sectionHead("步骤", "「复用」表示这一步在之前的轮次已完成，本轮没有再打上游")}
       ${steps ? `<div class="tw"><table class="t"><thead><tr>${heads.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${steps}</tbody></table></div>` : ""}`,
