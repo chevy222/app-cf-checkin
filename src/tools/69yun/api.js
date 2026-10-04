@@ -2,7 +2,7 @@ import { truncate } from "../../core/text.js";
 
 // 69 云（SSPanel 机场）请求层。
 //
-// 上游方言：
+// 上游方言（全部经 2026-10-04 对真实上游实测核实）：
 //   登录  POST /auth/login  body={email, passwd, remember_me:"on", code:""}  响应 ret===1 成功
 //   签到  POST /user/checkin  无 body，带 Cookie，redirect:manual
 //          ret===1 = 签到成功，ret===0 = 今日已签到
@@ -18,9 +18,12 @@ const CHECKIN = "/user/checkin";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36";
 
 // 登录后验证 session 就绪的轮询参数。
-// SSPanel 登录后 session 传播有延迟，立刻打 /user 会 302 回登录页。
-// 退避阶梯而不是固定间隔：实测第 1 次（500ms 后）通常就过了，快上游不该被无谓拖住；
-// 真慢的才逐次多等。三次全过共 3s，比原独立 Worker 的 6 次×2s=12s 短得多，
+// 理由是"SSPanel 登录后 session 传播有延迟，立刻打 /user 会 302 回登录页"——
+// **这一条沿用自原独立 Worker，本项目从未实测确认过**。2026-10-04 只能在已登录态下
+// 打 /user（结果 200、延迟不复现），抓不到"登录 POST 刚返回的那一瞬"，验不了。
+// 所以保留原参数，但别把它当成已证事实 —— 真要删它得先在真实 Worker 上跑一轮登录看首击结果。
+// 退避阶梯而不是固定间隔：万一延迟存在，第 1 次（500ms 后）通常就过了，快上游不该被无谓拖住。
+// 三次全过共 3s，比原独立 Worker 的 6 次×2s=12s 短得多，
 // 也压在这一步的 cost 上界内（原固定 1.5s×3=4.5s，现在是 0.5+1+1.5=3s）。
 const SESSION_BACKOFF_MS = [500, 1000, 1500];
 
@@ -30,8 +33,13 @@ const timeoutMs = (config) => {
 };
 
 // ── Cookie 工具 ──────────────────────────────────────────────
-// SSPanel 用 Set-Cookie 下发 session（通常是 uid + email + key + expire 几个）。
-// 必须完整保留并在后续请求里带回，少一个上游就不认。
+// SSPanel 用 Set-Cookie 下发 session，**实测（2026-10-04）这版是 `PHPSESSID` / `mtauth` / `pop`**，
+// 其中 `mtauth` 才是认证凭据，另两个是 HttpOnly（document.cookie 读不到，浏览器自动发送）。
+// 早先注释写的 `uid + email + key + expire` 是**老版 SSPanel 的形状**，本版没有那四个 ——
+// 别照着旧注释去解析名字或断言字段。
+//
+// 但**整串原样存、原样发**：不解析、不挑名字，所以换 SSPanel 版本也不会坏。
+// 必须原样保留的只有一件事：登录响应下发几个就存几个，回程一个都不能少。
 
 function extractCookies(response) {
   const pairs = [];
@@ -54,19 +62,6 @@ function extractCookies(response) {
 
 function cookieString(pairs) {
   return pairs.join("; ");
-}
-
-function mergeCookies(existing, newPairs) {
-  const map = new Map();
-  for (const pair of existing) {
-    const eq = pair.indexOf("=");
-    if (eq > 0) map.set(pair.substring(0, eq).trim(), pair);
-  }
-  for (const pair of newPairs) {
-    const eq = pair.indexOf("=");
-    if (eq > 0) map.set(pair.substring(0, eq).trim(), pair);
-  }
-  return Array.from(map.values());
 }
 
 // ── 基础请求 ──────────────────────────────────────────────────
@@ -99,7 +94,16 @@ async function call(ctx, { path, method = "GET", body, cookie, contentType, refe
 }
 
 // ── 登录 ──────────────────────────────────────────────────────
-// 完整流程：GET 登录页拿初始 Cookie → POST 登录 → 轮询验证 session。
+// 流程：POST 登录 → 轮询验证 session。**没有"先 GET 登录页"这一步**。
+//
+// 2026-10-04 实测删掉了它（原 Step 1 拿"初始 session cookie"）：三种情形下
+// `GET /auth/login` 的 `Set-Cookie` **全是 null** —— 全新访客、带伪造 PHPSESSID、
+// 带已登录 cookie（而且它也不 302）。页面 HTML 里只有 email/password/remember/code_2fa
+// 四个输入框，**无隐藏字段、无 CSRF token**。那一笔是纯空转，白烧一次子请求。
+//
+// 不能改成"GET 登录页之后直接 POST /user/checkin"：手里还是那个失效串，会被再 302 回登录页，
+// 永远出不来。`POST /auth/login` 不可省，因为它是**唯一能换出新 cookie 的地方**；
+// 省掉它，Cookie 一失效账号就只能进 login_required 等人工重录。
 //
 // 失败必须带 **kind**，三种失败的后果完全不同：
 //   auth      = 凭据本身不行（密码错、账号不存在、字段没填全）→ login_required，用户重录才有救
@@ -112,23 +116,20 @@ export async function login(ctx) {
   // 缺字段是数据问题（用户没填全），归 auth：提示他补全，而不是让他干等退避
   if (!email || !password) return { error: "账号缺少邮箱或密码", kind: "auth" };
 
-  // Step 1: GET 登录页，拿初始 session cookie
-  // redirect: "manual" 与下面的 POST、轮询、签到保持一致。这一步**不看状态码**
-  // （只要 Set-Cookie），所以 3xx 不会变成误报；不跟随还能少一跳 ——
-  // 每一跳都计入平台那 50 个子请求的硬顶，而自限已经等于硬顶、没有余量。
-  const init = await call(ctx, { path: LOGIN_PAGE, referer: BASE, redirect: "manual" });
-  let cookies = init.cookies;
-
-  // Step 2: POST 登录
-  // 同样 manual：上游若用 302 表示结果，跟随会把 /user 的 HTML 当登录响应
-  // （payload 解析成 null），报出一句与真实原因无关的「登录失败」；
-  // 不跟随至少能报出 `HTTP 302`，而且 302 上的 Set-Cookie 不会随跟随丢掉。
+  // Step 1: POST 登录
+  // redirect: "manual" 与下面的轮询、签到保持一致：上游若用 302 表示结果，跟随会把
+  // /user 的 HTML 当登录响应（payload 解析成 null），报出一句与真实原因无关的
+  // 「登录失败」；不跟随至少能报出 `HTTP 302`，而且 302 上的 Set-Cookie 不会随跟随丢掉。
+  // 不跟随还少一跳 —— 每一跳都计入平台那 50 个子请求的硬顶，而自限已经等于硬顶、没有余量。
+  //
+  // body 的字段名是**提交值**，不是 HTML 里的 name：页面上是 <input name="password">，
+  // 但站点自己的 JS 提交的是 passwd。跟错字段的表现是「邮箱不存在」—— 上游先查邮箱，
+  // 密码还没轮到被验。实测（2026-10-04，挂钩真实页面的 jQuery.ajax）确认下述 body 完全正确。
   const login = await call(ctx, {
     path: LOGIN_PAGE,
     method: "POST",
     body: JSON.stringify({ email, passwd: password, remember_me: "on", code: "" }),
     contentType: "application/json",
-    cookie: cookies,
     referer: BASE + LOGIN_PAGE,
     redirect: "manual",
   });
@@ -139,15 +140,16 @@ export async function login(ctx) {
       : `HTTP ${login.status} ${truncate(login.text, 80)}`;
     // 429 是唯一的"限频"信号；3xx 也算上游自己的问题（用重定向表示结果的那种版本
     // 不是"凭据不行"）；其它 4xx 与业务码才是"密码不对"。
-    // SSPanel 登录失败回 ret!=1 且 HTTP 200，所以 HTTP 状态是这里唯一能分开的信号。
+    // SSPanel 登录失败回 ret!=1 且 HTTP 200（实测"邮箱不存在"就是 200），
+    // 所以 HTTP 状态是这里唯一能分开的信号。
     const kind = login.status === 429 ? "rate"
       : login.status >= 500 || (login.status >= 300 && login.status < 400) ? "transient" : "auth";
     return { error: `登录失败：${msg}`, kind };
   }
-  cookies = mergeCookies(cookies, login.cookies);
+  const cookies = login.cookies;
   if (cookies.length === 0) return { error: "登录成功但未获取到 Cookie", kind: "transient" };
 
-  // Step 3: 轮询验证 session 就绪
+  // Step 2: 轮询验证 session 就绪
   for (let i = 0; i < SESSION_BACKOFF_MS.length; i++) {
     await new Promise((r) => setTimeout(r, SESSION_BACKOFF_MS[i]));
     const verify = await call(ctx, {
@@ -172,11 +174,24 @@ export async function login(ctx) {
 }
 
 // ── 签到 ──────────────────────────────────────────────────────
-// 必须 redirect:manual —— Cookie 失效时上游返回 302 到登录页，
+// 必须 redirect:manual —— Cookie 失效时上游返回 302 到登录页（2026-10-04 实测确认：
+// 无 Cookie 打本端点得到 `302 → /auth/login`，无 body、无 Set-Cookie），
 // 自动跟随会把 200（登录页 HTML）当成签到响应，解析 JSON 失败报一个莫名其妙的错。
+//
+// 端点存在性探测（无认证 + 302 目标判据：`/auth/login`=存在、`/404`=不存在）：
+// `GET /user/checkin` → 302→/405（**方法不允许**），`/user/checkin/status`、
+// `/user/get_checkin_status`、`/user/get_today_traffic` 等全部不存在。
+// ⇒ 这版 SSPanel **没有独立的签到状态查询接口**，`GET` 根本不认。
+//
+// 响应体的顶层字段只有 `ret` 与 `msg` 两个（实测 Object.keys，无 checked_in/traffic 之类
+// 结构化字段）—— 签到状态只能从 `ret` 语义读，别指望解析出别的东西。
+// 顺带：签到状态也**服务端渲染在 `/user` 页 HTML 里**（已签到时那个按钮是
+// `<a ... class="... disabled" disabled="disabled">已签到</a>`），但**不值得拿它做短路**：
+// 稳态下 `already` ∈ SETTLED，`isDue` 当天就不再排这个账号，一天本来就只打一次（见 index.js 注释）。
 
-// 上游 msg 的实际形状（真实响应，不是猜的）：
-//   「尊贵的王者Lv7，您获得了 0.771GB 流量.\n\n🎉【69云】中秋国庆季…\n📅【活动时间】…\n💥【折扣码】…」
+// 上游 msg 的实际形状（真实响应，不是猜的，2026-10-04 复核仍一致）：
+//   成功：「尊贵的王者Lv7，您获得了 0.771GB 流量.\n\n🎉【69云】中秋国庆季…」
+//   已签：「您似乎已经签到过了...\n\n📢 69云平台专属 APP 已上线…」
 // 结果在**第一行**，其后全是站点自己的营销广告 —— 每轮一字不变，且长度随站点改版变变。
 // 只取第一行有两个理由：广告会把关键数字挤出内核那 200 字的截断；广告里的折扣码每轮都一样，
 // 混在运行日志里只会让人以为那是什么新信息。解析不到流量时退回整行原文，不丢信息。

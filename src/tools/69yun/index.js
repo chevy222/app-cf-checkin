@@ -9,6 +9,11 @@ import * as api from "./api.js";
 // 「3xx 即失效」这个判据成立的前提是请求带 redirect: "manual" —— 自动跟随会把
 // 登录页的 200 当成签到响应，解析不出 JSON 就报一个和真实原因无关的错。
 // 下游每一次签到请求都必须带这个参数（api.js 里已写死，勿删）。
+// 该判据已实测确认：2026-10-04 无 Cookie 打 /user/checkin 得到 302 → /auth/login。
+//
+// 登录流程是 POST /auth/login 换新 Cookie，**没有"先 GET 登录页"那一步**（2026-10-04 删除，
+// 实测它不下发任何 Cookie）。POST 登录不可省：它是唯一能换出新 Cookie 的地方，
+// 省掉它 Cookie 一失效账号就只能进 login_required 等人工重录。
 //
 // 上游方言（都翻成内核的状态）：
 //   POST /user/checkin  ret=1 → 签到成功（claimed）
@@ -83,16 +88,23 @@ export default {
   hosts: api.yun69Hosts,
 
   // 最坏情况 cost = 7（逐笔数得出来）：
-  //   1（checkin 被 3xx）+ 1（GET 登录页）+ 1（POST 登录）+ 3（轮询 session）+ 1（再 checkin）
-  // 声明 8 = 7 + 1 笔**保守余量**，那 1 笔没有对应的具体代码路径 —— 轮询在最后一次仍是
+  //   1（checkin 被 3xx）+ 1（POST 登录）+ 3（轮询 session）+ 1（再 checkin）= 6
+  // 声明 7 = 6 + 1 笔**保守余量**，那 1 笔没有对应的具体代码路径 —— 轮询在最后一次仍是
   // 3xx 时直接落尾部的 return，不多发请求；Set-Cookie 分几次下发也都在同一个响应里。
   // 留着它是因为**往小了改才是危险方向**：低于真实上界会让 fits() 发出一张装不下的
   // 假票，而多预约一次只是让调度少排一个账号。正常情况（Cookie 有效）只花 1 次。
+  //
+  // 2026-10-04 从 8 降到 7：删掉了「GET /auth/login 拿初始 session cookie」那一步 ——
+  // 实测它三种情形下 Set-Cookie 全为 null（详见 api.js 的 login() 注释），是纯空转。
+  //
+  // 别把 maxDaily 也当成"一天打几次"来改：稳态下 already ∈ SETTLED，
+  // isDue 的第一道闸（scheduler.js）当天就不再排这个账号，一天实际只打 1 次签到。
+  // maxDaily 只在"当天一次都没走到 SETTLED"（连着 waiting/error）时才有意义。
   steps: [
     {
       id: "checkin",
       label: "签到领流量",
-      cost: 8,
+      cost: 7,
       async run(ctx) {
         const existingCookie = ctx.account.cred.cookie || "";
         let cookie = existingCookie;
@@ -133,7 +145,7 @@ export default {
         // rotated 只表示"新串拿到了"，落盘由内核做（runner.js 的凭据轮换段）。
         // 写回失败时内核会在日志 message 后追加「（新凭据写回失败…）」，
         // 但这一步的 status 仍是 claimed —— 用户看到的是"签到成功"，
-        // 而 Cookie 没存上，下一轮又要重新登录一遍（多花 5 笔请求）。
+        // 而 Cookie 没存上，下一轮又要重新登录一遍（多花 5 笔：登录 + 3 次轮询 + 再签到）。
         // 这是内核对三家的统一处理，不在本工具里另开分支：
         // 要判"写回有没有成"，得看运行日志详情里那句话，不看则无从察觉。
 

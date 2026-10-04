@@ -2623,7 +2623,6 @@ test("[69yun] Cookie 失效 → 重新登录 → 重试签到成功，新 Cookie
     "POST /user/checkin": (rec, n) => (n === 1
       ? { status: 302, headers: { Location: "/auth/login" }, body: "" }
       : { payload: { ret: 1, msg: "签到成功" } }),
-    "GET /auth/login": { status: 200, body: "<html>login</html>", headers: { "set-cookie": "PHPSESSID=init123" } },
     "POST /auth/login": () => {
       loginCount += 1;
       return { payload: { ret: 1, msg: "登录成功" }, headers: { "set-cookie": ["uid=1", "email=user@69yun.com", "key=newkey456", "expire=1760000000"] } };
@@ -2648,7 +2647,6 @@ test("[69yun] 登录失败 → login_required，不再发第二次签到", async
   seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
   const stub = stubUpstream({
     "POST /user/checkin": { status: 302, body: "" },
-    "GET /auth/login": { status: 200, body: "<html>login</html>" },
     "POST /auth/login": { payload: { ret: 0, msg: "邮箱或密码错误" } },
   });
   try {
@@ -2661,11 +2659,10 @@ test("[69yun] 登录失败 → login_required，不再发第二次签到", async
   } finally { stub.restore(); }
 });
 
-test("[69yun] 无 Cookie 时直接登录再签到，不先试一次", async () => {
+test("[69yun] 无 Cookie 时直接登录再签到，第一笔就是 POST 登录（2026-10-04 删掉 GET 登录页）", async () => {
   const kv = fakeKv();
   seed69yun(kv, "user@69yun.com", { cookie: "" });
   const stub = stubUpstream({
-    "GET /auth/login": { status: 200, body: "<html>login</html>", headers: { "set-cookie": "PHPSESSID=abc" } },
     "POST /auth/login": { payload: { ret: 1 }, headers: { "set-cookie": ["uid=1", "key=def456"] } },
     "GET /user": { status: 200, body: "<html>ok</html>" },
     "POST /user/checkin": { payload: { ret: 1, msg: "签到成功" } },
@@ -2673,9 +2670,13 @@ test("[69yun] 无 Cookie 时直接登录再签到，不先试一次", async () =
   try {
     const { summary } = await yun69Tick(kv);
     assert.equal(planOf(summary, "69yun").accounts[0].status, "claimed");
-    // 第一步就该是 GET 登录页，而不是先试签到
+    // 第一笔就是 POST 登录：早先这里先打 GET /auth/login 拿"初始 session cookie"，
+    // 但实测该端点三种情形下 Set-Cookie 全是 null（纯空转），已在 2026-10-04 删除。
+    // 这条断言的作用是防止有人把那次空转加回来 —— 它多花一次子请求且毫无收益。
     assert.equal(stub.seen[0].path, "/auth/login");
-    assert.equal(stub.seen[0].method, "GET");
+    assert.equal(stub.seen[0].method, "POST");
+    assert.equal(stub.seen.filter((r) => r.method === "GET" && r.path === "/auth/login").length, 0,
+      "又打了一次 GET 登录页 —— 那个端点不下发任何 Cookie，纯浪费一次子请求");
   } finally { stub.restore(); }
 });
 
@@ -2686,7 +2687,6 @@ test("[69yun] 点「测试」后新 Cookie 真的落进 KV，不只嘴上说已�
   const kv = fakeKv();
   const { uid } = seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
   const stub = stubUpstream({
-    "GET /auth/login": { status: 200, body: "<html>login</html>", headers: { "set-cookie": "PHPSESSID=init" } },
     "POST /auth/login": { payload: { ret: 1 }, headers: { "set-cookie": ["uid=9", "key=fresh999"] } },
     "GET /user": { status: 200, body: "<html>ok</html>" },
   });
@@ -2713,14 +2713,14 @@ test("[69yun] 登录 GET/POST 也必须 redirect:manual；被 3xx 时归上游�
   seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
   const stub = stubUpstream({
     "POST /user/checkin": { status: 302, body: "" },
-    "GET /auth/login": { status: 200, body: "<html>login</html>" },
     "POST /auth/login": { status: 200, payload: { ret: 1 }, headers: { "set-cookie": "uid=1; email=user@69yun.com; key=abc" } },
     "GET /user": { status: 200, body: "<html>user</html>" },
   });
   try {
     await yun69Tick(kv);
     const logins = stub.seen.filter((r) => r.path === "/auth/login");
-    assert.equal(logins.length, 2, "该有 GET 登录页与 POST 登录两次");
+    // 登录只有 POST 一次 —— GET 登录页已在 2026-10-04 删除（它不下发任何 Cookie）
+    assert.equal(logins.length, 1, "登录只该有 POST 一次；GET 登录页是空转，别加回来");
     for (const r of logins) assert.equal(r.redirect, "manual", `${r.method} /auth/login 没设 redirect:manual`);
     // 签到与轮询本来就设了，一并钉住，免得以后被顺手改掉
     for (const r of stub.seen.filter((x) => x.path === "/user/checkin" || x.path === "/user")) {
@@ -2733,7 +2733,6 @@ test("[69yun] 登录 GET/POST 也必须 redirect:manual；被 3xx 时归上游�
   seed69yun(kv2, "user@69yun.com", { cookie: "old=expired" });
   const stub2 = stubUpstream({
     "POST /user/checkin": { status: 302, body: "" },
-    "GET /auth/login": { status: 200, body: "<html>login</html>" },
     "POST /auth/login": { status: 302, body: "" },
   });
   try {
@@ -2755,7 +2754,6 @@ test("[69yun] 无 Cookie 的新账号点「测试」：首次换出的 Cookie �
   delete rec.cred.cookie;
   kv.store.set(`v1:acct:69yun:${uid}`, JSON.stringify(rec));
   const stub = stubUpstream({
-    "GET /auth/login": { status: 200, body: "<html>login</html>", headers: { "set-cookie": "PHPSESSID=init" } },
     "POST /auth/login": { payload: { ret: 1 }, headers: { "set-cookie": ["uid=9", "key=fresh111"] } },
     "GET /user": { status: 200, body: "<html>ok</html>" },
   });
@@ -2775,7 +2773,6 @@ test("[69yun] 上游 5xx 报 waiting，不是 login_required 也不是 rate_limi
   seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
   const stub = stubUpstream({
     "POST /user/checkin": { status: 302, body: "" },
-    "GET /auth/login": { status: 200, body: "<html>login</html>" },
     "POST /auth/login": { status: 503, body: "upstream down" },
   });
   try {
@@ -2794,7 +2791,6 @@ test("[69yun] 密码确实错了才报 login_required（auth 与 transient 要�
   seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
   const stub = stubUpstream({
     "POST /user/checkin": { status: 302, body: "" },
-    "GET /auth/login": { status: 200, body: "<html>login</html>" },
     "POST /auth/login": { status: 401, body: "" },
   });
   try {
@@ -2816,7 +2812,6 @@ test("[69yun] 退避阶梯是分钟量级，且真的会被 rate_limited 读到"
   seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
   const stub = stubUpstream({
     "POST /user/checkin": { status: 302, body: "" },
-    "GET /auth/login": { status: 200, body: "<html>login</html>" },
     "POST /auth/login": { status: 429, body: "too many requests" },
   });
   try {
@@ -2855,11 +2850,14 @@ test("[69yun] uid 从邮箱派生，trim 后取值", () => {
   assert.equal(tool.uidOf({ values: { email: "  user@69yun.com  " } }), "user@69yun.com");
 });
 
-test("[69yun] 白名单只有 69yun69.com，单步 cost=8 覆盖最坏情况", () => {
+test("[69yun] 单步 cost=7 覆盖最坏情况（2026-10-04 从 8 降：删掉空转的登录页 GET）", () => {
   const tool = findTool("69yun");
   assert.deepEqual(tool.hosts, ["69yun69.com"]);
   assert.equal(tool.steps.length, 1);
-  assert.equal(tool.steps[0].cost, 8, "最坏 7 笔 + 1 余量 = 8");
+  // 最坏 6 笔（1 签到 3xx + 1 登录 + 3 轮询 + 1 再签到）+ 1 余量 = 7
+  assert.equal(tool.steps[0].cost, 7);
+  // cost 是开跑前的静态准入判据（budget.fits），往小了改才危险：装不下会发一张假票
+  assert.ok(tool.steps[0].cost >= 6, "cost 低于真实上界 6，fits() 会放行装不下的步骤");
   assert.equal(tool.schedule.resetHour, 0);
   assert.equal(tool.schedule.notBeforeHour, 0);
 });
