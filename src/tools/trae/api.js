@@ -145,7 +145,7 @@ export async function claimOnce(ctx, token) {
   // HTTP 200 + 空 body 会被当成 code=0 = 签到成功，退避暂停也被顺手清掉。
   const code = body.code === undefined || body.code === null ? null : Number(body.code);
   const msg = String(body.message || "");
-  return { code, msg, status: result.status, body };
+  return { code, msg, status: result.status };
 }
 
 // 「剩余积分」只是观测，不是领取动作。

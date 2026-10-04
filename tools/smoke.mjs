@@ -3021,6 +3021,14 @@ test("[trae] 额度包优先用 usage_summary（pack 的 quota 不带 credits_li
     const { summary } = await traeTick(kv);
     const view = planOf(summary, "trae").accounts[0];
     assert.match(view.message, /剩余 5136\.85/, "usage_summary 优先：5200 - 63.15 = 5136.85");
+    // 三个签到/额度接口的请求体都必须带 req_source=1（按真实抓包），
+    // 少了或改错了上游可能返回空结构。
+    for (const path of ["/checkin_credits/status", "/checkin_credits/claim", "/ide_user_ent_usage"]) {
+      const req = stub.seen.find((r) => r.path.endsWith(path));
+      assert.ok(req, `没找到请求：${path}`);
+      const body = JSON.parse(req.body);
+      assert.equal(body.req_source, 1, `${path} 的 req_source 应为 1，实际 ${body.req_source}`);
+    }
   } finally { stub.restore(); }
 });
 
