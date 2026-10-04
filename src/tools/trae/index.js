@@ -2,11 +2,12 @@ import * as api from "./api.js";
 
 // Trae 签到工具。
 // 方言要点（都在 api.js 里逐条处理，这里只负责声明形状）：
-//   签到与额度在 api.trae.cn，换票与用户信息在 api.trae.com.cn，两边的鉴权头不一样
+//   所有接口都在 api.trae.cn，但换票/用户信息用 x-cloudide-token，签到/额度用 Cloud-IDE-JWT
 //   业务码 code===0 / message 含 success → 领到；/已(签到|领取|领过|签过)/ → 今天已领
 //   code 9074 或 429 或「频繁/太多」→ 被频控，走跨轮退避阶梯
 //   enable === false → 这个号没被灰到；checked_in → 今天已领
-//   x-device-id 必须是真实 16 位 Aha 号，随手填的会每天稳定 9074
+//   x-device-id 必须是真实 8–16 位 Aha 号，随手填的会每天稳定 9074
+//   ClientID 与版本号（1.107.1 / 3.3.104）已按真实抓包写死，不暴露给用户
 
 export default {
   id: "trae",
@@ -15,24 +16,6 @@ export default {
   summary: "每天签到领额度包积分",
 
   config: [
-    {
-      key: "clientId",
-      label: "ClientID",
-      type: "text",
-      required: true,
-      default: api.traeDefaults.clientId,
-      help: "Trae 官方客户端跟着版本发布的公开标识，**所有用户都是同一个**，不是你的凭据。"
-        + "已预填好，通常不用动；上游换客户端版本时这里要跟着改。",
-    },
-    {
-      key: "appVersion",
-      label: "客户端版本",
-      type: "text",
-      required: true,
-      default: api.traeDefaults.appVersion,
-      help: "决定 User-Agent 与 IDEVersion，上游按它做兼容判断。已预填好，通常不用动；"
-        + "Trae 出了新版（签到报「请求已过期」多半是这个原因）才需要改。",
-    },
     { key: "timeoutMs", label: "请求超时（毫秒）", type: "text", placeholder: "15000" },
     { key: "refreshAheadSec", label: "提前续期秒数", type: "text", placeholder: "259200（72 小时）" },
   ],
@@ -132,8 +115,9 @@ export default {
         }
 
         // 领取成功后调额度包接口算余额。文案跟 workbuddy 对齐：「签到 +N，额度包剩余 M」。
-        // 积分优先用 claim 返回的（本次获得），没有就用 status 返回的（上游在 claim 里不一定带回）。
-        const gained = outcome.credits || status.credits || 0;
+        // 积分直接用 status 接口返回的 credits（签到前查询时已拿到），不看 claim 的返回
+        // （claim 响应里的 credits 时有时无，不稳定；status 的 credits 是当前签到积分，稳定可用）
+        const gained = status.credits || 0;
         const usage = await api.readUsage(ctx, token);
         const tail = usage.error || usage.authFailed ? "（额度包读取失败）" : `，额度包剩余 ${usage.remaining}`;
         return {

@@ -1,12 +1,12 @@
 import { expiresAtOf, readJwtClaims } from "../../core/jwt.js";
 
-// Trae 请求层。两家域名各司其职，且**鉴权头完全不同**，这是这个文件存在的最大理由：
-//   api.trae.com.cn —— 换票与用户信息，头是 x-cloudide-token
-//   api.trae.cn     —— 签到与额度，头是 Authorization: Cloud-IDE-JWT + x-device-id + X-User-Region
-// 把 header 构造器抽给两家共用是这轮重写里最容易犯的错：拼错一个方案，
+// Trae 请求层。所有接口都在 api.trae.cn，但**鉴权头完全不同**，这是这个文件存在的最大理由：
+//   换票与用户信息 —— 头是 x-cloudide-token，UA 是 Electron（TraeCN/1.107.1）
+//   签到与额度     —— 头是 Authorization: Cloud-IDE-JWT + x-device-id，UA 是 VSCode（VSCode 1.107.1 (Trae CN)）
+// 把 header 构造器抽给两组共用是这轮重写里最容易犯的错：拼错一个方案，
 // 表现是"某些调用偶发 401"，最难查。所以这里两个 builder 各写一遍，不复用。
 // 与 Qoder 那边也不共用任何东西 —— 硬规则一。
-const OAUTH_HOST = "api.trae.com.cn";
+const OAUTH_HOST = "api.trae.cn";
 const CLAIM_HOST = "api.trae.cn";
 const EXCHANGE = "/cloudide/api/v3/trae/oauth/ExchangeToken";
 const USER_INFO = "/cloudide/api/v3/trae/GetUserInfo";
@@ -14,12 +14,23 @@ const STATUS = "/trae/api/v2/ug/checkin_credits/status";
 const CLAIM = "/trae/api/v2/ug/checkin_credits/claim";
 const USAGE = "/trae/api/v2/pay/ide_user_ent_usage";
 
-const DEFAULT_CLIENT_ID = "en1oxy7wnw8j9n";
-const DEFAULT_APP_VERSION = "1.107.1";
+const CLIENT_ID = "en1oxy7wnw8j9n";
+// 两个版本号各司其职，来自真实抓包，写死不让用户改：
+//   CLIENT_VERSION —— 客户端版本，出现在 User-Agent 里（TraeCN/1.107.1 / VSCode 1.107.1）
+//   IDE_VERSION    —— IDE 内核版本，出现在 IDEVersion / x-app-version / app-version 里
+const CLIENT_VERSION = "1.107.1";
+const IDE_VERSION = "3.3.104";
 // ClientSecret 的字面量就是单个 "-"：这个端点要求这个 key 必须存在，值本身是占位。
 // 不是漏填，别"修"它。
 const CLIENT_SECRET_PLACEHOLDER = "-";
 const TOKEN_LIFETIME_FALLBACK = 14 * 86400;
+
+// GetUserInfo / 换票用的 Electron UA（桌面端登录态）
+const electronUA =
+  `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) TraeCN/${CLIENT_VERSION} Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36`;
+
+// 签到/额度接口用的 VSCode UA（IDE 内发起的请求）
+const vscodeUA = `VSCode ${CLIENT_VERSION} (Trae CN)`;
 
 const timeoutMs = (config) => {
   const raw = Number(config.timeoutMs);
@@ -47,8 +58,8 @@ async function post(ctx, path, host, headers, body) {
 
 // 换票。注意它会换出**新的 refresh_token**，旧串用过一次即废
 async function exchangeToken(ctx, refreshToken) {
-  const result = await post(ctx, EXCHANGE, OAUTH_HOST, { "User-Agent": `Trae/${ctx.config.appVersion || DEFAULT_APP_VERSION}` }, {
-    ClientID: ctx.config.clientId || DEFAULT_CLIENT_ID,
+  const result = await post(ctx, EXCHANGE, OAUTH_HOST, { "User-Agent": electronUA }, {
+    ClientID: CLIENT_ID,
     RefreshToken: refreshToken,
     ClientSecret: CLIENT_SECRET_PLACEHOLDER,
     UserID: "",
@@ -77,15 +88,14 @@ async function exchangeToken(ctx, refreshToken) {
 // 随手填一个能过格式校验，之后每天稳定返回 9074「服务器繁忙」，看上去像限频，其实是设备号错了。
 // 设备头（x-device-type / x-os-version / x-app-version）与客户端同款，缺了会被拒成 9074。
 function claimHeaders(ctx, token) {
-  const appVersion = ctx.config.appVersion || DEFAULT_APP_VERSION;
   return {
     Authorization: `Cloud-IDE-JWT ${token}`,
     "x-device-id": String(ctx.account.cred.ahaDeviceId || ""),
-    "x-device-type": "Windows",
+    "x-device-type": "windows",
     "x-os-version": "10.0.19045",
-    "x-app-version": appVersion,
-    "X-User-Region": "CN",
-    "User-Agent": `Trae/${appVersion}`,
+    "x-app-version": IDE_VERSION,
+    "app-version": IDE_VERSION,
+    "User-Agent": vscodeUA,
   };
 }
 
@@ -136,14 +146,14 @@ export async function claimOnce(ctx, token) {
   // HTTP 200 + 空 body 会被当成 code=0 = 签到成功，退避暂停也被顺手清掉。
   const code = body.code === undefined || body.code === null ? null : Number(body.code);
   const msg = String(body.message || "");
-  return { code, msg, credits: body.credits, status: result.status, body };
+  return { code, msg, status: result.status, body };
 }
 
 // 「剩余积分」只是观测，不是领取动作。
 // 只用 usage_summary（总额 - 已用）：上游的 pack_list 里 quota 不一定带 credits_limit
 // （免费包的 quota 只有功能开关布尔值），遍历 pack 会算出 0。
 export async function readUsage(ctx, token) {
-  const result = await post(ctx, USAGE, CLAIM_HOST, claimHeaders(ctx, token), { require_usage: true, req_source: 2 });
+  const result = await post(ctx, USAGE, CLAIM_HOST, claimHeaders(ctx, token), { require_usage: true, req_source: 1 });
   if (httpAuthFail(result)) return { authFailed: true };
   if (result.status >= 400) return { error: `额度包查询失败：HTTP ${result.status}` };
   const summary = (result.payload || {}).usage_summary || {};
@@ -154,21 +164,22 @@ export async function readUsage(ctx, token) {
 }
 
 // 业务码方言 → 内核状态。这一小段是 Trae 全部"方言"的所在，顺序不能乱（见下）。
-export function translateClaim({ code, msg, credits }) {
+// credits 不再从这里取：签到成功文案直接用 status 接口的 credits，claim 的 credits 时有时无不稳定。
+export function translateClaim({ code, msg }) {
   const low = msg.toLowerCase();
   if (code === 9074 || code === 429 || msg.includes("频繁") || msg.includes("太多") || low.includes("too frequent")) {
-    return { status: "rate_limited", message: msg || `服务器繁忙（code ${code}）`, credits: 0 };
+    return { status: "rate_limited", message: msg || `服务器繁忙（code ${code}）` };
   }
   // 「已」字开头的中文消息里混着"请求已过期""账号已在其他设备登录"这类完全不同的故障，
   // 所以只能收窄到这几个说法。裸 msg.includes("已") 会把它们全报成"今天签过了"。
   if (low.includes("already") || /已(签到|领取|领过|签过)/.test(msg)) {
-    return { status: "already", message: msg || "今日已签到", credits: Number(credits) || 0 };
+    return { status: "already", message: msg || "今日已签到" };
   }
   if (code === 0 || low.includes("success")) {
-    return { status: "claimed", message: msg || "签到成功", credits: Number(credits) || 0 };
+    return { status: "claimed", message: msg || "签到成功" };
   }
-  if (code === null && !msg) return { status: "error", message: "签到响应结构异常（没返回 code/message），已按失败处理", credits: 0 };
-  return { status: "error", message: `${msg || `code ${code}`}`, credits: 0 };
+  if (code === null && !msg) return { status: "error", message: "签到响应结构异常（没返回 code/message），已按失败处理" };
+  return { status: "error", message: `${msg || `code ${code}`}` };
 }
 
 // Trae 的 UserID 不在 JWT 里，只能问 GetUserInfo —— 而它的鉴权头和签到侧**完全不同**
@@ -183,9 +194,9 @@ export async function uidFromToken(ctx) {
     headers: {
       "Content-Type": "application/json",
       "x-cloudide-token": token,
-      "User-Agent": `Trae/${ctx.config.appVersion || DEFAULT_APP_VERSION}`,
+      "User-Agent": electronUA,
     },
-    body: JSON.stringify({ ReqSource: "IDE", IDEVersion: ctx.config.appVersion || DEFAULT_APP_VERSION }),
+    body: JSON.stringify({ ReqSource: "IDE", IDEVersion: IDE_VERSION }),
     signal: AbortSignal.timeout(timeoutMs(ctx.config)),
   });
   const text = await result.text();
@@ -204,5 +215,4 @@ export async function uidFromToken(ctx) {
 // 所以这里读不到就留空 —— 让第一次运行去换一次票，而不是猜一个日期假装知道。
 const expiresFromToken = (token) => expiresAtOf(readJwtClaims(token));
 
-export const traeHosts = [OAUTH_HOST, CLAIM_HOST];
-export const traeDefaults = { clientId: DEFAULT_CLIENT_ID, appVersion: DEFAULT_APP_VERSION };
+export const traeHosts = [...new Set([OAUTH_HOST, CLAIM_HOST])];

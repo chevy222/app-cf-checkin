@@ -2857,11 +2857,11 @@ test("[69yun] 密码字段渲染成 password 控件，不以明文回显", async
 // 空 body 的 200 既可能是"已签到"也可能是"响应结构异常"。
 // 三条踩过的坑逐条钉成断言。
 
-const TRAE_OAUTH = "api.trae.com.cn";
+const TRAE_OAUTH = "api.trae.cn";
 const TRAE_CLAIM = "api.trae.cn";
 
 function seedTrae(kv, uid = "991001", { exp = cst(60), device = "1234567890123456", expiresAt } = {}) {
-  kv.store.set("v1:tool:trae", JSON.stringify({ clientId: "cid-test", appVersion: "0.1.43" }));
+  kv.store.set("v1:tool:trae", JSON.stringify({}));
   kv.store.set(`v1:acct:trae:${uid}`, JSON.stringify({
     label: `T 主号-${uid}`,
     cred: {
@@ -2894,7 +2894,6 @@ test("[trae] 两个域名的鉴权头不共用：换票/用户信息用 x-cloudi
     assert.equal(status.host, TRAE_CLAIM);
     assert.match(status.headers.Authorization, /^Cloud-IDE-JWT eyJ/);
     assert.equal(status.headers["x-device-id"], "1234567890123456");
-    assert.equal(status.headers["X-User-Region"], "CN");
     assert.equal(status.headers["x-cloudide-token"], undefined, "签到侧不该带用户信息的鉴权头");
     assert.equal(stub.seen.filter((r) => r.path.endsWith("/claim")).length, 1);
     assert.equal(uid, "991001");
@@ -3081,7 +3080,7 @@ test("[trae] 点「测试」把票续了也要写回，否则一点测试就烧�
 
 test("[trae] uid 来自 GetUserInfo；取不到就拒存并说清原因", async () => {
   const kv = fakeKv();
-  kv.store.set("v1:tool:trae", JSON.stringify({ clientId: "cid", appVersion: "0.1.43" }));
+  kv.store.set("v1:tool:trae", JSON.stringify({}));
   const token = mkJwt({ sub: "not-the-uid", exp: cst(60) });
   const stub = stubUpstream({ "POST /cloudide/api/v3/trae/GetUserInfo": { payload: { Result: { UserID: 778899001, ScreenName: "小明" } } } });
   try {
@@ -3111,7 +3110,7 @@ test("[trae] Aha 设备号在录入时就要求 8–16 位数字", async () => {
   // 但也不能反过来收紧到 16 位 —— 手上现成的 8–15 位账号会被挡在录入之外，
   // 症状只是表单红字，与上游毫无关系，容易被误判成"平台坏了"。
   const kv = fakeKv();
-  kv.store.set("v1:tool:trae", JSON.stringify({ clientId: "cid", appVersion: "0.1.43" }));
+  kv.store.set("v1:tool:trae", JSON.stringify({}));
   let seq = 55;
   const stub = stubUpstream({ "POST /cloudide/api/v3/trae/GetUserInfo": () => ({ payload: { Result: { UserID: (seq += 1) } } }) });
   try {
@@ -4836,7 +4835,7 @@ test("[有默认值的字段：界面预填且留空提交不报错]", async () 
       if (f.default !== undefined) withDefault.push({ tool, field: f });
     }
   }
-  assert.ok(withDefault.length >= 3, `期望至少三处声明了 default，实际 ${withDefault.length}`);
+  assert.ok(withDefault.length >= 1, `期望至少一处声明了 default，实际 ${withDefault.length}`);
 
   const env = envFor(fakeKv());
   for (const { tool, field } of withDefault) {
