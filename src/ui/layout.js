@@ -1,4 +1,5 @@
 import { escapeHtml } from "../core/text.js";
+import { CONTINUABLE, SETTLED } from "../core/status.js";
 import { VERSION } from "../version.js";
 
 const CSS = `
@@ -336,6 +337,26 @@ export const STATUS = {
 
 export function statusInfo(status) {
   return STATUS[status] || { label: status || "未知", glyph: "g-oct" };
+}
+
+// 进度条与步骤色块的语义分组。集合来自内核（core/status.js），界面不再自己写同义列表 ——
+// 这里曾经漂移过：首页把 pending / partial 画成红色，而它们只是"等着"或"下一轮接着做"。
+//
+// 两处 CSS 的类名不同（进度条是 done/wait/bad，步骤块是 ok/wait/skip/bad），
+// 所以是两个薄函数而不是一个 —— 不值得为了"看起来统一"去改 DOM 类名与全部 CSS 断言。
+// 共同的一条判据：只有 error / login_required / 认不出的状态是红的；
+// rate_limited / deferred / pending / waiting / partial 都会自己好，一律 amber。
+export function progressTone(status) {
+  if (SETTLED.has(status)) return "done";
+  if (CONTINUABLE.has(status) || status === "partial" || status === "rate_limited") return "wait";
+  return status ? "bad" : "";
+}
+
+export function stepTone(status) {
+  if (SETTLED.has(status)) return "ok";
+  if (status === "skipped") return "skip";
+  if (CONTINUABLE.has(status) || status === "partial" || status === "rate_limited") return "wait";
+  return "bad";
 }
 
 // 界面内部用的链接：自动带上访问口令，这样点链接不需要手敲 pwd。

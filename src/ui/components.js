@@ -15,7 +15,9 @@ const CLASS_BY_STATUS = {
   partial: "partial", skipped: "skipped", rate_limited: "rate", login_required: "login",
   deferred: "defer", waiting: "wait", error: "error",
 };
-function infoClass(status) {
+// 状态 → 徽章配色 class。导出是为了让说明页的词汇表复用同一份映射 ——
+// 那里曾自己写一段 if/else，把 waiting 配成了绿色（全站其它地方是蓝色）。
+export function infoClass(status) {
   return CLASS_BY_STATUS[status] || "error";
 }
 

@@ -1,11 +1,10 @@
 import { escapeHtml } from "../../core/text.js";
 import { fmtCST, fmtCSTSec } from "../../core/time.js";
-import { link, navHtml, pageShell } from "../layout.js";
+import { link, navHtml, pageShell, progressTone } from "../layout.js";
 import { alertBox, badge, button, chip, emptyState, sectionHead } from "../components.js";
 import { iconImg } from "../icons.js";
 import { isOff } from "../../core/flags.js";
-
-const SETTLED = new Set(["claimed", "already", "inactive", "ok"]);
+import { NEEDS_ACTION, SETTLED } from "../../core/status.js";
 
 // 开关是个 POST 表单而不是链接：全站状态变更都走 POST，页面里没有一行 JS。
 //
@@ -31,15 +30,12 @@ export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, f
     const entries = sched[tool.id] || {};
     const uids = Object.keys(entries);
     const done = uids.filter((uid) => SETTLED.has(entries[uid].lastStatus)).length;
-    const stuck = uids.filter((uid) => ["login_required", "error"].includes(entries[uid].lastStatus));
+    const stuck = uids.filter((uid) => NEEDS_ACTION.has(entries[uid].lastStatus));
     const last = runs.find((r) => r.kind === "run" && r.tool === tool.id);
-    const segments = uids.map((uid) => {
-      const s = entries[uid].lastStatus;
-      // waiting（等待中）与 rate_limited / deferred 同类：还没结，但会自己好，不该标红。
-      const cls = SETTLED.has(s) ? "done"
-        : ["rate_limited", "deferred", "waiting"].includes(s) ? "wait" : s ? "bad" : "";
-      return `<i class="${cls}"></i>`;
-    }).join("");
+    // 色块语义统一在 ui/layout.js 的 progressTone 里：只有失败才红，
+    // pending / partial / waiting / 限频 / 顺延都归"会自己好"的 amber。
+    // （这里曾自己写一份列表，把 pending 与 partial 画成了红色。）
+    const segments = uids.map((uid) => `<i class="${progressTone(entries[uid].lastStatus)}"></i>`).join("");
 
     const off = isOff(flags, tool.id);
     const offAt = (flags[tool.id] || {}).at;

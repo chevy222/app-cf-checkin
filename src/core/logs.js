@@ -121,9 +121,14 @@ function metaOf(entry) {
 
 // 摘要进 metadata ⇒ 列表页一次 list 就能渲染，不需要逐条 get 正文。
 // 正文（步骤明细、预算分解）只在详情页读一次。
-export async function writeRunLog(env, { now, tool, account, result, budget, trigger }) {
+//
+// secretValues 由内核传入（当前值 ∪ 被轮换掉的旧值，见 runner 的 secrets）。
+// 缺省时回落到"从 account 重算"—— 但那条路**只对没有轮换的轮次正确**：
+// account.cred 被 api.js 就地改写成新值之后，旧串已不在集合里，
+// 而上游最爱回显的恰恰是"你刚才带来的那把票"。所以运行链路必须传进来。
+export async function writeRunLog(env, { now, tool, account, result, budget, trigger, secretValues }) {
   const kv = requireKv(env);
-  const secrets = secretValuesOf(tool, account);
+  const secrets = secretValues && secretValues.length ? secretValues : secretValuesOf(tool, account);
   const at = now * 1000;
   const meta = metaOf({
     kind: "run", at, tool: tool.id, uid: result.uid, label: result.label,
@@ -206,9 +211,9 @@ export async function readRunLog(env, key) {
 //
 // 即使一次请求都没有也写：这样页面上能区分"这次运行真的没打上游"与"记录不存在"，
 // 两者是完全不同的结论。
-export async function writeTrace(env, { at, tool, account, uid, trigger, steps, trace }) {
+export async function writeTrace(env, { at, tool, account, uid, trigger, steps, trace, secretValues }) {
   if (!trace || !Array.isArray(steps)) return null;
-  const secrets = secretValuesOf(tool, account);
+  const secrets = secretValues && secretValues.length ? secretValues : secretValuesOf(tool, account);
   const payload = {
     kind: "trace",
     at,

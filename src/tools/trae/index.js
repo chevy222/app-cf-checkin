@@ -107,11 +107,16 @@ export default {
         const claimed = await api.claimOnce(ctx, token);
         if (claimed.authFailed) return { status: "login_required", message: `领取时被拒（HTTP ${claimed.status}），登录态已失效`, credits: 0, cred };
         const outcome = api.translateClaim(claimed);
-        if (outcome.status === "error" && claimed.code === null && !claimed.msg) {
-          return { status: "error", message: outcome.message, credits: 0, cred };
-        }
         if (outcome.status === "rate_limited") {
           return { status: "rate_limited", message: `${outcome.message}（按退避阶梯稍后再试）`, credits: 0, cred };
+        }
+        // error 与 already 都必须在这里收住，不能继续往下走：下面那段会读额度包、
+        // 并按 status.credits 报一句「签到 +N」。但这两个状态下这次一分都没领到 ——
+        // 早退条件曾经只覆盖"code 与 msg 都缺失"，于是上游的业务错误
+        // （40012「请求已过期」等）会被写成一条看起来签成了的日志，积分列还记上
+        // status.credits，那是一笔从未发生的账。积分只属于 claimed（见下一段）。
+        if (outcome.status !== "claimed") {
+          return { status: outcome.status, message: outcome.message, credits: 0, cred };
         }
 
         // 领取成功后调额度包接口算余额。文案跟 workbuddy 对齐：「签到 +N，额度包剩余 M」。

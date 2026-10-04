@@ -2,8 +2,9 @@ import { escapeHtml } from "../../core/text.js";
 import { fmtCST } from "../../core/time.js";
 import { isOff } from "../../core/flags.js";
 import { missingConfigFields } from "../../core/scheduler.js";
+import { NEEDS_ACTION, SETTLED } from "../../core/status.js";
 import { TOOLS } from "../../tools/index.js";
-import { link, navHtml, pageShell } from "../layout.js";
+import { link, navHtml, pageShell, stepTone } from "../layout.js";
 import { alertBox, badge, button, emptyState, sectionHead } from "../components.js";
 import { iconImg } from "../icons.js";
 import { renderTutorial } from "../tutorials.js";
@@ -41,19 +42,17 @@ function actionForm(pwd, action, label, style) {
   </form>`;
 }
 
-// 步骤色块：状态取自调度索引里的 lastSteps，渲染色块不需要再读日志
+// 步骤色块：状态取自调度索引里的 lastSteps，渲染色块不需要再读日志。
+// 配色语义（哪几种算"结了"、哪几种算"会自己好"）统一在 ui/layout.js 的 stepTone。
 function stepChips(tool, entry) {
   const codes = (entry && entry.lastSteps) || [];
   if (codes.length === 0) return '<span class="dim">—</span>';
   const chips = codes.map((code) => {
     const [id, status, flag] = String(code).split(":");
-    const cls = ["claimed", "already", "ok", "inactive"].includes(status) ? "ok"
-      : status === "deferred" ? "wait"
-        : status === "skipped" ? "skip" : "bad";
     const label = (tool.steps.find((s) => s.id === id) || {}).label || id;
-    return `<i class="${cls}" title="${escapeHtml(`${label}：${status}${flag === "r" ? "（本轮复用，未再打上游）" : ""}`)}"></i>`;
+    return `<i class="${stepTone(status)}" title="${escapeHtml(`${label}：${status}${flag === "r" ? "（本轮复用，未再打上游）" : ""}`)}"></i>`;
   });
-  const done = codes.filter((c) => ["claimed", "already", "ok", "inactive"].includes(String(c).split(":")[1])).length;
+  const done = codes.filter((c) => SETTLED.has(String(c).split(":")[1])).length;
   return `<span class="steps">${chips.join("")}</span><div class="note"><b>${done}/${codes.length}</b> 步已完成</div>`;
 }
 
@@ -64,7 +63,7 @@ export function renderTool({ pwd, tool, accounts, total, sched = {}, flash, flag
   // 红条只统计"自动重试治不好"的那几类：损坏的记录要删掉重建，凭据过期的要重新录入。
   // rate_limited / deferred / partial 会自己按退避阶梯恢复，把它们算进来红条就天天亮且无事可做。
   // 停用时红条不亮 —— 下线中的工具报错不是用户的待办；但底部的说明里仍然如实写明有几个。
-  const stuckAll = accounts.filter((a) => a.broken || ["login_required", "error"].includes((sched[a.uid] || {}).lastStatus));
+  const stuckAll = accounts.filter((a) => a.broken || NEEDS_ACTION.has((sched[a.uid] || {}).lastStatus));
   const needsAttention = off ? [] : stuckAll;
 
   const rows = accounts.map((account) => {

@@ -1,9 +1,7 @@
 import { getJson, putJson, requireKv, stepKey } from "./store.js";
 import { schedOf } from "./accounts.js";
+import { SETTLED } from "./status.js";
 import { CST_OFFSET, logicalDay } from "./time.js";
-
-// 跑完就算数的状态：今天不再重复排队
-const SETTLED = new Set(["claimed", "already", "inactive", "ok"]);
 
 // 缺哪些必填的工具级配置。判"能不能跑"和"为什么不能跑"共用这一处，
 // 免得文案自己拼一遍字段、和真正的门槛判断走岔。

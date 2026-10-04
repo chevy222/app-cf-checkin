@@ -1823,6 +1823,28 @@ test("拨动开关是提交按钮：运行中亮绿滑块靠右、滑块居中�
   assert.match(css, /\.kv\.kv-row\{[^}]*flex-direction:row/, "卡片的 kv 行在窄屏被竖排了");
 });
 
+fixtureTest("[首页进度条] 会自己好的状态不标红：pending/partial/waiting/限频/顺延 → wait", async () => {
+  // 首页色块曾自己写一份列表，把 pending 与 partial 画成红色 —— 与 STATUS 与内核注释
+  // 直接矛盾（那两个词的意思是"等着"与"下一轮接着做"）。这条钉的是**渲染出来的类名**，
+  // 不是 CSS 规则本身，所以配色逻辑再漂移一次它就会红。
+  const kv = fakeKv();
+  const order = [
+    ["A", "pending"], ["B", "partial"], ["C", "waiting"], ["D", "rate_limited"],
+    ["E", "deferred"], ["F", "error"], ["G", "claimed"], ["H", "inactive"],
+  ];
+  const entries = {};
+  for (const [uid, lastStatus] of order) entries[uid] = { ...schedOf(), lastStatus };
+  kv.store.set("v1:schedidx:fix", JSON.stringify({ day: null, entries }));
+  kv.store.set("v1:tool:fix", JSON.stringify({ portal: "cn", timeoutSec: "15" }));
+  const page = await authed("/", envFor(kv));
+  // 取整页的进度色块：除夹具外其它工具的调度索引是空的，不会贡献 <i>；
+  // 而夹具的卡片排在最后，按"第一张卡片"取会抓到空列表。
+  const classes = [...page.text.matchAll(/<div class="prog">[\s\S]*?<\/div>/g)]
+    .flatMap((block) => [...block[0].matchAll(/<i class="([^"]*)"><\/i>/g)].map((m) => m[1]));
+  assert.deepEqual(classes, ["wait", "wait", "wait", "wait", "wait", "bad", "done", "done"],
+    `进度条把会自愈的状态标红了：${classes.join(",")}`);
+});
+
 test("首页样式七处打磨：行线、去内联、截断、窄屏运行流、hover、空账号引导", async () => {
   const page = await authed("/", envFor(fakeKv()));
   const css = page.text.match(/<style>([\s\S]*?)<\/style>/)[1];
@@ -2721,6 +2743,33 @@ test("[69yun] 登录 GET/POST 也必须 redirect:manual；被 3xx 时归上游�
   } finally { stub2.restore(); }
 });
 
+test("[69yun] 无 Cookie 的新账号点「测试」：首次换出的 Cookie 也要写回", async () => {
+  // seed69yun 默认带 cookie 字段，恰好绕过了"调用前不存在这个键"的分支。
+  // validateAccount 的旧判据要求 snapshot[key] !== undefined，于是新账号
+  // 第一次「测试」换出的 cookie 被静默丢弃（而界面还会谎称一切正常），
+  // 下一轮又得重新登录一遍 —— 多花 5 笔请求。
+  const kv = fakeKv();
+  const { uid } = seed69yun(kv, "new@69yun.com");
+  // 手工删掉 cookie 键，复现"第一次测试前还没有 cookie"的真实形态
+  const rec = JSON.parse(kv.store.get(`v1:acct:69yun:${uid}`));
+  delete rec.cred.cookie;
+  kv.store.set(`v1:acct:69yun:${uid}`, JSON.stringify(rec));
+  const stub = stubUpstream({
+    "GET /auth/login": { status: 200, body: "<html>login</html>", headers: { "set-cookie": "PHPSESSID=init" } },
+    "POST /auth/login": { payload: { ret: 1 }, headers: { "set-cookie": ["uid=9", "key=fresh111"] } },
+    "GET /user": { status: 200, body: "<html>ok</html>" },
+  });
+  try {
+    const view = await validateAccount({
+      env: envFor(kv), budget: makeBudget(45), tool: findTool("69yun"), uid, now: cst(10),
+    });
+    assert.equal(view.status, "ok", `测试应成功：${view.message}`);
+    const saved = JSON.parse(kv.store.get(`v1:acct:69yun:${uid}`)).cred.cookie;
+    assert.match(saved, /fresh111/, "新增字段（调用前不存在）被丢了 —— 下一轮又要重新登录");
+    assert.match(view.message, /新凭据已写回/, `内核该报出写回：${view.message}`);
+  } finally { stub.restore(); }
+});
+
 test("[69yun] 上游 5xx 报 waiting，不是 login_required 也不是 rate_limited", async () => {
   const kv = fakeKv();
   seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
@@ -2925,7 +2974,7 @@ test("[trae] 「请求已过期」「账号已在其他设备登录」不许被�
     const kv = fakeKv();
     seedTrae(kv);
     const stub = stubUpstream({
-      "POST /trae/api/v2/ug/checkin_credits/status": statusOf(false, 0),
+      "POST /trae/api/v2/ug/checkin_credits/status": statusOf(false, 77),
       "POST /trae/api/v2/ug/checkin_credits/claim": { payload: { code: 40012, message: msg } },
       "POST /trae/api/v2/pay/ide_user_ent_usage": { payload: { user_entitlement_pack_list: [] } },
     });
@@ -2935,6 +2984,13 @@ test("[trae] 「请求已过期」「账号已在其他设备登录」不许被�
       assert.notEqual(view.status, "already", `「${msg}」被收窄前的正则误判成已签到`);
       assert.notEqual(view.status, "claimed");
       assert.equal(view.status, "error");
+      // 失败必须借自己的话报失败（审核 B1 的回归锁）：旧实现会继续读额度包，
+      // 把 status.credits（77）当成"本次领到"写进文案与积分列 —— 一笔从未发生的账。
+      assert.match(view.message, new RegExp(msg), `失败原因被吞掉了：${view.message}`);
+      assert.ok(!/签到 \+/.test(view.message), `失败的领取不许报「签到 +N」：${view.message}`);
+      assert.equal(view.credits, 0, `失败的领取不许计积分：${view.credits}`);
+      assert.equal(stub.seen.filter((r) => r.path.endsWith("/ide_user_ent_usage")).length, 0,
+        "领取失败后不该再白读一次额度包");
     } finally { stub.restore(); }
   }
 });
@@ -2943,7 +2999,8 @@ test("[trae] 「今天已签到」这类说法要判成 already", async () => {
   const kv = fakeKv();
   seedTrae(kv);
   const stub = stubUpstream({
-    "POST /trae/api/v2/ug/checkin_credits/status": statusOf(false, 0),
+    // status 说"没签"、claim 说"已签"（上游自相矛盾）：此时 status.credits 也不许记账
+    "POST /trae/api/v2/ug/checkin_credits/status": statusOf(false, 77),
     "POST /trae/api/v2/ug/checkin_credits/claim": { payload: { code: 40001, message: "今天已签到，请明天再来" } },
     "POST /trae/api/v2/pay/ide_user_ent_usage": { payload: { user_entitlement_pack_list: [] } },
   });
@@ -2951,8 +3008,11 @@ test("[trae] 「今天已签到」这类说法要判成 already", async () => {
     const { summary } = await traeTick(kv);
     const view = planOf(summary, "trae").accounts[0];
     assert.equal(view.status, "already");
-    // already 不是"本次领到 0"，不许挂一句 `本次 +0`
-    assert.ok(!/本次 \+0/.test(view.message), `already 挂了假的 +0：${view.message}`);
+    // 「上游说已领」同样不是"本次领到"：不许报「签到 +N」，更不许把 status.credits 记成积分。
+    // （旧断言只查了并不存在的 `本次 +0` 文案 —— 拦不住真出现的那句「签到 +77」。）
+    assert.match(view.message, /今天已签到/, `该用上游给的说法：${view.message}`);
+    assert.ok(!/签到 \+/.test(view.message), `already 不该报「签到 +N」：${view.message}`);
+    assert.equal(view.credits, 0, `already 不该计积分：${view.credits}`);
   } finally { stub.restore(); }
 });
 
@@ -5196,6 +5256,49 @@ test("[trace] 每一步的原始请求与响应都进独立键，凭据掩掉，
     // run key 与 trace key 必须同构：traceKeyOf(runKey) 要能对上实际写入的 trace 键，
     // 否则详情页「看请求」点开为空（writeRunLog 取整到秒、writeTrace 用精确毫秒就会错位）。
     assert.equal(traceKeys[0], traceKeyOf(runKey), `run 键与 trace 键不同构：${traceKeys[0]} vs ${traceKeyOf(runKey)}`);
+  } finally { stub.restore(); }
+});
+
+test("[审核P1-3b] 被轮换掉的旧串也不许进请求记录（trace 键）", async () => {
+  // P1-3 只查了运行日志正文 / metadata / /api/tick 三个出口。请求记录是第四个：
+  // writeTrace 曾在落盘时用 secretValuesOf(tool, account) **重算**脱敏集合，
+  // 而那时 account.cred 已被 api.js 就地改写成新值 —— 旧串从集合里消失，
+  // 于是它明文落进 v1:trace:（KV 存 30 天，详情页「看请求」点开就看得到）。
+  // 内核在 runOneAccount 里辛苦维护的「旧值差集」必须随结果交到落盘那一步。
+  const kv = fakeKv();
+  const OLD = "OLD-TOKEN-abcdef123456";
+  const NEW = "NEW-TOKEN-abcdef654321";
+  const tool = TRACE_TOOL([{
+    id: "claim", label: "领取", cost: 2,
+    async run(ctx) {
+      // 上游把"你刚才带来的那把票"原样回显（4xx 响应体的常见形态）
+      const res = await ctx.fetch("https://stub.test/api/claim", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${OLD}` },
+        body: JSON.stringify({ token: OLD }),
+      });
+      const payload = await res.json();
+      return { status: "claimed", message: `领到 ${payload.credit}`, credits: payload.credit || 0, cred: { apiKey: NEW } };
+    },
+  }]);
+  kv.store.set("v1:tool:traceable", JSON.stringify({}));
+  kv.store.set("v1:acct:traceable:S1", JSON.stringify({
+    label: "t", cred: { seatId: "S1", apiKey: OLD }, updatedAt: 1,
+  }));
+  kv.store.set("v1:schedidx:traceable", JSON.stringify({ day: null, entries: {} }));
+  const stub = stubUpstream({ "POST /api/claim": { payload: { ok: true, credit: 12, echo: OLD } } });
+  try {
+    await tickWith(kv, [tool]);
+    // 前提：这次真的换了凭据（否则测的是"旧串仍在集合里"，不是这条路径）
+    assert.equal(JSON.parse(kv.store.get("v1:acct:traceable:S1")).cred.apiKey, NEW, "前提：本轮发生了凭据轮换");
+    const traceKey = [...kv.store.keys()].find((k) => k.startsWith("v1:trace:"));
+    assert.ok(traceKey, "前提：该写一条请求记录");
+    const call = JSON.parse(kv.store.get(traceKey)).steps[0].calls[0];
+    assert.ok(!(call.reqBody || "").includes(OLD), `旧串进了请求记录的请求体：${call.reqBody}`);
+    assert.ok(!(call.resBody || "").includes(OLD), `旧串进了请求记录的响应体：${call.resBody}`);
+    assert.ok(!kv.store.get(traceKey).includes(OLD), "旧串进了请求记录键");
+    const runKey = [...kv.store.keys()].find((k) => k.startsWith("v1:run:traceable:"));
+    assert.ok(!kv.store.get(runKey).includes(OLD), "旧串进了运行日志");
   } finally { stub.restore(); }
 });
 

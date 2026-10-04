@@ -6,22 +6,18 @@ import { trackedFetch } from "./budget.js";
 import { makeTrace } from "./trace.js";
 import { clearProgress, configComplete, dayOf, isDue, loadProgress, missingConfigFields, saveProgress } from "./scheduler.js";
 import { secretValuesOf, scrubSecrets, writeRunLog, writeTrace } from "./logs.js";
+import { CONTINUABLE, SETTLED, SUCCESS } from "./status.js";
 import { nowSec } from "./time.js";
 
 const LOCK_TTL = 90;
-const SETTLED = new Set(["claimed", "already", "inactive", "ok"]);
-const SUCCESS = new Set(["claimed"]);
 // 上游"还没把奖励下发出来"的重试间隔。不走 minIntervalSec，也不许被 resumable 豁免：
 // pending 没有任何"活干到一半"的含义，把它归进可接续是对的（否则当天再也不重试），
 // 但可接续的豁免是给"接着做完"用的，于是 pending 顺带免掉了全部节流，
 // 从活动下发窗口一路每 30 分钟打一次上游 —— 一个账号一天 28 次纯查询。
 // 在风控视角下"无害的重复查询"和"刷接口"是同一件事，所以给它一个单独且更宽的闸。
 const PENDING_RETRY_SEC = 3600;
-// 没领到东西、下一轮该接着做的状态。
-// pending 也在这一列：它是"上游还没把活动下发出来"（Qoder 每天 10 点前后就是这状态），
-// 属于正常等待，不是故障。把它当 error 会让红条在健康的日子里亮起来，
-// 而把它当 already 会让当天再也不重试 —— 两个方向都不对，只有"可接续"是对的。
-const CONTINUABLE = new Set(["deferred", "skipped", "pending", "waiting"]);
+// SETTLED / SUCCESS / CONTINUABLE 统一放在 core/status.js（全站唯一一份）——
+// pending 属于"正常等待，不是故障"这一点，界面色块与红条判定都依赖同一个集合。
 // waiting 与 pending 必须分开，不能合并成一个词：
 //   pending —— **上游还没开始**（活动窗口没到）。它按账号被 PENDING_RETRY_SEC 拽慢一小时，
 //              那是给"纯查询"设的风控护栏（见上一段注释）。
@@ -252,6 +248,12 @@ async function runOneAccount({ env, budget, tool, uid, config, day, now, trigger
     // 请求记录本体。publicResult 只挑固定字段，所以它不会进 /api/tick 的返回值，
     // 只在 logOutcome 里被取走写进独立的 KV 键。
     trace,
+    // 本轮脱敏要用的**全部**凭据值：当前值 ∪ 被轮换掉的旧值。
+    // 必须随结果一起交出去，不能留给 writeRunLog / writeTrace 事后重算 ——
+    // 那时 account.cred 已被 api.js 就地改写成新值，旧串从集合里消失，
+    // 于是上游回显在响应体里的"你刚才带来的那把票"会明文进日志与请求记录。
+    // （请求记录的 reqBody/resBody 就是靠它才洗得干净的，见 logs.js 的两个出口。）
+    secrets,
   };
 }
 
@@ -311,12 +313,15 @@ async function logOutcome(env, { now, tool, result, view, budget, trigger }) {
       account: result.account || { cred: {} },
       result: { ...view, label: view.label || view.uid },
       budget, trigger,
+      // 内核算好的脱敏集合（含被轮换掉的旧串），见 runOneAccount 的返回值
+      secretValues: result.secrets,
     }));
     // 请求记录写进**独立的键**（列表页不读它，所以列表成本一分不涨）。
     await safe(() => writeTrace(env, {
       at: atSecMs, tool,
       account: result.account || { cred: {} },
       uid: result.uid, trigger, steps: view.steps, trace: result.trace,
+      secretValues: result.secrets,
     }));
   }
 }
@@ -467,14 +472,30 @@ export async function validateAccount({ env, budget, tool, uid, now = nowSec() }
     outcome = { status: "error", message: String((error && error.message) || error) };
   }
 
-  // 把测试期间换出来的新凭据落盘（只合并声明过的字段，理由见 accounts.js）
+  // 把测试期间换出来的新凭据落盘（只合并声明过的字段，理由见 accounts.js）。
+  //
+  // 判据不能要求"调用前就有这个键"：69 云新账号的 cookie 字段在第一次「测试」
+  // 之前根本不存在（readonly 字段从不进表单），而它恰恰是那次登录唯一要写回的东西 ——
+  // 旧判据把新增字段整条丢掉，上面那句"忘了也会被自动兜住"的承诺正是在这种形态下失效。
+  // 只收非空字符串：与 applyCredPatch 的白名单 + 非空过滤同口径，
+  // 免得"把某字段清空"这种写不回去的变化被报成"没能写回"。
   const changed = Object.fromEntries(
-    Object.entries(account.cred).filter(([key, value]) => snapshot[key] !== undefined && snapshot[key] !== value),
+    Object.entries(account.cred).filter(([key, value]) =>
+      typeof value === "string" && value !== "" && snapshot[key] !== value),
   );
   let persisted = false;
   if (Object.keys(changed).length) persisted = !!(await applyCredPatch(env, tool, uid, changed).catch(() => null));
 
-  const secrets = secretValuesOf(tool, account).concat(Object.values(changed));
+  // 脱敏集合要含被这次测试轮换掉的旧值：validate 里的续期（Trae 的 ensureToken 就会）
+  // 会把旧串从 cred 里换掉，而上游的报错原文可能正好回显它 —— 与 runOneAccount 同一道理由。
+  const rotatedAway = (tool.creds || [])
+    .filter((field) => field.secret)
+    .map((field) => [field.key, snapshot[field.key]])
+    .filter(([key, value]) => typeof value === "string" && value !== "" && value !== account.cred[key])
+    .map(([, value]) => value);
+  const secrets = [...new Set([
+    ...secretValuesOf(tool, account), ...rotatedAway, ...Object.values(changed),
+  ])];
   return {
     status: outcome && outcome.status ? outcome.status : "error",
     // 测试结果直接显示在页面上，而 validate 拿得到账号凭据本身 —— 同一道清洗，同一个理由

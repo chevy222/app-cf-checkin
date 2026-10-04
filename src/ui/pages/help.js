@@ -1,12 +1,14 @@
 import { escapeHtml } from "../../core/text.js";
 import { link, navHtml, pageShell, STATUS } from "../layout.js";
-import { glyph, sectionHead } from "../components.js";
+import { glyph, infoClass, sectionHead } from "../components.js";
 import { iconImg } from "../icons.js";
 
 // 这页只写"怎么用"，不写开发进度 —— 进度信息会过期，而使用者要的是操作信息。
 export function renderHelp({ pwd, tools }) {
+  // 词汇表的配色与全站徽章同一份映射（components.js 的 infoClass）：
+  // 这里曾自己写一段 if/else，把 waiting 配成了绿色（别处是蓝色）。
   const statuses = Object.entries(STATUS).map(([key, info]) => `<div class="kv">
-      <span class="k"><span class="badge b-${key === "rate_limited" ? "rate" : key === "login_required" ? "login" : key === "deferred" ? "defer" : key === "already" ? "already" : key === "inactive" || key === "skipped" ? "skipped" : key === "partial" || key === "pending" ? "partial" : key === "error" ? "error" : "ok"}">${glyph(info.glyph)}${escapeHtml(info.label)}</span></span>
+      <span class="k"><span class="badge b-${infoClass(key)}">${glyph(info.glyph)}${escapeHtml(info.label)}</span></span>
       <span class="v dim">${escapeHtml(key)}</span>
     </div>`).join("");
 
