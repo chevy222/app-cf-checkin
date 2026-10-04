@@ -2853,12 +2853,13 @@ test("[69yun] 密码字段渲染成 password 控件，不以明文回显", async
 
 // ═══════════ Trae ═══════════
 //
-// Trae 的方言比 Qoder 更刁：两家域名、两套鉴权头、业务码藏在中文 message 里、
+// Trae 的方言比 Qoder 更刁：一套域名、两组鉴权头、业务码藏在中文 message 里、
 // 空 body 的 200 既可能是"已签到"也可能是"响应结构异常"。
 // 三条踩过的坑逐条钉成断言。
 
-const TRAE_OAUTH = "api.trae.cn";
-const TRAE_CLAIM = "api.trae.cn";
+// 所有端点同一个域名。分组的是鉴权头，不是域名 —— 两个同值常量会让
+// "白名单只放行了某一组"这种错觉顺着代码蔓延，断言也会退化成恒真。
+const TRAE_HOST = "api.trae.cn";
 
 function seedTrae(kv, uid = "991001", { exp = cst(60), device = "1234567890123456", expiresAt } = {}) {
   kv.store.set("v1:tool:trae", JSON.stringify({}));
@@ -2891,7 +2892,7 @@ test("[trae] 两个域名的鉴权头不共用：换票/用户信息用 x-cloudi
     await traeTick(kv);
     const status = stub.seen.find((r) => r.path.endsWith("/status"));
     const info = stub.seen.find((r) => r.path.endsWith("GetUserInfo"));
-    assert.equal(status.host, TRAE_CLAIM);
+    assert.equal(status.host, TRAE_HOST);
     assert.match(status.headers.Authorization, /^Cloud-IDE-JWT eyJ/);
     assert.equal(status.headers["x-device-id"], "1234567890123456");
     assert.equal(status.headers["x-cloudide-token"], undefined, "签到侧不该带用户信息的鉴权头");
@@ -3023,6 +3024,51 @@ test("[trae] 额度包优先用 usage_summary（pack 的 quota 不带 credits_li
   } finally { stub.restore(); }
 });
 
+test("[trae] 签到积分取 status 的 credits，账号级积分随之记上", async () => {
+  // status 的 credits 是**本次签到奖励的积分**（不是累计余额）：claim 接口不返回它，
+  // 所以签到前读一次 status 是唯一的来源。这条断言盯住两个出口 ——
+  // 文案里的「签到 +N」与回传给内核的 credits —— 两者都靠它，缺一个都会静默显示 0。
+  const kv = fakeKv();
+  seedTrae(kv);
+  const stub = stubUpstream({
+    "POST /trae/api/v2/ug/checkin_credits/status": statusOf(false, 50),
+    "POST /trae/api/v2/ug/checkin_credits/claim": { payload: { code: 0, message: "success" } },
+    "POST /trae/api/v2/pay/ide_user_ent_usage": { payload: { usage_summary: { total_amount: 500, consumed_amount: 20 } } },
+  });
+  try {
+    const { summary } = await traeTick(kv);
+    const view = planOf(summary, "trae").accounts[0];
+    assert.equal(view.status, "claimed");
+    assert.match(view.message, /签到 \+50/, `文案要报出本次签到积分：${view.message}`);
+    assert.match(view.message, /额度包剩余 480/, "余额也要报");
+    // 账号级积分是列表页与成就统计的数据源；读错字段会让这里恒为 0
+    const log = JSON.parse(kv.store.get([...kv.store.keys()].find((k) => k.startsWith("v1:run:trae:"))));
+    assert.equal(log.credits, 50, `运行日志里的积分该是 50，实际 ${log.credits}`);
+  } finally { stub.restore(); }
+});
+
+test("[trae] status 没给 credits 时报 0，不拿余额冒充本次奖励", async () => {
+  // 上游没给就是没给 —— 报 0 是诚实的「没有数值」，而拿 usage 的余额来填
+  // 会让「本次签到得多少」变成一个跟签到无关的数。
+  const kv = fakeKv();
+  seedTrae(kv);
+  const stub = stubUpstream({
+    "POST /trae/api/v2/ug/checkin_credits/status": { payload: { checked_in: false, enable: true } },
+    "POST /trae/api/v2/ug/checkin_credits/claim": { payload: { code: 0, message: "success" } },
+    "POST /trae/api/v2/pay/ide_user_ent_usage": { payload: { usage_summary: { total_amount: 500, consumed_amount: 20 } } },
+  });
+  try {
+    const { summary } = await traeTick(kv);
+    const view = planOf(summary, "trae").accounts[0];
+    assert.equal(view.status, "claimed", "积分读不到不影响签到本身成功");
+    assert.match(view.message, /签到 \+0/, `没给就该报 0：${view.message}`);
+    // 余额照报（那是另一个真实数字），但绝不能被填进"本次签到得多少"那个位置
+    assert.match(view.message, /额度包剩余 480/, "余额是独立信息，不该因为取不到本次积分而消失");
+    const log = JSON.parse(kv.store.get([...kv.store.keys()].find((k) => k.startsWith("v1:run:trae:"))));
+    assert.equal(log.credits, 0, "账号级积分不能拿额度包余额充数");
+  } finally { stub.restore(); }
+});
+
 test("[trae] 临近到期才换票；换出的新串当场写回，旧串不进日志", async () => {
   const kv = fakeKv();
   seedTrae(kv, "991002", { expiresAt: cst(10) + 3600 });   // 只剩 1 小时，落在 72 小时提前量里
@@ -3149,7 +3195,7 @@ test("[trae] 域名白名单：两家自家放行，别的一律拒", async () =
     const { summary } = await tickWith(kv, [tool], 45, cst(10));
     assert.equal(planOf(summary, "trae").accounts[0].status, "error");
     assert.match(planOf(summary, "trae").accounts[0].message, /禁止的请求域名/);
-    assert.ok(stub.seen.every((r) => r.host === TRAE_OAUTH || r.host === TRAE_CLAIM));
+    assert.ok(stub.seen.every((r) => r.host === TRAE_HOST), "白名单只该放行自家域名");
   } finally { stub.restore(); }
 });
 
@@ -4055,6 +4101,26 @@ test("[workbuddy] 续期只写一次盘：6 个步骤共用同一个新串不能
   } finally { stub.restore(); }
 });
 
+test("[workbuddy] 续期响应里的 access_token 不是字符串时不能当票用", async () => {
+  // 上游给的是字符串。万一哪天它把 access_token 换成对象，String(token) 会得到
+  // 字面量 "[object Object]" —— 而它会被写进 cred 并当 Bearer 发出去，
+  // 变成一次注定 401 的续期，还白烧掉那张一次性 refresh_token。
+  const kv = fakeKv();
+  seedWorkbuddy(kv, "wb-obj", { expiresAt: cst(10) + 600 });
+  const stub = stubUpstream(wbIdleRoutes({
+    "POST /v2/plugin/auth/token/refresh": () => ({ payload: { access_token: { nested: "obj" }, expires_in: 86400 } }),
+  }));
+  try {
+    const { summary } = await wbTick(kv);
+    const cred = JSON.parse(kv.store.get("v1:acct:workbuddy:wb-obj")).cred;
+    assert.notEqual(cred.accessToken, "[object Object]", "不能把对象字面量当票存下来");
+    assert.match(cred.accessToken, /^eyJ/, `该保留原票而不是换掉它，实际：${cred.accessToken.slice(0, 20)}`);
+    // 旧票还没过期，所以本轮照常跑完（只是不换票）—— 这是对的：
+    // 续期失败不该把一个本来能用的账号判成 login_required。
+    assert.equal(wbStep(summary, 'checkin').status, "already", "续期失败不该影响还没过期的旧票");
+  } finally { stub.restore(); }
+});
+
 function everyWbLog(kv) {
   return logKeys(kv).map((k) => `${k}${kv.store.get(k)}${JSON.stringify(kv.metas.get(k) || {})}`).join("\n");
 }
@@ -4086,6 +4152,43 @@ test("[workbuddy] 新版桌面端加密票据（$wbEncrypted）不能解包，�
   assert.equal(resp.status, 400, "加密票据建号应该返回 400 带错误，而不是 303 跳转");
   assert.match(resp.text, /取账号标识失败/, "错误应挂在凭据字段上");
   assert.match(resp.text, /加密票据|旧版客户端/, "错误提示应说明加密票据不能用");
+});
+
+test("[workbuddy] 加密票据在运行期也要说清是加密，不是一般「没有可用Token」", async () => {
+  // 建号那道门只挡 accessToken；refreshToken 的格式没人校验。所以历史上可能存着
+  // 一对加密票 —— 那种账号每轮第一步就触发续期，两次解包都拿不出东西。
+  // 症状必须指向"加密"（病因），而不是"没有 Refresh Token"（让人去查错的那一栏）。
+  const kv = fakeKv();
+  kv.store.set("v1:tool:workbuddy", "{}");
+  const wrapped = JSON.stringify({ $wbEncrypted: 1, envelope: "encrypted-content-not-a-jwt" });
+  kv.store.set("v1:acct:workbuddy:wb-enc", JSON.stringify({
+    label: "加密票存量号",
+    cred: { accessToken: wrapped, refreshToken: wrapped, expiresAt: "0" },
+    createdAt: 1, updatedAt: 1,
+  }));
+  kv.store.set("v1:schedidx:workbuddy", JSON.stringify({ day: null, entries: {} }));
+  const stub = stubUpstream(wbIdleRoutes());
+  try {
+    const { summary } = await wbTick(kv);
+    const msg = wbStep(summary, 'checkin').message;
+    assert.match(msg, /加密/, `续期失败要说明是加密格式，实际：${msg}`);
+    assert.match(msg, /旧版客户端/, "要给出可执行的下一步");
+    assert.ok(!/没有可用的 Refresh Token/.test(msg),
+      `别把加密票据说成"没有 Refresh Token"——那是错的方向：${msg}`);
+    assert.equal(stub.seen.length, 0, "续期都没成功，不该往上游打请求");
+  } finally { stub.restore(); }
+});
+
+test("[workbuddy] 粘贴变体（冒号后有空格 / 多行）也要认得出是加密格式", async () => {
+  // 判据匹配的是带引号的键名，所以空格与换行都不该影响结果。
+  for (const raw of [
+    JSON.stringify({ $wbEncrypted: 1, envelope: "x" }),
+    '{ "$wbEncrypted": 1, "envelope": "x" }',
+    '{\n  "$wbEncrypted": 1,\n  "envelope": "x"\n}',
+  ]) {
+    assert.ok(wbApi.isEncrypted(raw), `认不出加密格式：${raw}`);
+    assert.equal(wbApi.isEncrypted(mkJwt({ sub: "x", exp: cst(60) })), false, "明文 JWT 不该被判成加密");
+  }
 });
 
 test("[workbuddy] 建号走真实入口：明文票据解出 uid 和到期时间", async () => {

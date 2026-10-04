@@ -1,13 +1,12 @@
 import { expiresAtOf, readJwtClaims } from "../../core/jwt.js";
 
-// Trae 请求层。所有接口都在 api.trae.cn，但**鉴权头完全不同**，这是这个文件存在的最大理由：
+// Trae 请求层。所有接口都在同一个域名，但**鉴权头分两组**，这是这个文件存在的最大理由：
 //   换票与用户信息 —— 头是 x-cloudide-token，UA 是 Electron（TraeCN/1.107.1）
 //   签到与额度     —— 头是 Authorization: Cloud-IDE-JWT + x-device-id，UA 是 VSCode（VSCode 1.107.1 (Trae CN)）
-// 把 header 构造器抽给两组共用是这轮重写里最容易犯的错：拼错一个方案，
-// 表现是"某些调用偶发 401"，最难查。所以这里两个 builder 各写一遍，不复用。
-// 与 Qoder 那边也不共用任何东西 —— 硬规则一。
-const OAUTH_HOST = "api.trae.cn";
-const CLAIM_HOST = "api.trae.cn";
+// 分组的是**头**，不是域名，所以下面只有一个 HOST：把两组写成两个常量会让"域名不同"这个
+// 错觉顺着代码蔓延下去。头构造器同样分两套，不复用 —— 拼错一个方案的表现是
+// "某些调用偶发 401"，最难查。与 Qoder 那边不共用任何东西（硬规则一）。
+const HOST = "api.trae.cn";
 const EXCHANGE = "/cloudide/api/v3/trae/oauth/ExchangeToken";
 const USER_INFO = "/cloudide/api/v3/trae/GetUserInfo";
 const STATUS = "/trae/api/v2/ug/checkin_credits/status";
@@ -58,7 +57,7 @@ async function post(ctx, path, host, headers, body) {
 
 // 换票。注意它会换出**新的 refresh_token**，旧串用过一次即废
 async function exchangeToken(ctx, refreshToken) {
-  const result = await post(ctx, EXCHANGE, OAUTH_HOST, { "User-Agent": electronUA }, {
+  const result = await post(ctx, EXCHANGE, HOST, { "User-Agent": electronUA }, {
     ClientID: CLIENT_ID,
     RefreshToken: refreshToken,
     ClientSecret: CLIENT_SECRET_PLACEHOLDER,
@@ -130,7 +129,7 @@ export async function ensureToken(ctx, { force = false } = {}) {
 const httpAuthFail = (result) => result.status === 401 || result.status === 403;
 
 export async function readStatus(ctx, token) {
-  const result = await post(ctx, STATUS, CLAIM_HOST, claimHeaders(ctx, token), { req_source: 1 });
+  const result = await post(ctx, STATUS, HOST, claimHeaders(ctx, token), { req_source: 1 });
   if (httpAuthFail(result)) return { authFailed: true, status: result.status };
   if (result.status >= 400) return { error: `签到状态查询失败：HTTP ${result.status}` };
   const body = result.payload || {};
@@ -138,7 +137,7 @@ export async function readStatus(ctx, token) {
 }
 
 export async function claimOnce(ctx, token) {
-  const result = await post(ctx, CLAIM, CLAIM_HOST, claimHeaders(ctx, token), { req_source: 1 });
+  const result = await post(ctx, CLAIM, HOST, claimHeaders(ctx, token), { req_source: 1 });
   if (httpAuthFail(result)) return { authFailed: true, status: result.status };
   // 4xx 的 body 里带着业务码与中文 message，直接当失败丢掉就把"已签到"读成了故障
   const body = result.payload || {};
@@ -152,8 +151,12 @@ export async function claimOnce(ctx, token) {
 // 「剩余积分」只是观测，不是领取动作。
 // 只用 usage_summary（总额 - 已用）：上游的 pack_list 里 quota 不一定带 credits_limit
 // （免费包的 quota 只有功能开关布尔值），遍历 pack 会算出 0。
+//
+// req_source 按真实抓包取 1，与 status / claim 三个端点一致；带 require_usage 才会
+// 在响应里带回 usage_summary（不带的话这个对象整个缺失）。这个字段没有任何本地推导 ——
+// 改它之前先重新抓一次包，不要靠猜。
 export async function readUsage(ctx, token) {
-  const result = await post(ctx, USAGE, CLAIM_HOST, claimHeaders(ctx, token), { require_usage: true, req_source: 1 });
+  const result = await post(ctx, USAGE, HOST, claimHeaders(ctx, token), { require_usage: true, req_source: 1 });
   if (httpAuthFail(result)) return { authFailed: true };
   if (result.status >= 400) return { error: `额度包查询失败：HTTP ${result.status}` };
   const summary = (result.payload || {}).usage_summary || {};
@@ -189,7 +192,7 @@ export function translateClaim({ code, msg }) {
 export async function uidFromToken(ctx) {
   const token = ctx.values.accessToken;
   if (!token) throw new Error("先把 Access Token 粘进来，账号标识要从它身上取");
-  const result = await ctx.fetch(`https://${OAUTH_HOST}${USER_INFO}`, {
+  const result = await ctx.fetch(`https://${HOST}${USER_INFO}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -215,4 +218,4 @@ export async function uidFromToken(ctx) {
 // 所以这里读不到就留空 —— 让第一次运行去换一次票，而不是猜一个日期假装知道。
 const expiresFromToken = (token) => expiresAtOf(readJwtClaims(token));
 
-export const traeHosts = [...new Set([OAUTH_HOST, CLAIM_HOST])];
+export const traeHosts = [HOST];

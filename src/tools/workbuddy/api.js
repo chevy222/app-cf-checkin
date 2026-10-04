@@ -59,6 +59,14 @@ function unwrapToken(raw) {
   return "";
 }
 
+// 凭据是不是新版桌面端的加密格式。判据只认**键名本身**（带引号），
+// 所以 `{ "$wbEncrypted": 1 }`、`{\n  "$wbEncrypted": 1, …}` 这些粘贴变体都能命中，
+// 冒号后的空格与换行都不影响。
+export function isEncrypted(raw) {
+  if (raw && typeof raw === "object") return raw["$wbEncrypted"] === 1;
+  return typeof raw === "string" && raw.includes('"$wbEncrypted"');
+}
+
 const timeoutMs = (config) => {
   const raw = Number(config.timeoutMs);
   return Number.isFinite(raw) && raw > 0 ? raw : 30000;
@@ -153,7 +161,11 @@ async function call(ctx, path, { method = "POST", body, auth = true, extraHeader
   const headers = { Accept: "application/json", "Content-Type": "application/json", "User-Agent": "WorkBuddy" };
   if (auth) {
     const token = unwrapToken(cred.accessToken);
-    if (!token) throw new Error("Access Token 解不出可用内容（新版桌面端的 token 是加密的，需要用旧版客户端获取明文 JWT），重新取值粘贴");
+    if (!token) {
+      throw new Error(isEncrypted(cred.accessToken)
+        ? "Access Token 是新版桌面端的加密格式（$wbEncrypted），本平台解不开；请用旧版客户端重新取值粘贴"
+        : "Access Token 解不出可用内容（既不是明文 JWT，也不是可识别的包装格式），重新取值粘贴");
+    }
     headers.Authorization = `Bearer ${token}`;
     headers["X-User-Id"] = String(ctx.account.uid);
   }
@@ -182,8 +194,17 @@ export const isAuthFail = (result) => result.status === 401 || result.status ===
 
 // 续期。它**消耗一次性的 refresh_token 并换回新的一对**，所以拿到就当场交回内核落盘。
 async function refresh(ctx) {
-  const raw = unwrapToken(ctx.account.cred.refreshToken);
-  if (!raw) return { error: "没有可用的 Refresh Token" };
+  const stored = ctx.account.cred.refreshToken;
+  const raw = unwrapToken(stored);
+  if (!raw) {
+    // 空的原因要分清：加密格式与"根本没填"要给出不同的指引 ——
+    // 两者都归到"没有可用的 Refresh Token"的话，存着加密票的账号会被引去检查
+    // refresh token 那一栏，而真正的原因是整个凭据都是新版加密格式。
+    if (isEncrypted(stored)) {
+      return { error: "Refresh Token 是新版桌面端的加密格式（$wbEncrypted），本平台解不开；请用旧版客户端重新取值粘贴" };
+    }
+    return { error: "没有可用的 Refresh Token" };
+  }
   const result = await call(ctx, REFRESH, {
     auth: false,
     extraHeaders: { "X-Refresh-Token": raw, "X-Auth-Refresh-Source": "plugin" },
@@ -193,13 +214,22 @@ async function refresh(ctx) {
   if (result.status >= 400 || !token) {
     return { error: `续期失败（HTTP ${result.status}）`, authFailed: isAuthFail(result) };
   }
+  // 上游给的是字符串；万一给了对象，String(token) 会得到字面量 "[object Object]"，
+  // 而它会被当票发出去 —— 那是一次注定 401 的续期，还白烧一张一次性 refresh_token。
+  // 所以这里只认真字符串，取不到就当续期失败（与 !token 同一处置）。
+  const accessToken = typeof token === "string" ? token.trim() : "";
+  const refreshToken = dig(result.payload, "refresh_token") ?? dig(result.payload, "refreshToken");
+  if (!accessToken) {
+    return { error: `续期失败（HTTP ${result.status}）：响应里的 access_token 不是字符串` };
+  }
   const rotated = {
-    accessToken: String(token),
-    refreshToken: String(dig(result.payload, "refresh_token") ?? dig(result.payload, "refreshToken") ?? raw),
+    accessToken,
+    // refresh_token 缺失或类型不对时沿用旧串：它是这次请求的入参，下游还要用它换下一轮
+    refreshToken: typeof refreshToken === "string" && refreshToken.trim() ? refreshToken.trim() : raw,
     expiresAt: String(num(dig(result.payload, "expires_in"))
       ? ctx.now + num(dig(result.payload, "expires_in"))
       // 上游没给 expires_in 时从新票的 exp 读，再兜一个 7 天
-      : (expiresAtOf(String(token)) || ctx.now + 7 * 86400)),
+      : (expiresAtOf(accessToken) || ctx.now + 7 * 86400)),
   };
   Object.assign(ctx.account.cred, rotated);
   return { rotated };
@@ -408,7 +438,7 @@ export function uidFromToken(values) {
   const raw = values.accessToken;
   const text = unwrapToken(raw);
   if (!text) {
-    if (typeof raw === "string" && raw.includes('"$wbEncrypted"')) {
+    if (isEncrypted(raw)) {
       throw new Error("这是新版桌面端的加密票据（$wbEncrypted），本平台只认旧版客户端的明文 JWT，请用旧版客户端重新取值粘贴");
     }
     throw new Error("先把 Access Token 粘进来");

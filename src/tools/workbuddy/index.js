@@ -46,7 +46,7 @@ export default {
       required: true,
       secret: true,
       offline: "验证码换票走线下 PowerShell，界面不发验证码",
-      help: "新版桌面端可能给的是 {\"$wbEncrypted\":1,\"envelope\":\"…\"} 包装，内核会自动展开",
+      help: "填**旧版桌面端**的明文 JWT（eyJ 开头）。新版桌面端存的是加密格式，本平台解不开，需按说明页走短信登录",
     },
     {
       key: "refreshToken",
