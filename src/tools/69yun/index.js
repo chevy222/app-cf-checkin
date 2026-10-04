@@ -30,8 +30,8 @@ export default {
       key: "timeoutMs",
       label: "请求超时（毫秒）",
       type: "text",
-      placeholder: "15000",
-      help: "留空即用 15000。机场响应可能比 IDE 接口慢，不建议低于 10000",
+      placeholder: "30000",
+      help: "留空即用 30000（30 秒）。机场响应可能比 IDE 接口慢，不建议低于 10000",
     },
   ],
 
