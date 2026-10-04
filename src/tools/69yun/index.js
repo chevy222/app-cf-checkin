@@ -11,9 +11,10 @@ import * as api from "./api.js";
 // 下游每一次签到请求都必须带这个参数（api.js 里已写死，勿删）。
 // 该判据已实测确认：2026-10-04 无 Cookie 打 /user/checkin 得到 302 → /auth/login。
 //
-// 登录流程是 POST /auth/login 换新 Cookie，**没有"先 GET 登录页"那一步**（2026-10-04 删除，
-// 实测它不下发任何 Cookie）。POST 登录不可省：它是唯一能换出新 Cookie 的地方，
-// 省掉它 Cookie 一失效账号就只能进 login_required 等人工重录。
+// 登录流程只有 POST /auth/login 一笔，**没有"先 GET 登录页"、也没有"再轮询 /user"**
+// （两者均于 2026-10-04 经实测删除，理由见 api.js 的 login() 注释）。
+// POST 登录不可省：它是唯一能换出新 Cookie 的地方，省掉它 Cookie 一失效
+// 账号就只能进 login_required 等人工重录。
 //
 // 上游方言（都翻成内核的状态）：
 //   POST /user/checkin  ret=1 → 签到成功（claimed）
@@ -87,15 +88,14 @@ export default {
 
   hosts: api.yun69Hosts,
 
-  // 最坏情况 cost = 7（逐笔数得出来）：
-  //   1（checkin 被 3xx）+ 1（POST 登录）+ 3（轮询 session）+ 1（再 checkin）= 6
-  // 声明 7 = 6 + 1 笔**保守余量**，那 1 笔没有对应的具体代码路径 —— 轮询在最后一次仍是
-  // 3xx 时直接落尾部的 return，不多发请求；Set-Cookie 分几次下发也都在同一个响应里。
-  // 留着它是因为**往小了改才是危险方向**：低于真实上界会让 fits() 发出一张装不下的
-  // 假票，而多预约一次只是让调度少排一个账号。正常情况（Cookie 有效）只花 1 次。
+  // 最坏情况 cost = 4（逐笔数得出来）：
+  //   1（checkin 被 3xx）+ 1（POST 登录）+ 1（再 checkin）= 3
+  // 声明 4 = 3 + 1 笔**保守余量**。留着它是因为**往小了改才是危险方向**：
+  // cost 是开跑前的静态准入判据（budget.fits），低于真实上界会发出一张装不下的
+  // 假票；而多预约一次只是让调度少排一个账号。正常情况（Cookie 有效）只花 1 次。
   //
-  // 2026-10-04 从 8 降到 7：删掉了「GET /auth/login 拿初始 session cookie」那一步 ——
-  // 实测它三种情形下 Set-Cookie 全为 null（详见 api.js 的 login() 注释），是纯空转。
+  // 2026-10-04：8 → 7 删掉「GET /auth/login 拿初始 session cookie」（实测 Set-Cookie 恒 null）；
+  // 7 → 4 删掉「轮询 GET /user 验 session 就绪」（实测首击 200、无传播延迟，详见 api.js）。
   //
   // 别把 maxDaily 也当成"一天打几次"来改：稳态下 already ∈ SETTLED，
   // isDue 的第一道闸（scheduler.js）当天就不再排这个账号，一天实际只打 1 次签到。
@@ -104,7 +104,7 @@ export default {
     {
       id: "checkin",
       label: "签到领流量",
-      cost: 7,
+      cost: 4,
       async run(ctx) {
         const existingCookie = ctx.account.cred.cookie || "";
         let cookie = existingCookie;
@@ -145,14 +145,19 @@ export default {
         // rotated 只表示"新串拿到了"，落盘由内核做（runner.js 的凭据轮换段）。
         // 写回失败时内核会在日志 message 后追加「（新凭据写回失败…）」，
         // 但这一步的 status 仍是 claimed —— 用户看到的是"签到成功"，
-        // 而 Cookie 没存上，下一轮又要重新登录一遍（多花 5 笔：登录 + 3 次轮询 + 再签到）。
+        // 而 Cookie 没存上，下一轮又要重新登录一遍（多花 3 笔：登录 + 再签到 + 试签到）。
         // 这是内核对三家的统一处理，不在本工具里另开分支：
         // 要判"写回有没有成"，得看运行日志详情里那句话，不看则无从察觉。
 
-        // 登录成功后再签到一次
+        // 登录成功后再签到一次。**中间不需要任何"验 session 就绪"的步骤** ——
+        // 2026-10-04 实测：登录响应一解析完立刻打签到，首击就是 HTTP 200（194ms，
+        // ret=0），没有所谓的传播延迟。原来那 3 次 GET /user 轮询是在解一个不存在的问题，
+        // 而且它问的是"登录态还在吗"，用的却是和签到无关的页面 ——
+        // 签到端点自己就是更好的探针：200 = cookie 有效，3xx = 失效。
         const result = await api.checkin(ctx, cookie);
         if (result.authFailed) {
-          // 刚登录完还被重定向，说明 session 真的有问题
+          // 首击就 3xx：既然实测没有传播延迟，这就是真的异常（不是"等等就好"）。
+          // 如实报 error，不粉饰成"等待中"——用户能看出这轮不对劲，而 waiting 会静静混过去。
           return {
             status: "error",
             message: "重新登录后签到仍被重定向，session 可能异常",

@@ -2627,7 +2627,6 @@ test("[69yun] Cookie 失效 → 重新登录 → 重试签到成功，新 Cookie
       loginCount += 1;
       return { payload: { ret: 1, msg: "登录成功" }, headers: { "set-cookie": ["uid=1", "email=user@69yun.com", "key=newkey456", "expire=1760000000"] } };
     },
-    "GET /user": { status: 200, body: "<html>user center</html>" },
   });
   try {
     const { summary } = await yun69Tick(kv);
@@ -2639,6 +2638,32 @@ test("[69yun] Cookie 失效 → 重新登录 → 重试签到成功，新 Cookie
     // 密码是 secret 字段，不该进日志
     const logKey = [...kv.store.keys()].find((k) => k.startsWith("v1:run:69yun:"));
     if (logKey) assert.ok(!kv.store.get(logKey).includes("pass123"), "密码不该进运行日志");
+  } finally { stub.restore(); }
+});
+
+// 2026-10-04 实测（首击：登录响应一解析完就发，零延迟）：POST /user/checkin → 200 / 194ms / ret=0。
+// **登录后 cookie 立即可用，不存在 session 传播延迟。** 所以整条路径只有两笔：
+// POST 登录 → POST 签到。原来中间那 3 次 GET /user 轮询是在解一个不存在的问题。
+test("[69yun] 重新登录后的整条路径只有两笔：登录 + 签到，不该有 /user 探针", async () => {
+  const kv = fakeKv();
+  seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
+  const stub = stubUpstream({
+    "POST /user/checkin": (rec, n) => (n === 1
+      ? { status: 302, body: "" }   // 旧 cookie 失效
+      : { payload: { ret: 1, msg: "签到成功" } }),  // 重新登录后首击即成功
+    "POST /auth/login": { payload: { ret: 1 }, headers: { "set-cookie": ["uid=1", "key=k2"] } },
+  });
+  try {
+    const { summary } = await yun69Tick(kv);
+    assert.equal(planOf(summary, "69yun").accounts[0].status, "claimed");
+    assert.deepEqual(
+      stub.seen.map((r) => `${r.method} ${r.path}`),
+      ["POST /user/checkin", "POST /auth/login", "POST /user/checkin"],
+      "整条路径就这三笔（首试 3xx + 登录 + 重试签到）。多出来的都是在解不存在的问题",
+    );
+    // 别把轮询加回来
+    assert.equal(stub.seen.filter((r) => r.path === "/user").length, 0,
+      "又打了 /user 探针 —— 实测证明没有传播延迟，这笔纯属白花");
   } finally { stub.restore(); }
 });
 
@@ -2655,7 +2680,7 @@ test("[69yun] 登录失败 → login_required，不再发第二次签到", async
     assert.equal(stub.seen.filter((r) => r.path === "/user/checkin").length, 1,
       "登录已失败还去打第二次签到是白烧配额");
     assert.equal(stub.seen.filter((r) => r.path === "/user").length, 0,
-      "登录失败不该再轮询 session");
+      "登录失败后不该再打 /user —— 那个探针连同轮询一起在 2026-10-04 删掉了");
   } finally { stub.restore(); }
 });
 
@@ -2664,7 +2689,6 @@ test("[69yun] 无 Cookie 时直接登录再签到，第一笔就是 POST 登录�
   seed69yun(kv, "user@69yun.com", { cookie: "" });
   const stub = stubUpstream({
     "POST /auth/login": { payload: { ret: 1 }, headers: { "set-cookie": ["uid=1", "key=def456"] } },
-    "GET /user": { status: 200, body: "<html>ok</html>" },
     "POST /user/checkin": { payload: { ret: 1, msg: "签到成功" } },
   });
   try {
@@ -2688,7 +2712,6 @@ test("[69yun] 点「测试」后新 Cookie 真的落进 KV，不只嘴上说已�
   const { uid } = seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
   const stub = stubUpstream({
     "POST /auth/login": { payload: { ret: 1 }, headers: { "set-cookie": ["uid=9", "key=fresh999"] } },
-    "GET /user": { status: 200, body: "<html>ok</html>" },
   });
   try {
     const view = await validateAccount({
@@ -2714,7 +2737,6 @@ test("[69yun] 登录 GET/POST 也必须 redirect:manual；被 3xx 时归上游�
   const stub = stubUpstream({
     "POST /user/checkin": { status: 302, body: "" },
     "POST /auth/login": { status: 200, payload: { ret: 1 }, headers: { "set-cookie": "uid=1; email=user@69yun.com; key=abc" } },
-    "GET /user": { status: 200, body: "<html>user</html>" },
   });
   try {
     await yun69Tick(kv);
@@ -2722,10 +2744,14 @@ test("[69yun] 登录 GET/POST 也必须 redirect:manual；被 3xx 时归上游�
     // 登录只有 POST 一次 —— GET 登录页已在 2026-10-04 删除（它不下发任何 Cookie）
     assert.equal(logins.length, 1, "登录只该有 POST 一次；GET 登录页是空转，别加回来");
     for (const r of logins) assert.equal(r.redirect, "manual", `${r.method} /auth/login 没设 redirect:manual`);
-    // 签到与轮询本来就设了，一并钉住，免得以后被顺手改掉
-    for (const r of stub.seen.filter((x) => x.path === "/user/checkin" || x.path === "/user")) {
+    // 签到本来也设了，钉住免得被顺手改掉
+    for (const r of stub.seen.filter((x) => x.path === "/user/checkin")) {
       assert.equal(r.redirect, "manual", `${r.method} ${r.path} 没设 redirect:manual`);
     }
+    // 2026-10-04：GET /user 轮询也已删除（实测首击 200，登录后 cookie 立即可用）。
+    // 钉住"不该再打 /user"—— 那个探针问的是"登录态还在吗"，用的却和签到无关的页面。
+    assert.equal(stub.seen.filter((r) => r.path === "/user").length, 0,
+      "又打了 /user 探针 —— 实测登录后首击就是 200，没有传播延迟，这笔是白花的");
   } finally { stub.restore(); }
 
   // 3xx 的失败分类：不是"凭据不行"，归上游问题（waiting，不亮红条），且报出状态码
@@ -2755,7 +2781,6 @@ test("[69yun] 无 Cookie 的新账号点「测试」：首次换出的 Cookie �
   kv.store.set(`v1:acct:69yun:${uid}`, JSON.stringify(rec));
   const stub = stubUpstream({
     "POST /auth/login": { payload: { ret: 1 }, headers: { "set-cookie": ["uid=9", "key=fresh111"] } },
-    "GET /user": { status: 200, body: "<html>ok</html>" },
   });
   try {
     const view = await validateAccount({
@@ -2844,20 +2869,38 @@ test("[69yun] 签到必须 redirect:manual：自动跟随会把登录页 200 当
   } finally { stub.restore(); }
 });
 
+// 既然实测证明没有传播延迟，那么「重新登录后首击仍 3xx」就是真的异常，
+// 不该粉饰成 waiting —— waiting 会静静混过去，用户看不出这轮不对劲。
+test("[69yun] 重新登录后首击仍 3xx 报 error，不粉饰成 waiting", async () => {
+  const kv = fakeKv();
+  seed69yun(kv, "user@69yun.com", { cookie: "old=expired" });
+  const stub = stubUpstream({
+    "POST /user/checkin": { status: 302, body: "" },   // 两次都 3xx
+    "POST /auth/login": { payload: { ret: 1 }, headers: { "set-cookie": ["uid=1", "key=k3"] } },
+  });
+  try {
+    const { summary } = await yun69Tick(kv);
+    const acct = planOf(summary, "69yun").accounts[0];
+    assert.equal(acct.status, "error", `首击 3xx 是真异常，应报 error：实际 ${acct.status}`);
+    assert.notEqual(acct.status, "waiting", "没有传播延迟，waiting 是不诚实的归因");
+    assert.match(acct.message, /重定向/);
+  } finally { stub.restore(); }
+});
+
 test("[69yun] uid 从邮箱派生，trim 后取值", () => {
   const tool = findTool("69yun");
   assert.equal(tool.uidOf({ values: { email: "user@69yun.com" } }), "user@69yun.com");
   assert.equal(tool.uidOf({ values: { email: "  user@69yun.com  " } }), "user@69yun.com");
 });
 
-test("[69yun] 单步 cost=7 覆盖最坏情况（2026-10-04 从 8 降：删掉空转的登录页 GET）", () => {
+test("[69yun] 单步 cost=4 覆盖最坏情况（2026-10-04 8→7→4，删掉两步空转）", () => {
   const tool = findTool("69yun");
   assert.deepEqual(tool.hosts, ["69yun69.com"]);
   assert.equal(tool.steps.length, 1);
-  // 最坏 6 笔（1 签到 3xx + 1 登录 + 3 轮询 + 1 再签到）+ 1 余量 = 7
-  assert.equal(tool.steps[0].cost, 7);
+  // 最坏 3 笔（1 签到 3xx + 1 登录 + 1 再签到）+ 1 余量 = 4
+  assert.equal(tool.steps[0].cost, 4);
   // cost 是开跑前的静态准入判据（budget.fits），往小了改才危险：装不下会发一张假票
-  assert.ok(tool.steps[0].cost >= 6, "cost 低于真实上界 6，fits() 会放行装不下的步骤");
+  assert.ok(tool.steps[0].cost >= 3, "cost 低于真实上界 3，fits() 会放行装不下的步骤");
   assert.equal(tool.schedule.resetHour, 0);
   assert.equal(tool.schedule.notBeforeHour, 0);
 });

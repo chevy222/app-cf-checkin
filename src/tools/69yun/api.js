@@ -13,19 +13,11 @@ import { truncate } from "../../core/text.js";
 const HOST = "69yun69.com";
 const BASE = `https://${HOST}`;
 const LOGIN_PAGE = "/auth/login";
-const USER_PAGE = "/user";
+// 只用作签到的 Referer，不再有任何一个请求真的打它。
+// 曾经拿它做「登录后验证 session 就绪」的探针，2026-10-04 实测证明那是多余的（见 login()）。
+const REFERER = "/user";
 const CHECKIN = "/user/checkin";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36";
-
-// 登录后验证 session 就绪的轮询参数。
-// 理由是"SSPanel 登录后 session 传播有延迟，立刻打 /user 会 302 回登录页"——
-// **这一条沿用自原独立 Worker，本项目从未实测确认过**。2026-10-04 只能在已登录态下
-// 打 /user（结果 200、延迟不复现），抓不到"登录 POST 刚返回的那一瞬"，验不了。
-// 所以保留原参数，但别把它当成已证事实 —— 真要删它得先在真实 Worker 上跑一轮登录看首击结果。
-// 退避阶梯而不是固定间隔：万一延迟存在，第 1 次（500ms 后）通常就过了，快上游不该被无谓拖住。
-// 三次全过共 3s，比原独立 Worker 的 6 次×2s=12s 短得多，
-// 也压在这一步的 cost 上界内（原固定 1.5s×3=4.5s，现在是 0.5+1+1.5=3s）。
-const SESSION_BACKOFF_MS = [500, 1000, 1500];
 
 const timeoutMs = (config) => {
   const raw = Number(config.timeoutMs);
@@ -33,10 +25,13 @@ const timeoutMs = (config) => {
 };
 
 // ── Cookie 工具 ──────────────────────────────────────────────
-// SSPanel 用 Set-Cookie 下发 session，**实测（2026-10-04）这版是 `PHPSESSID` / `mtauth` / `pop`**，
-// 其中 `mtauth` 才是认证凭据，另两个是 HttpOnly（document.cookie 读不到，浏览器自动发送）。
-// 早先注释写的 `uid + email + key + expire` 是**老版 SSPanel 的形状**，本版没有那四个 ——
-// 别照着旧注释去解析名字或断言字段。
+// SSPanel 登录响应的 Set-Cookie（2026-10-04 实测，六个）：
+//   `uid` / `email` / `key` / `ip` / `expire_in` / `PHPSESSID`
+// **以这个为准。** 早先注释写 `uid+email+key+expire`（漏了 `ip`、把 `expire_in` 写成
+// `expire`），上一轮我按浏览器 `document.cookie` 看到的 `mtauth` / `pop` 去改注释 ——
+// **那是错的**：`mtauth` / `pop` 是浏览器里本来就有的东西，不是登录下发的。
+// `document.cookie` 读不到 HttpOnly 的那部分，且它在登录**之前**就存在，
+// 拿它当"登录响应发了什么"的证据是不成立的。**判据只能是 Set-Cookie 响应头。**
 //
 // 但**整串原样存、原样发**：不解析、不挑名字，所以换 SSPanel 版本也不会坏。
 // 必须原样保留的只有一件事：登录响应下发几个就存几个，回程一个都不能少。
@@ -94,21 +89,30 @@ async function call(ctx, { path, method = "GET", body, cookie, contentType, refe
 }
 
 // ── 登录 ──────────────────────────────────────────────────────
-// 流程：POST 登录 → 轮询验证 session。**没有"先 GET 登录页"这一步**。
+// 流程：POST 登录换 Cookie 就结束。**没有"先 GET 登录页"，也没有"轮询 /user"。**
 //
-// 2026-10-04 实测删掉了它（原 Step 1 拿"初始 session cookie"）：三种情形下
-// `GET /auth/login` 的 `Set-Cookie` **全是 null** —— 全新访客、带伪造 PHPSESSID、
-// 带已登录 cookie（而且它也不 302）。页面 HTML 里只有 email/password/remember/code_2fa
+// 2026-10-04 实测删掉了「GET /auth/login 拿初始 session cookie」：三种情形下
+// 它的 `Set-Cookie` 全是 null —— 全新访客、带伪造 PHPSESSID、带已登录 cookie
+// （而且它也不 302）。页面 HTML 里只有 email/password/remember/code_2fa
 // 四个输入框，**无隐藏字段、无 CSRF token**。那一笔是纯空转，白烧一次子请求。
 //
 // 不能改成"GET 登录页之后直接 POST /user/checkin"：手里还是那个失效串，会被再 302 回登录页，
 // 永远出不来。`POST /auth/login` 不可省，因为它是**唯一能换出新 cookie 的地方**；
 // 省掉它，Cookie 一失效账号就只能进 login_required 等人工重录。
 //
+// 2026-10-04 同时删掉了「轮询 GET /user 验 session 就绪」（原 SESSION_BACKOFF_MS）：
+// 那条理由是"SSPanel 登录后 session 传播有延迟"，沿用自原独立 Worker，**本项目从未实测**。
+// 实测首击（登录响应一解析完就发，零延迟）：`POST /user/checkin` → **HTTP 200**、
+// 用时 **194ms**、`ret:0`（今日已签到）。**cookie 在登录响应里就完全可用，没有传播延迟。**
+//
+// 而且签到端点自己就是最好的探针：200 = cookie 有效，3xx = 失效。原来打 `/user` 问
+// "登录态还在吗"，用的却是和签到无关的页面 —— 纯多花 2 笔请求买一个更差的探针。
+// 真的登录后仍被重定向（session 异常），由调用方（index.js）如实报 error。
+//
 // 失败必须带 **kind**，三种失败的后果完全不同：
 //   auth      = 凭据本身不行（密码错、账号不存在、字段没填全）→ login_required，用户重录才有救
 //   rate      = 上游回 429，被限频 → rate_limited，走 schedule.backoff 退避
-//   transient = 上游自己的问题（5xx、网络抖动、session 传播慢）→ waiting，
+//   transient = 上游自己的问题（5xx、网络抖动）→ waiting，
 //               用户重录密码毫无用处；报错亮红条、或谎报「限频」都会把他带偏
 export async function login(ctx) {
   const email = ctx.account.cred.email;
@@ -116,8 +120,8 @@ export async function login(ctx) {
   // 缺字段是数据问题（用户没填全），归 auth：提示他补全，而不是让他干等退避
   if (!email || !password) return { error: "账号缺少邮箱或密码", kind: "auth" };
 
-  // Step 1: POST 登录
-  // redirect: "manual" 与下面的轮询、签到保持一致：上游若用 302 表示结果，跟随会把
+  // POST 登录
+  // redirect: "manual" 与下游的签到请求保持一致：上游若用 302 表示结果，跟随会把
   // /user 的 HTML 当登录响应（payload 解析成 null），报出一句与真实原因无关的
   // 「登录失败」；不跟随至少能报出 `HTTP 302`，而且 302 上的 Set-Cookie 不会随跟随丢掉。
   // 不跟随还少一跳 —— 每一跳都计入平台那 50 个子请求的硬顶，而自限已经等于硬顶、没有余量。
@@ -148,29 +152,7 @@ export async function login(ctx) {
   }
   const cookies = login.cookies;
   if (cookies.length === 0) return { error: "登录成功但未获取到 Cookie", kind: "transient" };
-
-  // Step 2: 轮询验证 session 就绪
-  for (let i = 0; i < SESSION_BACKOFF_MS.length; i++) {
-    await new Promise((r) => setTimeout(r, SESSION_BACKOFF_MS[i]));
-    const verify = await call(ctx, {
-      path: USER_PAGE,
-      cookie: cookies,
-      referer: BASE + LOGIN_PAGE,
-      redirect: "manual",
-    });
-    // 200/304 = session 就绪；3xx = 还没传播好，继续等
-    if (verify.status === 200 || verify.status === 304) {
-      return { cookie: cookieString(cookies) };
-    }
-    if (verify.status >= 300 && verify.status < 400 && i < SESSION_BACKOFF_MS.length - 1) continue;
-    // 4xx/5xx 是上游的问题（session 没建起来），不是密码错了
-    if (verify.status >= 400) {
-      return { error: `会话验证异常：HTTP ${verify.status}`, kind: "transient" };
-    }
-  }
-  // 轮询用完仍 3xx：凭据已通过认证（ret=1），只是 session 传播得比预期慢 ——
-  // 归 transient 而非 auth：让用户去改密码是白费工夫，等下一轮重试才对。
-  return { error: `登录成功但 session 始终未就绪（轮询 ${SESSION_BACKOFF_MS.length} 次）`, kind: "transient" };
+  return { cookie: cookieString(cookies) };
 }
 
 // ── 签到 ──────────────────────────────────────────────────────
@@ -211,7 +193,7 @@ export async function checkin(ctx, cookie) {
       path: CHECKIN,
       method: "POST",
       cookie: cookie ? cookie.split("; ").filter(Boolean) : [],
-      referer: BASE + USER_PAGE,
+      referer: BASE + REFERER,
       redirect: "manual",
     });
   } catch (err) {
