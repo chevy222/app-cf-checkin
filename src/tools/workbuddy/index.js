@@ -121,17 +121,17 @@ export default {
             return { status: "error", message: `到站礼物领取失败（HTTP ${claimed.status}），本次不派新行程`, credits: 0, cred: ctx.rotated };
           }
           // 领到就**接着派下一趟**：礼物已经到手（积分已发），派新行程只是开下一程，顶不掉任何东西。
-          // 早派一轮就早到站一轮 —— 一趟行程以小时计，串行等一轮等于白丢小半天。
+          // 派完当天收工（claimed），不再每 30 分钟轮询等到站——下一趟的到站礼物留到明天签到时一起领。
           const departed = await departNext(ctx);
           if (departed.error) return { status: "error", message: `到站礼物 +${reward}，但${departed.error}`, credits: reward, cred: ctx.rotated };
           if (departed.limit) return { status: "inactive", message: `到站礼物 +${reward}，今日旅行次数已用尽`, credits: reward, cred: ctx.rotated };
-          if (departed.inflight) return { status: "waiting", message: `到站礼物 +${reward}，已在旅途中`, credits: reward, cred: ctx.rotated };
-          return { status: "waiting", message: `到站礼物 +${reward}，新行程已派 → ${departed.place}${departed.hours ? `（${departed.hours} 小时后回）` : ""}`, credits: reward, cred: ctx.rotated };
+          if (departed.inflight) return { status: "claimed", message: `到站礼物 +${reward}，已在旅途中`, credits: reward, cred: ctx.rotated };
+          return { status: "claimed", message: `到站礼物 +${reward}，新行程已派 → ${departed.place}${departed.hours ? `（${departed.hours} 小时后回）` : ""}`, credits: reward, cred: ctx.rotated };
         }
 
-        // 上游正在走。到站时间由它决定，所以**不落已结**：下一轮再看。
-        // 落成 ok 会让这步当天不再重跑，到站礼物就得等第二天才领得到。
-        if (state === "traveling") return { status: "waiting", message: "旅行途中，等到站", credits: 0, cred: ctx.rotated };
+        // 上游正在走。到站时间由它决定，当天收工不再轮询——到站礼物留到明天签到时一起领。
+        // 之前这里返回 waiting，每 30 分钟检查一次，纯属浪费请求。
+        if (state === "traveling") return { status: "claimed", message: "旅行在途中，到站礼物明天再领", credits: 0, cred: ctx.rotated };
 
         // 今日趟数用尽 —— 这是这步**唯一**当天收工的情况。
         if (api.dig(first.payload, "daily_limit_reached")) {
@@ -141,8 +141,8 @@ export default {
         const departed = await departNext(ctx);
         if (departed.error) return { status: "error", message: departed.error, credits: 0, cred: ctx.rotated };
         if (departed.limit) return { status: "inactive", message: "今日旅行次数已用尽", credits: 0, cred: ctx.rotated };
-        if (departed.inflight) return { status: "waiting", message: "已在旅途中", credits: 0, cred: ctx.rotated };
-        return { status: "waiting", message: `已派新行程 → ${departed.place}${departed.hours ? `（${departed.hours} 小时后回）` : ""}`, credits: 0, cred: ctx.rotated };
+        if (departed.inflight) return { status: "claimed", message: "已在旅途中，到站礼物明天再领", credits: 0, cred: ctx.rotated };
+        return { status: "claimed", message: `已派新行程 → ${departed.place}${departed.hours ? `（${departed.hours} 小时后回）` : ""}`, credits: 0, cred: ctx.rotated };
       },
     },
     {

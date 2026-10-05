@@ -3994,7 +3994,7 @@ test("[workbuddy] 到站领完礼物就接着派下一趟，不等下一轮", as
   try {
     const { summary } = await wbTick(kv);
     const travel = wbStep(summary, 'travel');
-    assert.equal(travel.status, "waiting", `领完该接着派、并报"等待中"（${travel.status}：${travel.message}）`);
+    assert.equal(travel.status, "claimed", `领完该接着派、并当天收工（${travel.status}：${travel.message}）`);
     assert.match(travel.message, /\+8/, travel.message);
     assert.match(travel.message, /甲/, `没报出派到哪：${travel.message}`);
     const seq = stub.seen.filter((r) => r.path.includes("/travel/")).map((r) => r.path.split("/").pop());
@@ -4003,36 +4003,23 @@ test("[workbuddy] 到站领完礼物就接着派下一趟，不等下一轮", as
   } finally { stub.restore(); }
 });
 
-test("[workbuddy] 旅行在途不落已结：同一天下一轮仍会重读状态", async () => {
-  // 这条是那个 bug 的回归锁：travel 一旦返回 SETTLED 里的词（原来是 ok / claimed），
-  // 账号当天就被判成"已结"、再也不会排队，到站礼物要等第二天才领得到。
-  // traveling 必须报 waiting（非已结、且不受节流）。
+test("[workbuddy] 旅行在途当天收工：派完就不再轮询，到站礼物留到明天", async () => {
+  // traveling 现在返回 claimed（SETTLED），当天不再排队、不再每 30 分钟读状态。
+  // 之前返回 waiting，每轮都白读一次 travel/status，到站礼物留到第二天领更省。
   const kv = fakeKv();
   seedWorkbuddy(kv);
   const stub = stubUpstream(wbIdleRoutes());     // travel/status 默认就是 traveling
   try {
     const first = await wbTick(kv, cst(10));
-    assert.equal(wbStep(first.summary, 'travel').status, "waiting");
-    const runKeysAfterFirst = [...kv.store.keys()].filter((k) => k.startsWith("v1:run:workbuddy:")).length;
-    const traceKeysAfterFirst = [...kv.store.keys()].filter((k) => k.startsWith("v1:trace:workbuddy:")).length;
+    assert.equal(wbStep(first.summary, 'travel').status, "claimed");
 
-    const before = stub.seen.filter((r) => r.path.endsWith("/travel/status")).length;
+    const before = stub.seen.length;
     const lock = [...kv.store.keys()].find((k) => k.startsWith("v1:lock:workbuddy:"));
     if (lock) kv.store.delete(lock);
     const second = await wbTick(kv, cst(10, 31));
 
-    assert.ok(stub.seen.filter((r) => r.path.endsWith("/travel/status")).length > before,
-      "同一天的下一轮没有再读旅行状态 —— 这就是那个 bug");
-    assert.equal(wbStep(second.summary, 'travel').status, "waiting");
-    // 其余五步都已结、被复用，所以这一轮只该花 1 次外部请求
-    assert.equal(wbView(second.summary).http, 1, `在途期间每轮该只花 1 次请求，实际 ${wbView(second.summary).http}`);
-    // 无进展轮次**run 与 trace 都不写**：第二轮只有 travel waiting（didWork=false, credits=0），
-    // 每 30 分钟一条"等待中"会刷屏。trace 一起跳是因为没有 run 键用户就进不了详情页，
-    // 写了只剩孤儿键（30 天后才自然过期）。
-    const runKeysAfterSecond = [...kv.store.keys()].filter((k) => k.startsWith("v1:run:workbuddy:")).length;
-    const traceKeysAfterSecond = [...kv.store.keys()].filter((k) => k.startsWith("v1:trace:workbuddy:")).length;
-    assert.equal(runKeysAfterSecond, runKeysAfterFirst, "无进展轮次不该写运行日志（等待中刷屏）");
-    assert.equal(traceKeysAfterSecond, traceKeysAfterFirst, "无进展轮次不该写请求记录（没有 run 键就进不去，写了是孤儿键）");
+    assert.equal(second.summary.ran, 0, "当天收工后下一轮不该再排队");
+    assert.equal(stub.seen.length, before, "当天收工后下一轮不该再打上游");
   } finally { stub.restore(); }
 });
 
@@ -4060,7 +4047,7 @@ test("[workbuddy] depart 被拒按上游的说法分流：趟数用尽是收工�
   // 把"限流"和"幂等应答"读成失败，就是 accept 那次的同一个毛病。
   const cases = [
     { name: "429 + daily limit → 活动未开（今天真的完了）", reject: { status: 429, payload: { msg: "daily limit reached" } }, expect: "inactive" },
-    { name: "already traveling → 等待中（幂等应答，不是失败）", reject: { status: 400, payload: { msg: "already traveling" } }, expect: "waiting" },
+    { name: "already traveling → 成功领取（幂等应答，当天收工）", reject: { status: 400, payload: { msg: "already traveling" } }, expect: "claimed" },
   ];
   for (const c of cases) {
     const kv = fakeKv();
@@ -4098,7 +4085,7 @@ test("[workbuddy] 地点不可用就换下一个；最坏形态恰好花掉声�
     const travel = wbStep(summary, 'travel');
     const tried = stub.seen.filter((r) => r.path.endsWith("/travel/depart")).map((r) => JSON.parse(r.body).location_id);
     assert.deepEqual(tried, ["loc-1", "loc-2"], `没换地点：${JSON.stringify(tried)}`);
-    assert.equal(travel.status, "waiting", travel.message);
+    assert.equal(travel.status, "claimed", travel.message);
     assert.match(travel.message, /乙/, `没报出换到了哪个地点：${travel.message}`);
     assert.equal(travel.over, 0, `实际请求数超出声明的 cost：超支 ${travel.over}`);
     assert.equal(stub.seen.filter((r) => r.path.includes("/travel/")).length, 5, "最坏形态该是 5 次请求");
