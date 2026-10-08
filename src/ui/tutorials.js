@@ -254,26 +254,11 @@ if ($sess -and $sess.token) {
         + " `http://127.0.0.1:18080/authorize?...` 开头的页面，显示「无法访问此网站」—— 正常。"
         + "在地址栏 `Ctrl+A` → `Ctrl+C`（macOS `Cmd+A` → `Cmd+C`），"
         + "把这一整条完整 URL 复制下来（很长，带 `refreshToken=...` 等参数；在浏览器里复制不会被截断）。"),
-      step("运行脚本：自动取设备号 + 解析令牌",
-        "把下面第一行的引号内换成你刚复制的那条完整 URL，整段回车。"
-        + "脚本会自动从本地客户端的 storage.json 里读出 Aha 设备号，再从回调 URL 里解析出令牌，一次输出三个值。",
+      step("运行脚本：解析令牌 + 自动取设备号",
+        "把脚本里 `$cb = \"…\"` 那行的引号内换成你刚复制的那条完整 URL，整段回车。"
+        + "先从回调 URL 里解析出两个令牌，再从本地客户端的 storage.json 里读出 Aha 设备号，一次输出三个值。",
         `& {
-# 1. 从本地客户端取 Aha 设备号（8-16 位数字）
-$deviceId = ""
-$paths = @(
-  "$env:APPDATA\\TRAE SOLO CN\\User\\globalStorage\\storage.json",
-  "$env:APPDATA\\Trae CN\\User\\globalStorage\\storage.json",
-  "$env:APPDATA\\Trae\\User\\globalStorage\\storage.json"
-)
-foreach ($p in $paths) {
-  if (Test-Path $p) {
-    $m = Select-String -Path $p -Pattern 'iCubeAuthInfo://icube-dc:(\\d{8,16})' -AllMatches |
-      ForEach-Object { $_.Matches } | Select-Object -First 1
-    if ($m) { $deviceId = $m.Groups[1].Value; break }
-  }
-}
-
-# 2. 把下面引号内换成你复制的整条 127.0.0.1 开头的 URL
+# 1. 把下面引号内换成你复制的整条 127.0.0.1 开头的 URL，解析出两个令牌
 $cb = "粘贴你复制的整条 127.0.0.1 开头的 URL"
 
 # 与服务端同一套解析：只做一次 %XX 解码，不做 '+' → 空格转换
@@ -294,10 +279,24 @@ function J($v) {
   }
   return $null
 }
-
 $jwt = J (Q "userJwt")
 $rt  = Q "refreshToken"
 if (-not $rt -and $jwt) { $rt = $jwt.RefreshToken }
+
+# 2. 从本地客户端的 storage.json 取 Aha 设备号（8-16 位数字）
+$deviceId = ""
+$paths = @(
+  "$env:APPDATA\\TRAE SOLO CN\\User\\globalStorage\\storage.json",
+  "$env:APPDATA\\Trae CN\\User\\globalStorage\\storage.json",
+  "$env:APPDATA\\Trae\\User\\globalStorage\\storage.json"
+)
+foreach ($p in $paths) {
+  if (Test-Path $p) {
+    $m = Select-String -Path $p -Pattern 'iCubeAuthInfo://icube-dc:(\\d{8,16})' -AllMatches |
+      ForEach-Object { $_.Matches } | Select-Object -First 1
+    if ($m) { $deviceId = $m.Groups[1].Value; break }
+  }
+}
 
 Write-Host ""
 Write-Host "====== 填到「新增账号」======" -ForegroundColor Cyan

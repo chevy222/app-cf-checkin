@@ -5237,6 +5237,21 @@ test("[Trae 教程] 登录按钮真的渲进新增账号页（数据对了不等
   // 内联事件由下面那条「教程块不引入脚本」统一守，这里不重复
 });
 
+// 代码块有 max-height:340px（约 17 行）会滚动，而用户打开这段脚本要做的第一件事
+// 就是改 $cb 那行 —— 它一旦沉到中间，页面上根本看不到"要往哪儿粘"。
+// 次序换过一次（原来取设备号在前、粘贴位在第 17 行），这条守住别再换回去。
+test("[Trae 教程] 第 3 步的粘贴位在前几行，注释编号与执行次序一致", () => {
+  const step = TUTORIALS.trae.steps[2];
+  const lines = step.code.split("\n");
+  const at = lines.findIndex((l) => l.startsWith('$cb = "粘贴'));
+  assert.ok(at >= 0, "第 3 步里找不到 $cb 的粘贴占位行");
+  assert.ok(at <= 4, `$cb 粘贴位在第 ${at + 1} 行，折叠线以上看不到`);
+  assert.match(step.title, /解析令牌.*设备号/, "步骤标题的次序要与脚本内部一致");
+  assert.match(step.body, /先.*解析.*令牌/, "步骤说明的次序要与脚本内部一致");
+  const dev = lines.findIndex((l) => l.startsWith("# 2. 从本地客户端"));
+  assert.ok(dev > at, "注释里的 #1/#2 次序与脚本实际执行次序不一致");
+});
+
 test("[教程块不引入脚本，也不含访问口令以外的敏感内容", async () => {
   const env = envFor(fakeKv());
   await createAccount(env, envFor(fakeKv()));
