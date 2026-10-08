@@ -210,7 +210,7 @@ $qoderRoot = "D:\Program\Qoder CN"
 & {
 if (-not $qoderRoot) { throw "请先执行 `$qoderRoot = `"你的Qoder安装目录`" 设置路径" }
 
-# DPAPI 解密辅助（用于解 Token）
+# 解密辅助（DPAPI 取密钥；AES-GCM 解密：7.x 用系统 AesGcm，5.1 用 bcrypt.dll）
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -227,6 +227,51 @@ public class Dpapi {
         }
         Marshal.FreeHGlobal(bi.pb);
         var r = new byte[bo.cb]; Marshal.Copy(bo.pb, r, 0, bo.cb); LocalFree(bo.pb); return r;
+    }
+}
+public class BcryptGcm {
+    // PowerShell 5.1 跑在 .NET Framework 上，没有 System.Security.Cryptography.AesGcm，用 Windows 自带的 bcrypt.dll（CNG）兜底
+    // BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO
+    [StructLayout(LayoutKind.Sequential)] struct Info {
+        public int cbSize; public int dwInfoVersion;
+        public IntPtr pbNonce; public int cbNonce;
+        public IntPtr pbAuthData; public int cbAuthData;
+        public IntPtr pbTag; public int cbTag;
+        public IntPtr pbMacContext; public int cbMacContext;
+        public int cbAAD; public long cbData; public int dwFlags;
+    }
+    [DllImport("bcrypt.dll", CharSet=CharSet.Unicode)] static extern int BCryptOpenAlgorithmProvider(out IntPtr h, string alg, string impl, int flags);
+    [DllImport("bcrypt.dll", CharSet=CharSet.Unicode)] static extern int BCryptSetProperty(IntPtr h, string prop, byte[] v, int n, int flags);
+    [DllImport("bcrypt.dll")] static extern int BCryptGenerateSymmetricKey(IntPtr hAlg, out IntPtr hKey, IntPtr obj, int objLen, byte[] secret, int secretLen, int flags);
+    [DllImport("bcrypt.dll")] static extern int BCryptDecrypt(IntPtr hKey, byte[] input, int inputLen, ref Info info, byte[] iv, int ivLen, byte[] output, int outputLen, out int done, int flags);
+    [DllImport("bcrypt.dll")] static extern int BCryptDestroyKey(IntPtr hKey);
+    [DllImport("bcrypt.dll")] static extern int BCryptCloseAlgorithmProvider(IntPtr h, int flags);
+    public static void Decrypt(byte[] key, byte[] nonce, byte[] ct, byte[] tag, byte[] pt) {
+        IntPtr hAlg, hKey;
+        Chk(BCryptOpenAlgorithmProvider(out hAlg, "AES", null, 0), "open");
+        try {
+            byte[] mode = System.Text.Encoding.Unicode.GetBytes("ChainingModeGCM\0");
+            Chk(BCryptSetProperty(hAlg, "ChainingMode", mode, mode.Length, 0), "gcm");
+            Chk(BCryptGenerateSymmetricKey(hAlg, out hKey, IntPtr.Zero, 0, key, key.Length, 0), "key");
+            try {
+                IntPtr pN = Marshal.AllocHGlobal(nonce.Length), pT = Marshal.AllocHGlobal(tag.Length);
+                try {
+                    Marshal.Copy(nonce, 0, pN, nonce.Length);
+                    Marshal.Copy(tag, 0, pT, tag.Length);
+                    var inf = new Info();
+                    inf.cbSize = Marshal.SizeOf(typeof(Info));
+                    inf.dwInfoVersion = 1;
+                    inf.pbNonce = pN; inf.cbNonce = nonce.Length;
+                    inf.pbTag = pT; inf.cbTag = tag.Length;
+                    int done;
+                    Chk(BCryptDecrypt(hKey, ct, ct.Length, ref inf, null, 0, pt, pt.Length, out done, 0), "decrypt");
+                    if (done != pt.Length) throw new Exception("bcrypt plaintext length mismatch");
+                } finally { Marshal.FreeHGlobal(pN); Marshal.FreeHGlobal(pT); }
+            } finally { BCryptDestroyKey(hKey); }
+        } finally { BCryptCloseAlgorithmProvider(hAlg, 0); }
+    }
+    static void Chk(int status, string what) {
+        if (status != 0) throw new Exception("bcrypt " + what + " failed: 0x" + status.ToString("X8"));
     }
 }
 "@
@@ -273,8 +318,12 @@ if ((Test-Path $authFile) -and (Test-Path $stateFile)) {
             $key = [Dpapi]::Unprotect($ek[5..($ek.Length - 1)])
             $nonce = $raw[3..14]; $ct = $raw[15..($raw.Length - 17)]; $tag = $raw[($raw.Length - 16)..($raw.Length - 1)]
             $pt = New-Object byte[] $ct.Length
-            $gcm = [System.Security.Cryptography.AesGcm]::new($key)
-            $gcm.Decrypt($nonce, $ct, $tag, $pt)
+            if ($PSVersionTable.PSVersion.Major -ge 7) {
+                $gcm = [System.Security.Cryptography.AesGcm]::new($key)
+                $gcm.Decrypt($nonce, $ct, $tag, $pt)
+            } else {
+                [BcryptGcm]::Decrypt($key, $nonce, $ct, $tag, $pt)
+            }
             $sess = [Text.Encoding]::UTF8.GetString($pt) | ConvertFrom-Json
         }
     } catch { $tokenNote = "Token 解密出错：$($_.Exception.Message)" }
