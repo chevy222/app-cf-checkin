@@ -13,9 +13,43 @@
 //   · Trae      —— 打开登录页 → 浏览器跳到 127.0.0.1 的回调 → PowerShell 解析出参数
 //   · WorkBuddy —— 旧版客户端从 .info 直接取两个令牌；新版走官方短信登录接口换明文 Token
 
-// 一个步骤块。code 非空时渲染成 <pre><code>。
-const step = (title, body, code) => ({ title, body, code });
+// 一个步骤块。code 非空时渲染成 <pre><code>；link 非空时渲染成一个新标签页打开的按钮，
+// 它是**函数**而不是字符串 —— href 里带随机串，必须在每次渲染时现取。
+const step = (title, body, code, link) => ({ title, body, code, link });
 const note = (kind, text) => ({ kind, text });
+
+const randHex = (bytes) => Array.from(crypto.getRandomValues(new Uint8Array(bytes)))
+  .map((b) => b.toString(16).padStart(2, "0")).join("");
+const randDigits = (count) => Array.from(crypto.getRandomValues(new Uint8Array(count)))
+  .map((b) => String(b % 10)).join("");
+
+// Trae 登录页的 URL。参数集对齐 2026-10 的真实抓包，只有一处**刻意不跟**，改之前先读完：
+//   · code_challenge / code_challenge_method —— 抓包里有，那是 PKCE 分支（回调回的是 authCodeInfo）。
+//     我们手里没有 code_verifier，加上会把页面推进那条分支，回调里就**没有** userJwt / refreshToken 了。
+// client_id 与 auth_from 已跟着抓包改成新版客户端那一对（ono9krqynydwx5 / trae）。两者必须成对：
+// auth_from 只决定页面加载哪个 scope（solo→SOLO_PC、trae→IDE_PC，同一个组件），而 client_id
+// 决定签出的票属于哪个 app —— 它**必须与 tools/trae/api.js 换票时的 ClientID 同源**，
+// 只改一头会让另一头签出来的票在几天后静默换票失败。这条同源关系有测试盯着。
+// 回调地址被登录页自己的正则钉死在 http://127.0.0.1:<任意端口>/authorize（https 与 localhost 都拒），
+// 所以只能回到本机那条"打不开的地址"；端口用 18080 —— 真实客户端自己监听的是随机高位端口，撞不上。
+const traeLoginUrl = () => {
+  const machineId = randHex(32);      // 抓包是 64 位十六进制
+  const deviceId = randDigits(16);    // 抓包是 16 位数字（真实客户端在那儿填的是自己的 Aha 设备号）
+  const p = new URLSearchParams({
+    login_version: "1", auth_from: "trae", login_channel: "native_ide",
+    plugin_version: "2.3.87416", auth_type: "local", client_id: "ono9krqynydwx5",
+    redirect: "0", login_trace_id: crypto.randomUUID(),
+    auth_callback_url: "http://127.0.0.1:18080/authorize",
+    machine_id: machineId, device_id: deviceId, x_device_id: deviceId, x_machine_id: machineId,
+    x_device_brand: "PC", x_device_type: "windows", x_os_version: "Windows 11 Pro", x_env: "",
+    x_app_version: "3.3.104", x_app_type: "stable", channel_name: "common",
+  });
+  // 带空格的值必须用 %20 传，不能用 URLSearchParams 默认吐出的 `+`：登录页读参数时只做一次
+  // %XX 解码、不把 `+` 当空格（浏览器实测：`Windows+11+Pro` 被它原样带进了 redirect_url，
+  // 变成 Windows%2B11%2BPro）。这套语义与我们教程里那段 PowerShell 的 Q 函数是同一个坑。
+  // 换成 %20 是安全的：其余参数的值里没有一个含字面量 `+`。
+  return `https://www.trae.cn/authorization?${p.toString().replaceAll("+", "%20")}`;
+};
 
 export const TUTORIALS = {
   qoder: {
@@ -211,9 +245,10 @@ if ($sess -and $sess.token) {
       + "设备号在客户端的 `storage.json` 里，最后一步脚本会自动读出来，不用单独找。",
     steps: [
       step("打开登录链接",
-        "复制下面这行到 PowerShell 回车，它会直接用默认浏览器打开 Trae 登录页。"
-        + "链接**现取现用**，每次都会生成新的。",
-        `Start-Process "https://api.trae.cn/ide/v1/auth/authorize?login_version=1&auth_from=solo&login_channel=native_ide&plugin_version=0.1.43&auth_type=local&client_id=en1oxy7wnw8j9n&redirect=0&auth_callback_url=http://127.0.0.1:18080/authorize&machine_id=&device_id=&x_device_brand=PC&x_device_type=PC&x_os_version=1.0&x_app_version=0.1.43&x_app_type=stable"`),
+        "点下面的按钮，在新标签页打开 Trae 登录页。这条链接由**本页现生成**，每次打开都是新的。"
+        + "新标签被拦时右键按钮「复制链接地址」，粘到地址栏打开一样能用。",
+        "",
+        () => ({ label: "打开 Trae 登录页", href: traeLoginUrl() })),
       step("登录，然后复制那条打不开的地址",
         "用手机号 + 验证码登录。登录成功后浏览器会跳到"
         + " `http://127.0.0.1:18080/authorize?...` 开头的页面，显示「无法访问此网站」—— 正常。"
@@ -396,11 +431,18 @@ export function renderTutorial(tool) {
     .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
     .replace(/`([^`]+)`/g, "<code>$1</code>");
 
-  const steps = t.steps.map((s, i) => `<div class="tut">
+  // link 每次渲染现取（href 里带随机串），所以在这里调用而不是把值存进数据。
+  // 它是 <a target="_blank">，不是脚本：链接导航不受 CSP 的 default-src 'none' 约束，
+  // 零 JS 这条约定不破。rel=noopener 是因为本站口令就在本页 URL 上，不能让新页面拿到 window.opener。
+  const steps = t.steps.map((s, i) => {
+    const link = s.link ? s.link() : null;
+    return `<div class="tut">
       <div class="tut-h"><span class="tut-n">${i + 1}</span>${rich(s.title)}</div>
       ${s.body ? `<p class="tut-b">${rich(s.body)}</p>` : ""}
+      ${link ? `<div class="tut-l"><a class="btn pri" href="${esc(link.href)}" target="_blank" rel="noopener noreferrer">${esc(link.label)}</a></div>` : ""}
       ${s.code ? `<pre class="tut-c">${esc(s.code)}</pre>` : ""}
-    </div>`).join("");
+    </div>`;
+  }).join("");
 
   // 代码块用 CSS 的 user-select:all 做到"点一下整段全选"。本站零 JS（CSP default-src
   // 'none'），复制按钮做不出来 —— 所以需要这一句话告诉用户怎么用。只在真有代码块时出现。

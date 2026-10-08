@@ -191,6 +191,8 @@ table.t tr:last-child td{border-bottom:0}
 .tut-n{flex:none;width:18px;height:18px;border-radius:50%;background:var(--accent-weak);
   color:var(--accent);font-size:11px;display:grid;place-items:center;margin-top:1px}
 .tut-b{font-size:12.5px;line-height:1.6;color:var(--muted);margin:6px 0 0 26px}
+/* 教程步骤里的外链按钮（<a class="btn" target="_blank">，见 tutorials.js） */
+.tut-l{margin:8px 0 0 26px}
 /* user-select:all = **点一下整段全选**。这是零 JS 下能做到的最接近"一键复制"的形态：
    script 被 CSP 的 default-src 'none' 挡死，复制按钮做不出来，而这几个脚本都是
    整段粘进 PowerShell 用的，本来也不需要只选其中几行。 */
@@ -261,7 +263,7 @@ th.r,td.r{text-align:right}
   .h .acts{width:100%;justify-content:flex-start}
   .grid.cols3{grid-template-columns:1fr}
   .tutbox{padding:12px 12px}
-  .tut-b,.tut-c,.tutbox .alert,.tutbox .tw{margin-left:0}
+  .tut-b,.tut-l,.tut-c,.tutbox .alert,.tutbox .tw{margin-left:0}
   .field textarea{min-height:120px}
   .card .hd,.card .bd,.pane{padding-left:13px;padding-right:13px}
   /* 管理页卡片头在窄屏换行：标题一行、按钮组一行，标题不再被两个按钮挤没 */

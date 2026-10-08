@@ -373,13 +373,18 @@ if ($sess -and $sess.token) {
 
 ### Trae
 
-**第 1 步 · 打开登录链接**。复制这行到 PowerShell 回车，会用默认浏览器打开 Trae 登录页：
+**第 1 步 · 打开登录链接**。新增账号页的教程第 1 步就是一个「打开 Trae 登录页」按钮，点它即可 ——
+链接由页面现生成，每次打开都是新的（`login_trace_id` / `machine_id` / `device_id` 三个随机串每次都换）。
+
+不方便用页面的话，把这行粘到 PowerShell 回车（三个随机串换成任意值即可，形状照抄）：
 
 ```powershell
-Start-Process "https://api.trae.cn/ide/v1/auth/authorize?login_version=1&auth_from=solo&login_channel=native_ide&plugin_version=0.1.43&auth_type=local&client_id=en1oxy7wnw8j9n&redirect=0&auth_callback_url=http://127.0.0.1:18080/authorize&machine_id=&device_id=&x_device_brand=PC&x_device_type=PC&x_os_version=1.0&x_app_version=0.1.43&x_app_type=stable"
+Start-Process "https://www.trae.cn/authorization?login_version=1&auth_from=trae&login_channel=native_ide&plugin_version=2.3.87416&auth_type=local&client_id=ono9krqynydwx5&redirect=0&login_trace_id=57f25c40-c5a8-42fc-819e-746d7f0d9927&auth_callback_url=http%3A%2F%2F127.0.0.1%3A18080%2Fauthorize&machine_id=a6866e33210ff941cc9f8bc43ef93b110a6fb0033facc44bbcf6b8cc3d89d058&device_id=6021483269626041&x_device_id=6021483269626041&x_machine_id=a6866e33210ff941cc9f8bc43ef93b110a6fb0033facc44bbcf6b8cc3d89d058&x_device_brand=PC&x_device_type=windows&x_os_version=Windows%2011%20Pro&x_env=&x_app_version=3.3.104&x_app_type=stable&channel_name=common"
 ```
 
-> 链接**现取现用**，每次都会生成新的。
+> 这条链接是 Trae 的登录页（一个网页）。其中 `auth_callback_url` 只能是
+> `http://127.0.0.1:<端口>/authorize` 这一个形状 —— 登录页只认它，https 与 `localhost` 都会被拒成
+> 「登录失败」。所以凭据一定要经过本机这一跳，回不到站点上，第 2 步的手工复制省不掉。
 
 **第 2 步 · 登录，然后复制那条打不开的地址**。用手机号 + 验证码登录。登录成功后浏览器会跳到 `http://127.0.0.1:18080/authorize?...`
 开头的页面，显示「无法访问此网站」—— **这是正常的**，本机没有服务在监听。
@@ -443,7 +448,7 @@ if (-not $rt) { Write-Host "（回调里没有 refreshToken —— 请确认整�
 }
 ```
 
-**第 4 步**：把输出的三个值填到「新增账号」对应字段。ClientID 与客户端版本已按真实抓包写死，无需额外配置。
+**第 4 步**：把输出的三个值填到「新增账号」对应字段。ClientID 与客户端版本已内置，无需额外配置。
 
 ⚠️ **设备号必须是真实的。** 签到风控按它判定，随手编一个（哪怕 8–16 位格式看着对）
 会每天稳定返回「服务器繁忙」—— 看着像限频，其实是设备号错了。

@@ -13,7 +13,11 @@ const STATUS = "/trae/api/v2/ug/checkin_credits/status";
 const CLAIM = "/trae/api/v2/ug/checkin_credits/claim";
 const USAGE = "/trae/api/v2/pay/ide_user_ent_usage";
 
-const CLIENT_ID = "en1oxy7wnw8j9n";
+// 换票要带的 app 身份。**必须与登录链接里的 client_id 同源**（见 ui/tutorials.js 的 traeLoginUrl）：
+// 登录页签出的 refresh_token 属于哪个 app，换票时就得报哪个 app。两头不一致的症状是
+// 几天后才出现、且只表现为 login_required —— 所以这条同源关系有测试盯着，别单独改一头。
+// 导出只为让那条测试能引用真值，不是给界面层用的。
+export const CLIENT_ID = "ono9krqynydwx5";
 // 两个版本号各司其职，来自真实抓包，写死不让用户改：
 //   CLIENT_VERSION —— 客户端版本，出现在 User-Agent 里（TraeCN/1.107.1 / VSCode 1.107.1）
 //   IDE_VERSION    —— IDE 内核版本，出现在 IDEVersion / x-app-version / app-version 里

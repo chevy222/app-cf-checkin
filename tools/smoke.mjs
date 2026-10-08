@@ -10,6 +10,7 @@ import { makeBudget, trackedFetch } from "../src/core/budget.js";
 import { listRunLog, readRunLog, scrubSecrets, writeRunLog, traceKeyOf } from "../src/core/logs.js";
 import { logicalDay, cstDate } from "../src/core/time.js";
 import * as wbApi from "../src/tools/workbuddy/api.js";
+import * as traeApi from "../src/tools/trae/api.js";
 const { idemKey } = wbApi;
 import { expiresAtOf, subjectOf } from "../src/core/jwt.js";
 import { ICONS, iconImg } from "../src/ui/icons.js";
@@ -5171,6 +5172,69 @@ test("[Trae 教程里那行正则本身能匹配（抠出发布文本实测，�
   // '+' 不能被解成空格：令牌里含加号时会被悄悄破坏（服务端 rawParam 同此）
   const plus = "userJwt=AAA%2BBB";
   assert.equal(decodeURIComponent(re.exec(plus)[1]), "AAA+BB");
+});
+
+// 这是全站唯一一处"页面上有个按钮能打开外部站点"的地方，而它坏过一整次：
+// 教程原来写的是 api.trae.cn/ide/v1/auth/authorize（404），参数也是从签到接口那套
+// 版本号抄的（plugin_version 写成 0.1.43，还少了 x_device_id / x_machine_id）。
+// 症状是"第 1 步就打不开"，后面两步根本走不到，所以三条都钉住：域名路径、参数集、每次现生成。
+const TRAE_LINK_RE = /<a class="btn pri" href="([^"]+)" target="_blank" rel="noopener noreferrer">([^<]*)<\/a>/;
+
+test("[Trae 教程] 第 1 步是打开登录页的按钮：链接指向登录页、参数齐、每次渲染换新的", () => {
+  const html = renderTutorial({ id: "trae" });
+  const m = html.match(TRAE_LINK_RE);
+  assert.ok(m, "第 1 步没渲染出「打开登录页」按钮");
+  const href = m[1].replace(/&amp;/g, "&");
+  const url = new URL(href);
+  const q = url.searchParams;
+  assert.equal(`${url.origin}${url.pathname}`, "https://www.trae.cn/authorization",
+    "登录页是 www.trae.cn/authorization；api.trae.cn 上那个 /ide/v1/auth/authorize 是 404");
+  assert.ok(!html.includes("api.trae.cn"), "教程里不该再出现 api.trae.cn 的登录链接");
+
+  // 取值来自 2026-10 真实抓包。client_id 这一头不是孤立的：它必须与 trae/api.js 换票时
+  // 报的 ClientID 同源 —— 登录页签出的票属于哪个 app，换票就得报哪个 app。
+  // 两边各改各的，症状是几天后才出现、且只表现为 login_required，所以在这里钉死。
+  for (const [key, want] of Object.entries({
+    login_version: "1", auth_from: "trae", login_channel: "native_ide",
+    plugin_version: "2.3.87416", auth_type: "local", client_id: "ono9krqynydwx5",
+    redirect: "0", x_device_brand: "PC", x_device_type: "windows", x_os_version: "Windows 11 Pro",
+    x_app_version: "3.3.104", x_app_type: "stable", channel_name: "common",
+  })) assert.equal(q.get(key), want, `登录链接的 ${key} 与登录页要的不一致`);
+  // 带空格的值必须编成 %20，不能是 `+`，也不能是裸空格（那会把后面所有参数截断）。
+  // 为什么 `+` 不行：登录页读参数只做一次 %XX 解码、不把 `+` 当空格 —— 浏览器实测
+  // `Windows+11+Pro` 被它原样带进 redirect_url 变成了 Windows%2B11%2BPro。
+  assert.ok(href.includes("x_os_version=Windows%2011%20Pro"), "带空格的值没按 %20 编码");
+  assert.ok(!href.includes("+"), "登录链接里出现了 `+` —— 登录页不会把它解成空格");
+  assert.ok(!/ /.test(href), "登录链接里出现了未编码的空格");
+  assert.equal(q.get("client_id"), traeApi.CLIENT_ID,
+    "登录链接的 client_id 与换票端的 CLIENT_ID 不同源 —— 签出来的票会换不了票");
+  // 回调地址整串编码传，且必须过登录页自己那条正则（https / localhost 都会被拒成「登录失败」）
+  assert.equal(q.get("auth_callback_url"), "http://127.0.0.1:18080/authorize");
+  assert.match(q.get("auth_callback_url"), /^http:\/\/127\.0\.0\.1:(\d+)\/authorize$/);
+  assert.equal(q.get("device_id"), q.get("x_device_id"), "device_id 与 x_device_id 该是同一个串");
+  assert.equal(q.get("machine_id"), q.get("x_machine_id"), "machine_id 与 x_machine_id 该是同一个串");
+  // PKCE 那两个参数一旦加进来，登录页就改走授权码分支，回调里不再有 userJwt / refreshToken
+  assert.ok(!q.has("code_challenge") && !q.has("code_challenge_method"),
+    "不许带 code_challenge —— 我们没有 code_verifier");
+
+  // 三个随机串每次渲染现生成：固定成一个串，等于把同一份登录会话标识复用给所有使用者
+  const again = new URL(renderTutorial({ id: "trae" }).match(TRAE_LINK_RE)[1].replace(/&amp;/g, "&"));
+  assert.match(q.get("machine_id"), /^[0-9a-f]{64}$/, "machine_id 该是 64 位十六进制（抓包形状）");
+  assert.match(q.get("device_id"), /^\d{16}$/, "device_id 该是 16 位数字（抓包形状）");
+  assert.match(q.get("login_trace_id"), /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    "login_trace_id 该是 UUID（抓包形状）");
+  assert.notEqual(q.get("login_trace_id"), again.searchParams.get("login_trace_id"), "login_trace_id 没换");
+  assert.notEqual(q.get("machine_id"), again.searchParams.get("machine_id"), "machine_id 没换");
+  assert.match(m[2], /登录/, "按钮文案要说明它打开的是登录页");
+});
+
+test("[Trae 教程] 登录按钮真的渲进新增账号页（数据对了不等于用户看得见）", async () => {
+  const env = envFor(fakeKv());
+  const page = await authed("/account/new?tool=trae", env);
+  assert.equal(page.status, 200, "Trae 新增账号页打不开");
+  assert.match(page.text, TRAE_LINK_RE, "新增账号页上没有打开登录页的按钮");
+  assert.ok(page.text.includes("www.trae.cn/authorization"), "按钮指的不是 Trae 登录页");
+  // 内联事件由下面那条「教程块不引入脚本」统一守，这里不重复
 });
 
 test("[教程块不引入脚本，也不含访问口令以外的敏感内容", async () => {
