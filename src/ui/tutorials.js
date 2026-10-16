@@ -283,7 +283,7 @@ $jwt = J (Q "userJwt")
 $rt  = Q "refreshToken"
 if (-not $rt -and $jwt) { $rt = $jwt.RefreshToken }
 
-# 2. 从本地客户端的 storage.json 取 Aha 设备号（8-16 位数字）
+# 2. 从本地客户端的 storage.json 取 Aha 设备号（8-20 位数字）
 $deviceId = ""
 $paths = @(
   "$env:APPDATA\\TRAE SOLO CN\\User\\globalStorage\\storage.json",
@@ -292,7 +292,7 @@ $paths = @(
 )
 foreach ($p in $paths) {
   if (Test-Path $p) {
-    $m = Select-String -Path $p -Pattern 'iCubeAuthInfo://icube-dc:(\\d{8,16})' -AllMatches |
+    $m = Select-String -Path $p -Pattern 'iCubeAuthInfo://icube-dc:(\\d{8,20})' -AllMatches |
       ForEach-Object { $_.Matches } | Select-Object -First 1
     if ($m) { $deviceId = $m.Groups[1].Value; break }
   }
@@ -309,13 +309,13 @@ if (-not $rt) { Write-Host "（回调里没有 refreshToken —— 请确认整�
 }`),
     ],
     notes: [
-      note("warn", "**设备号必须是真实的。** 签到风控按它判定，随手编一个（哪怕 8–16 位格式看着对）"
+      note("warn", "**设备号必须是真实的。** 签到风控按它判定，随手编一个（哪怕 8–20 位格式看着对）"
         + "会每天稳定返回 9074「服务器繁忙」—— 看着像限频，其实是设备号错了。"),
     ],
     // 第一列必须是**表单里能看到的字段名**，不能是平台内部的头名 ——
     // 用户按头名去找字段找不到，会以为少填了一项（这三个头与两个令牌框的关系本来就不直观）。
     fields: [
-      ["**Aha 设备号**", "第 3 步脚本自动从客户端 `storage.json` 读出", "填进表单的「Aha 设备号」那一栏。签到时它被放进 `x-device-id` 头，8–16 位数字，风控按它判定"],
+      ["**Aha 设备号**", "第 3 步脚本自动从客户端 `storage.json` 读出", "填进表单的「Aha 设备号」那一栏。签到时它被放进 `x-device-id` 头，8–20 位数字，风控按它判定"],
       ["**Access Token**", "登录回调 URL 里的 `userJwt`", "换票与查用户信息时它被放进 `x-cloudide-token` 头"],
       ["**Refresh Token**", "登录回调 URL 里的 `refreshToken`", "续期时换新票；**签到用的不是它**"],
       ["（不用填）`Cloud-IDE-JWT`", "同一个 `userJwt`", "签到与额度查询时它才是 `Authorization` 的值 —— 所以上面两个令牌里，只有 Access Token 参与签到"],

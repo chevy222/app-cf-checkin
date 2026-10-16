@@ -3452,26 +3452,27 @@ test("[trae] uid 来自 GetUserInfo；取不到就拒存并说清原因", async 
   } finally { bad.restore(); }
 });
 
-test("[trae] Aha 设备号在录入时就要求 8–16 位数字", async () => {
-  // 设备号校验必须发生在录入时：8 位值若静默放过去，会每天撞 9074 ——
+test("[trae] Aha 设备号在录入时就要求 8–20 位数字", async () => {
+  // 设备号校验必须发生在录入时：7 位值若静默放过去，会每天撞 9074 ——
   // 一个立刻能说明白的错被变成每周都难查一次的怪病。
-  // 但也不能反过来收紧到 16 位 —— 手上现成的 8–15 位账号会被挡在录入之外，
+  // 上限 2026-10-16 从 16 放宽到 20：参考项目在真实客户端上见过的注册号是 12–20 位，
+  // 16 只是当时的观察值；但也不能收紧下界 —— 手上现成的 8–15 位账号会被挡在录入之外，
   // 症状只是表单红字，与上游毫无关系，容易被误判成"平台坏了"。
   const kv = fakeKv();
   kv.store.set("v1:tool:trae", JSON.stringify({}));
   let seq = 55;
   const stub = stubUpstream({ "POST /cloudide/api/v3/trae/GetUserInfo": () => ({ payload: { Result: { UserID: (seq += 1) } } }) });
   try {
-    for (const bad of ["1234567", "12345678901234567", "abcdef1234567890", "12345678a"]) {
+    for (const bad of ["1234567", "123456789012345678901", "abcdef1234567890", "12345678a"]) {
       const res = await hit("/account/trae/new", {
         method: "POST", env: envFor(kv),
         body: form({ pwd: PASSWORD, label: "设备号不对", accessToken: mkJwt({ exp: cst(60) }), refreshToken: "rt", ahaDeviceId: bad }),
       });
       assert.equal(res.status, 400, `${bad} 居然过了校验`);
-      assert.match(res.text, /8–16 位/);
+      assert.match(res.text, /8–20 位/);
     }
     // 边界两侧都必须真的能录进去，否则"放宽"只是把校验删了
-    for (const good of ["12345678", "1234567890123456"]) {
+    for (const good of ["12345678", "1234567890123456", "12345678901234567890"]) {
       const uid = seq + 1;
       const res = await hit("/account/trae/new", {
         method: "POST", env: envFor(kv),
@@ -3483,7 +3484,7 @@ test("[trae] Aha 设备号在录入时就要求 8–16 位数字", async () => {
     }
     // 被拒的那些一个都不许留下账号：uid 是靠花子请求解出来的，
     // 校验必须发生在建号之前，否则拒掉的输入会留下半个账号
-    assert.equal([...kv.store.keys()].filter((k) => k.startsWith("v1:acct:trae:")).length, 2);
+    assert.equal([...kv.store.keys()].filter((k) => k.startsWith("v1:acct:trae:")).length, 3);
   } finally { stub.restore(); }
 });
 

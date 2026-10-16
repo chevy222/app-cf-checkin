@@ -187,7 +187,7 @@ npm run dev
 | 工具 | 令牌从哪来 | 设备标识从哪来 |
 |---|---|---|
 | Qoder | 脚本解密客户端的登录凭据文件 | 脚本跑客户端自带的 `runtime-info.exe` |
-| Trae | 登录后浏览器跳到的那条 `127.0.0.1` 地址（页面打不开是**正常的**），脚本从里面解析 | 客户端 `storage.json` 里的 8–16 位数字 |
+| Trae | 登录后浏览器跳到的那条 `127.0.0.1` 地址（页面打不开是**正常的**），脚本从里面解析 | 客户端 `storage.json` 里的 8–20 位数字 |
 | WorkBuddy | 官方短信登录接口换明文 Token | 无（uid 平台自己解） |
 | 69 云 | 机场网站的登录邮箱和密码 | 无（uid 就是邮箱） |
 
@@ -421,7 +421,7 @@ $jwt = J (Q "userJwt")
 $rt  = Q "refreshToken"
 if (-not $rt -and $jwt) { $rt = $jwt.RefreshToken }
 
-# 2. 从本地客户端的 storage.json 取 Aha 设备号（8-16 位数字）
+# 2. 从本地客户端的 storage.json 取 Aha 设备号（8-20 位数字）
 $deviceId = ""
 $paths = @(
   "$env:APPDATA\TRAE SOLO CN\User\globalStorage\storage.json",
@@ -430,7 +430,7 @@ $paths = @(
 )
 foreach ($p in $paths) {
   if (Test-Path $p) {
-    $m = Select-String -Path $p -Pattern 'iCubeAuthInfo://icube-dc:(\d{8,16})' -AllMatches |
+    $m = Select-String -Path $p -Pattern 'iCubeAuthInfo://icube-dc:(\d{8,20})' -AllMatches |
       ForEach-Object { $_.Matches } | Select-Object -First 1
     if ($m) { $deviceId = $m.Groups[1].Value; break }
   }
@@ -449,7 +449,7 @@ if (-not $rt) { Write-Host "（回调里没有 refreshToken —— 请确认整�
 
 **第 4 步**：把输出的三个值填到「新增账号」对应字段。ClientID 与客户端版本已内置，无需额外配置。
 
-⚠️ **设备号必须是真实的。** 签到风控按它判定，随手编一个（哪怕 8–16 位格式看着对）
+⚠️ **设备号必须是真实的。** 签到风控按它判定，随手编一个（哪怕 8–20 位格式看着对）
 会每天稳定返回「服务器繁忙」—— 看着像限频，其实是设备号错了。
 
 ### WorkBuddy
