@@ -3101,6 +3101,87 @@ test("[trae] 「今天已签到」这类说法要判成 already", async () => {
   } finally { stub.restore(); }
 });
 
+test("[trae] 9095 是「今日已签」的显式码，不依赖文案正则", async () => {
+  // 旧实现只靠收窄正则判"已签"：上游哪天把 9095 的文案改成别的说法（甚至空串），
+  // "今天已经签过"就会掉进 error，被报成故障并白白重试
+  const kv = fakeKv();
+  seedTrae(kv);
+  const stub = stubUpstream({
+    "POST /trae/api/v2/ug/checkin_credits/status": statusOf(false, 55),
+    "POST /trae/api/v2/ug/checkin_credits/claim": { payload: { code: 9095, message: "" } },
+    "POST /trae/api/v2/pay/ide_user_ent_usage": { payload: { user_entitlement_pack_list: [] } },
+  });
+  try {
+    const { summary } = await traeTick(kv);
+    const view = planOf(summary, "trae").accounts[0];
+    assert.equal(view.status, "already");
+    assert.equal(view.credits, 0, "already 不该计积分");
+    assert.ok(!/签到 \+/.test(view.message), `already 不该报「签到 +N」：${view.message}`);
+    assert.equal(stub.seen.filter((r) => r.path.endsWith("/claim")).length, 1);
+  } finally { stub.restore(); }
+});
+
+test("[trae] 状态回业务码 1001（HTTP 200）也认成鉴权失败：强制换票后重读，不拿死票去 claim", async () => {
+  const kv = fakeKv();
+  // 票还很新（远超 72h 提前续期线）：第一跳 ensureToken 不动它，全靠 1001 触发强制换
+  seedTrae(kv, "991013", { expiresAt: cst(300000) });
+  let statusCalls = 0;
+  const stub = stubUpstream({
+    "POST /trae/api/v2/ug/checkin_credits/status": () => {
+      statusCalls += 1;
+      return statusCalls === 1 ? { payload: { code: 1001, message: "未认证" } } : statusOf(true, 100);
+    },
+    "POST /cloudide/api/v3/trae/oauth/ExchangeToken": {
+      payload: { Result: { Token: mkJwt({ sub: "x", exp: cst(120) }), RefreshToken: "rt-after-1001", TokenExpireAt: cst(120) } },
+    },
+  });
+  try {
+    const { summary } = await traeTick(kv);
+    const view = planOf(summary, "trae").accounts[0];
+    assert.equal(view.status, "already", `1001 该触发换票重读：${view.message}`);
+    assert.equal(stub.seen.filter((r) => r.path.endsWith("/claim")).length, 0,
+      "状态已被判鉴权失败，不许拿死票去发 claim");
+    assert.equal(stub.seen.filter((r) => r.path.endsWith("ExchangeToken")).length, 1);
+    assert.equal(JSON.parse(kv.store.get("v1:acct:trae:991013")).cred.refreshToken, "rt-after-1001",
+      "换出的新串必须当场落盘");
+    // 重读必须用新票
+    const reads = stub.seen.filter((r) => r.path.endsWith("/status"));
+    assert.notEqual(reads[0].headers.Authorization, reads[1].headers.Authorization);
+  } finally { stub.restore(); }
+});
+
+test("[trae] 领取回业务码 1001：强制换票并立即重领一次，第二次成功照常记账", async () => {
+  const kv = fakeKv();
+  seedTrae(kv, "991014", { expiresAt: cst(300000) });
+  let claimCalls = 0;
+  const stub = stubUpstream({
+    "POST /trae/api/v2/ug/checkin_credits/status": statusOf(false, 88),
+    "POST /trae/api/v2/ug/checkin_credits/claim": () => {
+      claimCalls += 1;
+      return claimCalls === 1
+        ? { payload: { code: 1001, message: "未认证" } }
+        : { payload: { code: 0, message: "success", credits: 88 } };
+    },
+    "POST /cloudide/api/v3/trae/oauth/ExchangeToken": {
+      payload: { Result: { Token: mkJwt({ sub: "x", exp: cst(120) }), RefreshToken: "rt-claim-rotated", TokenExpireAt: cst(120) } },
+    },
+    "POST /trae/api/v2/pay/ide_user_ent_usage": { payload: { usage_summary: { total_amount: 500, consumed_amount: 100 } } },
+  });
+  try {
+    const { summary } = await traeTick(kv);
+    const view = planOf(summary, "trae").accounts[0];
+    assert.equal(view.status, "claimed");
+    assert.equal(view.credits, 88);
+    assert.match(view.message, /额度包剩余 400/);
+    assert.equal(claimCalls, 2, "1001 后应当场重领一次");
+    assert.equal(stub.seen.filter((r) => r.path.endsWith("ExchangeToken")).length, 1);
+    assert.equal(JSON.parse(kv.store.get("v1:acct:trae:991014")).cred.refreshToken, "rt-claim-rotated");
+    // 第二次领取用的必须是换出的新票
+    const claims = stub.seen.filter((r) => r.path.endsWith("/claim"));
+    assert.notEqual(claims[0].headers.Authorization, claims[1].headers.Authorization);
+  } finally { stub.restore(); }
+});
+
 test("[trae] 9074 走退避阶梯，且退避期内不排队", async () => {
   const kv = fakeKv();
   seedTrae(kv);

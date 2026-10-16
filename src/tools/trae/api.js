@@ -170,11 +170,18 @@ export async function ensureToken(ctx, { force = false } = {}) {
 
 const httpAuthFail = (result) => result.status === 401 || result.status === 403;
 
+// 业务码里的鉴权失败：1001 未认证 / 1002 token 失效（参考 L0NE-6/Trae-AutoCheckin 的
+// AUTH_FAIL_CODES）。这两种码会裹在 HTTP 200 里 —— 不认出来，票死在两次调用之间的窗口
+// 就会被读成"今天还没签"，拿着一把死票继续去发 claim。
+const isAuthBizCode = (code) => code === 1001 || code === 1002;
+
 export async function readStatus(ctx, token) {
   const result = await post(ctx, STATUS, HOST, claimHeaders(ctx, token), { req_source: 1 });
   if (httpAuthFail(result)) return { authFailed: true, status: result.status };
   if (result.status >= 400) return { error: `签到状态查询失败：HTTP ${result.status}` };
   const body = result.payload || {};
+  const code = body.code === undefined || body.code === null ? null : Number(body.code);
+  if (isAuthBizCode(code)) return { authFailed: true, status: result.status, bizCode: code };
   return { checkedIn: body.checked_in === true, credits: body.credits, enable: body.enable };
 }
 
@@ -212,12 +219,17 @@ export async function readUsage(ctx, token) {
 // credits 不再从这里取：签到成功文案直接用 status 接口的 credits，claim 的 credits 时有时无不稳定。
 export function translateClaim({ code, msg }) {
   const low = msg.toLowerCase();
+  // 鉴权失败必须排在最前：这类响应的话术不定（1001/1002 可能裹在 200 里），
+  // 不能等下面的文案正则去捞；处置与 HTTP 401/403 相同 —— 强制换票重试
+  if (isAuthBizCode(code)) return { status: "login_required", message: msg || `登录态失效（code ${code}）` };
   if (code === 9074 || code === 429 || msg.includes("频繁") || msg.includes("太多") || low.includes("too frequent")) {
     return { status: "rate_limited", message: msg || `服务器繁忙（code ${code}）` };
   }
   // 「已」字开头的中文消息里混着"请求已过期""账号已在其他设备登录"这类完全不同的故障，
   // 所以只能收窄到这几个说法。裸 msg.includes("已") 会把它们全报成"今天签过了"。
-  if (low.includes("already") || /已(签到|领取|领过|签过)/.test(msg)) {
+  // 9095 是"今日已签"的显式码，与收窄正则互为保险：只有正则的话，上游改一次话术，
+  // 这个码就会掉进 error，把"今天已经签过"报成故障。
+  if (code === 9095 || low.includes("already") || /已(签到|领取|领过|签过)/.test(msg)) {
     return { status: "already", message: msg || "今日已签到" };
   }
   if (code === 0 || low.includes("success")) {

@@ -3,8 +3,9 @@ import * as api from "./api.js";
 // Trae 签到工具。
 // 方言要点（都在 api.js 里逐条处理，这里只负责声明形状）：
 //   所有接口都在 api.trae.cn，但换票/用户信息用 x-cloudide-token，签到/额度用 Cloud-IDE-JWT
-//   业务码 code===0 / message 含 success → 领到；/已(签到|领取|领过|签过)/ → 今天已领
-//   code 9074 或 429 或「频繁/太多」→ 被频控，走跨轮退避阶梯
+//   业务码 code 0 / message 含 success → 领到；code 9095 /「已(签到|领取|领过|签过)」→ 今天已领
+//   code 9074 / 429 /「频繁」「太多」→ 被频控，走跨轮退避阶梯
+//   code 1001/1002 与 HTTP 401/403 同款处置 —— 强制换票重试一次（死票可能裹在 200 里）
 //   enable === false → 这个号没被灰到；checked_in → 今天已领
 //   x-device-id 必须是真实 8–16 位 Aha 号，随手填的会每天稳定 9074
 //   ClientID 与版本号（1.107.1 / 3.3.104）已按真实抓包写死，不暴露给用户
@@ -76,7 +77,7 @@ export default {
   hosts: api.traeHosts,
 
   // 常规一轮：换票 1 + 状态 1 + 领取 1 + 额度包 1 = 4。
-  // status 401 后的强制换票是异常路径，不算在常规 cost 里（over 了只标记不中断）。
+  // 状态/领取被鉴权拒绝后的强制换票是异常路径，不算在常规 cost 里（over 了只标记不中断）。
   steps: [
     {
       id: "checkin",
@@ -96,7 +97,9 @@ export default {
             // 强制续期的真因必须带出来：只报「救不回来」的话，这一次和任何一次普通失效
             // 长得一模一样 —— 用户没法据此判断该重录取凭据（10101）还是等上游恢复（5xx）
             const why = again.error || again.warn;
-            return { status: "login_required", message: `签到状态被拒（HTTP ${status.status}），续期也救不回来${why ? `：${why}` : ""}`, credits: 0, cred };
+            // 票可能死在业务码里（HTTP 200 + code 1001）：别把「已被上游判死」说成「HTTP 200」
+            const seen = status.bizCode ? `code ${status.bizCode}` : `HTTP ${status.status}`;
+            return { status: "login_required", message: `签到状态被拒（${seen}），续期也救不回来${why ? `：${why}` : ""}`, credits: 0, cred };
           }
           cred = again.rotated;
           token = again.token;
@@ -109,9 +112,27 @@ export default {
           return { status: "already", message: `今日已签到${status.credits ? `，当前签到积分 ${status.credits}` : ""}`, credits: 0, cred };
         }
 
-        const claimed = await api.claimOnce(ctx, token);
-        if (claimed.authFailed) return { status: "login_required", message: `领取时被拒（HTTP ${claimed.status}），登录态已失效`, credits: 0, cred };
-        const outcome = api.translateClaim(claimed);
+        // 领取。鉴权被拒有两种形态：HTTP 401/403，或票死在两次调用之间、上游回业务码
+        // 1001/1002（可能裹在 200 里）。两者与状态侧同款处置：强制换一次票再领一遍，
+        // 只一次 —— 参考实现里它们同属 AUTH_FAIL_CODES，唯一正确的处置都是换票重试。
+        let claimed = await api.claimOnce(ctx, token);
+        let outcome = api.translateClaim(claimed);
+        if (claimed.authFailed || outcome.status === "login_required") {
+          const seen = claimed.authFailed ? `HTTP ${claimed.status}` : `code ${claimed.code}`;
+          const again = await api.ensureToken(ctx, { force: true });
+          if (again.error || !again.rotated) {
+            // 真因同状态侧：again.error/warn 里是换票接口给翻过的人话（10101 等）
+            const why = again.error || again.warn;
+            return { status: "login_required", message: `领取被拒（${seen}），续期也救不回来${why ? `：${why}` : ""}`, credits: 0, cred };
+          }
+          cred = again.rotated;
+          token = again.token;
+          claimed = await api.claimOnce(ctx, token);
+          outcome = api.translateClaim(claimed);
+          if (claimed.authFailed || outcome.status === "login_required") {
+            return { status: "login_required", message: `领取被拒（${seen}），强制续期后仍被拒，登录态确认失效`, credits: 0, cred };
+          }
+        }
         if (outcome.status === "rate_limited") {
           return { status: "rate_limited", message: `${outcome.message}（按退避阶梯稍后再试）`, credits: 0, cred };
         }
