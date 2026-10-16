@@ -91,7 +91,10 @@ export default {
           // 这把票被上游提前判死了：强制换一次再读一遍，只一次
           const again = await api.ensureToken(ctx, { force: true });
           if (again.error || !again.rotated) {
-            return { status: "login_required", message: `签到状态被拒（HTTP ${status.status}），续期也救不回来`, credits: 0, cred };
+            // 强制续期的真因必须带出来：只报「救不回来」的话，这一次和任何一次普通失效
+            // 长得一模一样 —— 用户没法据此判断该重录取凭据（10101）还是等上游恢复（5xx）
+            const why = again.error || again.warn;
+            return { status: "login_required", message: `签到状态被拒（HTTP ${status.status}），续期也救不回来${why ? `：${why}` : ""}`, credits: 0, cred };
           }
           cred = again.rotated;
           token = again.token;

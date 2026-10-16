@@ -59,6 +59,35 @@ async function post(ctx, path, host, headers, body) {
   return { status: response.status, payload, text };
 }
 
+// 换票被拒的错误码字典。Trae 把真因藏在 4xx 响应体的 ResponseMetadata.Error.Code 里，
+// 只抄一句「HTTP 400」等于把「凭据该重录」说成「网络抖动」—— 处置完全不同。
+// 码值与解释来自真实响应与 L0NE-6/Trae-AutoCheckin 的实测对照（issue #4/#5/#7）：
+//   10101 票与换票端不同源（旧 client_id 时代 / SOLO 线签发的票，或已被别处轮换）
+//   20101 票已失效或被轮换；20403 票与设备不匹配
+//   20405 新版校验要求设备证明 —— 这一条重录凭据也解决不了，别给错处置
+const EXCHANGE_ERROR_HINTS = {
+  10101: "refreshToken 与换票的客户端不匹配（旧版取票或 SOLO 线签发的票会这样；同一账号被别处轮换过也会），重新登录取一次凭据即可",
+  20101: "refreshToken 已失效或被轮换掉（同一账号别在多处同时刷新），重新登录取一次凭据即可",
+  20403: "refreshToken 与设备不匹配（票不是这份设备资料签发的），重新登录取一次凭据即可",
+  20405: "上游要求设备证明（新版换票校验），当前请求没有设备签名，重新登录也解决不了",
+};
+
+// 把 4xx 响应翻译成一句能直接给人看的话。见过的最全形态：
+//   { ResponseMetadata: { Error: { Code: "10101",
+//       Data: { "__Message.error": "refresh token is not matched to the client" },
+//       Message: "无效参数：{__Message.field}." } }, StandardCode: "040004" }
+// 有用的原话在 Data.__Message.error，Message 只是参数模板。解析不出任何东西时
+// 也要说得出来话（网关裸 400 只有状态码），不许把 HTTP 400 原样抄一遍就完事。
+function explainExchangeReject(result) {
+  const err = ((result.payload || {}).ResponseMetadata || {}).Error || {};
+  const code = Number(err.Code);
+  const raw = String((err.Data || {})["__Message.error"] || err.Message || "").trim();
+  const seen = [`HTTP ${result.status}`, Number.isFinite(code) && code ? `code ${code}` : "", raw]
+    .filter(Boolean).join(" · ");
+  const hint = EXCHANGE_ERROR_HINTS[code];
+  return hint ? `换票被拒（${seen}）：${hint}` : `换票被拒（${seen}），需要重新取一次凭据`;
+}
+
 // 换票。注意它会换出**新的 refresh_token**，旧串用过一次即废
 async function exchangeToken(ctx, refreshToken) {
   const result = await post(ctx, EXCHANGE, HOST, { "User-Agent": electronUA }, {
@@ -67,7 +96,9 @@ async function exchangeToken(ctx, refreshToken) {
     ClientSecret: CLIENT_SECRET_PLACEHOLDER,
     UserID: "",
   });
-  if (result.status >= 400 && result.status < 500) return { authFailed: true, status: result.status };
+  if (result.status >= 400 && result.status < 500) {
+    return { authFailed: true, status: result.status, error: explainExchangeReject(result) };
+  }
   if (result.status !== 200 || !result.payload) return { error: `换票失败：HTTP ${result.status}` };
   const inner = result.payload.Result || {};
   const token = inner.Token;
@@ -124,7 +155,14 @@ export async function ensureToken(ctx, { force = false } = {}) {
     return { token: exchanged.cred.accessToken, rotated: exchanged.cred };
   }
   if (remaining <= 0) {
-    return { error: `登录态已过期且续期失败（HTTP ${exchanged.status ?? "-"}），需要重新取一次凭据`, authFailed: true };
+    // 真因在这里带出去（10101 等码已由 exchangeToken 翻成人话）；什么都没解析出来时
+    // 才退回带 HTTP 状态码的通用文案 —— 丢掉码只报「HTTP 400」会让用户以为这是网络抖动
+    return {
+      error: exchanged.error
+        ? `登录态已过期，${exchanged.error}`
+        : `登录态已过期且续期失败（HTTP ${exchanged.status ?? "-"}），需要重新取一次凭据`,
+      authFailed: true,
+    };
   }
   // 还没过期、只是续期没成功 —— 沿用旧票继续，别把一次续期抖动报成登录失效
   return { token: cred.accessToken, warn: exchanged.error || "续期未成功，本次沿用旧票" };

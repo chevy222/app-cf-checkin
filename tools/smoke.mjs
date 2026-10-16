@@ -3213,6 +3213,74 @@ test("[trae] 票据还很新时不该白换票", async () => {
   } finally { stub.restore(); }
 });
 
+test("[trae] 换票被拒时把错误码翻成人话：10101/20101/20403/20405 各有处置", async () => {
+  // 真实形态：HTTP 400 + ResponseMetadata.Error.Code，原话在 Data["__Message.error"]。
+  // 只报「HTTP 400」时用户看到的是"网络问题"，实际是这个号该重新录凭据了 ——
+  // 丢掉码之后「该重录」和「上游抖动」在 /runs 里长得一模一样。
+  const cases = [
+    ["10101", "refresh token is not matched to the client", /客户端不匹配/],
+    ["20101", "refresh token is invalid", /失效|轮换/],
+    ["20403", "token device not match", /设备不匹配/],
+    ["20405", "device proof required", /设备证明/],
+  ];
+  for (const [code, raw, expect] of cases) {
+    const kv = fakeKv();
+    seedTrae(kv, "991010", { expiresAt: cst(9) });   // 已过期：续期失败必须走硬失败文案
+    const stub = stubUpstream({
+      "POST /cloudide/api/v3/trae/oauth/ExchangeToken": {
+        status: 400,
+        payload: { ResponseMetadata: { Error: { Code: code, Data: { "__Message.error": raw }, Message: "无效参数：{__Message.field}." } } },
+      },
+    });
+    try {
+      const { summary } = await traeTick(kv);
+      const view = planOf(summary, "trae").accounts[0];
+      assert.equal(view.status, "login_required", `${code}：续期被拒该报 login_required`);
+      assert.match(view.message, /登录态已过期/, `${code}：丢了「登录态已过期」这个上下文：${view.message}`);
+      assert.match(view.message, new RegExp(`code ${code}`), `${code}：码要露出来（用户靠它搜、判断该等还是该重录）：${view.message}`);
+      assert.ok(view.message.includes(raw), `${code}：上游原话被吞了：${view.message}`);
+      assert.match(view.message, expect, `${code}：没翻成人话：${view.message}`);
+      assert.doesNotMatch(view.message, /HTTP 400），需要重新取一次凭据/, `${code}：退回了笼统文案`);
+    } finally { stub.restore(); }
+  }
+});
+
+test("[trae] 换票被拒但响应体解析不出任何码时，兜底文案仍要说清是 4xx 被拒", async () => {
+  // 网关裸 400（非 JSON）是最坏形态：没有码可翻，但也不能只说「换票失败」——
+  // 4xx 意味着这次尝试被明确拒绝，用户的第一处置是重录取凭据。
+  const kv = fakeKv();
+  seedTrae(kv, "991011", { expiresAt: cst(9) });
+  const stub = stubUpstream({ "POST /cloudide/api/v3/trae/oauth/ExchangeToken": { status: 400, body: "gateway boom" } });
+  try {
+    const { summary } = await traeTick(kv);
+    const view = planOf(summary, "trae").accounts[0];
+    assert.equal(view.status, "login_required");
+    assert.match(view.message, /HTTP 400/, `兜底也得报出状态码：${view.message}`);
+    assert.doesNotMatch(view.message, /code \d+/, "没解析出码就不许编一个");
+  } finally { stub.restore(); }
+});
+
+test("[trae] 401 后强制续期也失败时，报出真因而不是一句「救不回来」", async () => {
+  // 这条路径曾把 again.error 整个丢掉：消息和任何一次普通失效一模一样，
+  // 用户看不出是票与换票端不同源（10101，要重录）还是上游 5xx（等恢复就够）
+  const kv = fakeKv();
+  seedTrae(kv, "991012", { expiresAt: cst(200) });   // 票还很新：第一次 ensureToken 不换票，401 后才强制换
+  const stub = stubUpstream({
+    "POST /trae/api/v2/ug/checkin_credits/status": { status: 401, body: "unauthorized" },
+    "POST /cloudide/api/v3/trae/oauth/ExchangeToken": {
+      status: 400,
+      payload: { ResponseMetadata: { Error: { Code: "10101", Data: { "__Message.error": "refresh token is not matched to the client" } } } },
+    },
+  });
+  try {
+    const { summary } = await traeTick(kv);
+    const view = planOf(summary, "trae").accounts[0];
+    assert.equal(view.status, "login_required");
+    assert.match(view.message, /10101/, `强制续期的真因被「救不回来」吞了：${view.message}`);
+    assert.match(view.message, /客户端不匹配/, `没翻成人话：${view.message}`);
+  } finally { stub.restore(); }
+});
+
 test("[trae] 点「测试」把票续了也要写回，否则一点测试就烧掉账号", async () => {
   const kv = fakeKv();
   seedTrae(kv, "991004", { expiresAt: cst(10) + 600 });
