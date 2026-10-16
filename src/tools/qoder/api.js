@@ -130,10 +130,21 @@ export async function claimOne(ctx, campaign) {
   const path = `${CAMPAIGNS}/${encodeURIComponent(campaign.campaignId)}/claim`;
   const { result, authFailed, rotated } = await authorized(ctx, { path, method: "POST", body: {} });
   if (authFailed) return { status: "login_required", message: `领取时登录态失效（HTTP ${result.status}），续期后仍被拒`, rotated: rotated || null };
+  // "别处已领"的竞态应答归 already（与参考骨架 Qoder-Daily 同口径）：
+  // HTTP 409，或 body 里的 result/status === "ALREADY_CLAIMED"（可能平铺、也可能裹在 data 里）。
+  // 列表读到 CLAIMABLE 与这次 claim 之间，另一处先领掉了，是随时会发生的正常竞态 ——
+  // 报成失败会让这条活动在日志里一直红着，下一轮还要再试一遍。
+  const data = unwrap(result.payload);
+  const flat = result.payload && typeof result.payload === "object" ? result.payload : null;
+  const already = result.status === 409
+    || (flat && flat.result === "ALREADY_CLAIMED")
+    || (data && typeof data === "object" && (data.result === "ALREADY_CLAIMED" || data.status === "ALREADY_CLAIMED"));
+  if (already) {
+    return { status: "already", message: `领取 ${campaign.campaignKey || campaign.campaignId}：另一处已领过（今日已领）`, rotated: rotated || null };
+  }
   if (result.status !== 200) {
     return { status: "error", message: `领取 ${campaign.campaignId} 失败：HTTP ${result.status} ${truncate(result.text, 100)}`, rotated: rotated || null };
   }
-  const data = unwrap(result.payload);
   if (!data || typeof data !== "object" || data.status !== "CLAIMED") {
     return { status: "error", message: `领取响应不是 CLAIMED：${truncate(JSON.stringify(data ?? result.payload), 100)}`, rotated: rotated || null };
   }

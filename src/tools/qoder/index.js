@@ -9,6 +9,7 @@ import * as api from "./api.js";
 //   活动 actionType=CLAIM_BENEFIT，claimStatus ∈ CLAIMABLE / CLAIMED / 别的
 //   领取成功 = HTTP 200 且 data.status==="CLAIMED"，金额在 data.benefit.amount（0 合法）
 //   data.replayed = 上游认这次是幂等重放
+//   409 / result|status="ALREADY_CLAIMED" = 别处先领掉的竞态应答 → already（不算失败）
 //   设备身份头缺失/过期 → HTTP 200 + 空列表，不报错（最难查的一种坏法）
 
 // 每轮最多领几个活动。这是自设上界，不是上游的限制：
@@ -150,7 +151,11 @@ export default {
         const outcomes = [];
         for (const campaign of batch) outcomes.push(await api.claimOne(ctx, campaign));
 
-        const failed = outcomes.filter((o) => o.status !== "claimed");
+        // "别处已领"（409/ALREADY_CLAIMED）是竞态不是失败：不折成 error、不拖成 partial，
+        // 也不计积分 —— 它只说明今天这个活动已经到位了。真正没领到的才算 failed。
+        const claimedCount = outcomes.filter((o) => o.status === "claimed").length;
+        const alreadyCount = outcomes.filter((o) => o.status === "already").length;
+        const failed = outcomes.filter((o) => o.status !== "claimed" && o.status !== "already");
         // 任何一步带 rotated 都要交回内核落盘（旧串已经作废，攒着不写就是把账号写死）
         const rotated = outcomes.reduce((acc, o) => (o.rotated ? { ...acc, ...o.rotated } : acc), list.rotated || {});
         const credits = outcomes.reduce((sum, o) => sum + (o.credits || 0), 0);
@@ -158,6 +163,7 @@ export default {
 
         const note = [
           credits ? `+${credits} 额度` : "本次到账 0",
+          alreadyCount ? `其中 ${alreadyCount} 个已被别处领过（算今日已领，不算失败）` : "",
           replayed ? `其中 ${replayed} 个上游判为幂等重放` : "",
           list.claimable.length > batch.length ? `还有 ${list.claimable.length - batch.length} 个待领` : "",
         ].filter(Boolean).join("，");
@@ -165,12 +171,17 @@ export default {
         if (failed.length === outcomes.length) {
           return { status: "error", message: `${failed.length}/${outcomes.length} 个活动领取失败：${failed[0].message}`, credits: 0, cred: rotated };
         }
+        // 一个都没真领到、全是"别处已领"，列表也没有剩余：今天这一步本该收工。
+        // 报 already（终态）而不是继续重试 —— 重试不会变出额度来。
+        if (!failed.length && !claimedCount && list.claimable.length <= batch.length) {
+          return { status: "already", message: `今天可领的活动已被别处领过（${alreadyCount} 个）`, credits: 0, cred: rotated };
+        }
         const status = list.claimable.length > batch.length
           ? "partial"                     // 一轮没领完，下一轮接着领
           : failed.length
             ? "partial"                   // 领到一部分，剩下的下轮再来
             : "claimed";
-        return { status, message: `${outcomes.length - failed.length}/${outcomes.length} 个活动领取成功，${note}`, credits, cred: rotated };
+        return { status, message: `${claimedCount}/${outcomes.length} 个活动领取成功，${note}`, credits, cred: rotated };
       },
     },
   ],

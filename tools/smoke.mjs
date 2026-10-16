@@ -2128,6 +2128,63 @@ test("[qoder] 上游判为幂等重放时如实说，不冒充新领到", async 
   } finally { stub.restore(); }
 });
 
+test("[qoder] 409 是「别处已领」的竞态应答：算 already，不算失败", async () => {
+  // 列表读到 CLAIMABLE 与这次 claim 之间，另一处先领掉了 —— 参考骨架把
+  // HTTP 409 与 body 里的 ALREADY_CLAIMED 都归成"今日已领取"。
+  // 报成失败会让活动在日志里一直红着，下一轮还要再试一遍。
+  const kv = fakeKv();
+  seedQoder(kv);
+  const stub = stubUpstream({
+    ...qoderCampaigns(claimable(1)),
+    "POST /sash/api/v1/me/campaigns/cmp-0/claim": { status: 409, payload: { result: "ALREADY_CLAIMED" } },
+  });
+  try {
+    const { summary } = await qoderTick(kv);
+    const view = planOf(summary, "qoder").accounts[0];
+    assert.equal(view.status, "already");
+    assert.equal(view.credits, 0, "竞态不是新领到，一分都不该记");
+    assert.match(view.message, /已被别处领过/);
+  } finally { stub.restore(); }
+});
+
+test("[qoder] HTTP 200 里的 ALREADY_CLAIMED 同样归 already（裹 data 与平铺两种形态）", async () => {
+  for (const [i, shape] of [
+    { payload: { data: { status: "ALREADY_CLAIMED" } } },   // 裹在 data 里
+    { payload: { result: "ALREADY_CLAIMED" } },             // 平铺（参考实现读到的形态）
+  ].entries()) {
+    const kv = fakeKv();
+    seedQoder(kv);
+    const stub = stubUpstream({
+      ...qoderCampaigns(claimable(1)),
+      "POST /sash/api/v1/me/campaigns/cmp-0/claim": shape,
+    });
+    try {
+      const { summary } = await qoderTick(kv);
+      const view = planOf(summary, "qoder").accounts[0];
+      assert.equal(view.status, "already", `第 ${i + 1} 种形态没归成 already：${JSON.stringify(shape)}`);
+      assert.match(view.message, /已被别处领过/);
+    } finally { stub.restore(); }
+  }
+});
+
+test("[qoder] 同批一领一竞态：积分只算真领到的，竞态不把整批拖成 partial", async () => {
+  const kv = fakeKv();
+  seedQoder(kv);
+  const stub = stubUpstream({
+    ...qoderCampaigns(claimable(2)),
+    "POST /sash/api/v1/me/campaigns/cmp-0/claim": { payload: { data: { status: "CLAIMED", benefit: { amount: 20 } } } },
+    "POST /sash/api/v1/me/campaigns/cmp-1/claim": { status: 409, payload: {} },
+  });
+  try {
+    const { summary } = await qoderTick(kv);
+    const view = planOf(summary, "qoder").accounts[0];
+    assert.equal(view.status, "claimed", "还有一个真领到，竞态不该把整批拖成 partial");
+    assert.equal(view.credits, 20);
+    assert.match(view.message, /1\/2 个活动领取成功/);
+    assert.match(view.message, /1 个已被别处领过/);
+  } finally { stub.restore(); }
+});
+
 test("[qoder] 活动列表为空报 inactive，并把三种可能说清（旧实现报成绿色已领取）", async () => {
   const kv = fakeKv();
   seedQoder(kv);
