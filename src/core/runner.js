@@ -263,13 +263,17 @@ function commitSched(index, tool, uid, result, day, now) {
   const cur = schedOf(index.entries[uid]);
   const s = result.sched;
   const strikes = s.status === "rate_limited" ? cur.rateStrikes + 1 : 0;
+  // attempts 是"每日尝试额度"（maxDaily 的分子）。**限频不计入**：它有自己的退避阶梯，
+  // 记进来会让额度在阶梯走到中段前就用完，backoff 声明等于白写；
+  // 限频抢的是"下一轮再来"，不是"今天的重试预算"。
+  const counted = s.didWork && s.status !== "rate_limited";
   index.entries[uid] = {
     ...cur,
     lastStatus: s.status,
     lastStatusDate: day,
     lastAt: s.didWork ? now : cur.lastAt,
-    attempts: s.didWork ? (cur.attemptsDate === day ? cur.attempts : 0) + 1 : cur.attempts,
-    attemptsDate: s.didWork ? day : cur.attemptsDate,
+    attempts: counted ? (cur.attemptsDate === day ? cur.attempts : 0) + 1 : cur.attempts,
+    attemptsDate: counted ? day : cur.attemptsDate,
     rateStrikes: strikes,
     retryAt: s.status === "rate_limited" ? now + backoffSec(tool.schedule.backoff, strikes)
       : s.status === "pending" ? now + PENDING_RETRY_SEC : 0,
@@ -278,6 +282,18 @@ function commitSched(index, tool, uid, result, day, now) {
     // 若改为从运行日志逐账号取，就是 N 次 get
     lastSteps: (result.steps || []).map((r) => `${r.id}:${r.status}${r.reused ? ":r" : ""}`),
   };
+}
+
+// 当日尝试额度用尽的那一轮，往消息尾巴补一句「今日重试结束」。没有它的话，
+// /runs 里最后一次和前面几次长得一模一样 —— 用户只能在第二天才发现今天不会再来。
+// 只补在"没出结果、也不再排队"的轮次：SETTLED 是收了工，resumable 是还要接着做完，
+// 两者都不算"重试结束"。手动执行也走这里：第三次手动同样该知道额度已用尽。
+function markExhausted(tool, result, entry, day) {
+  if (!result.sched || result.sched.resumable || SETTLED.has(result.status)) return;
+  const sched = schedOf(entry);
+  if (sched.attemptsDate === day && sched.attempts >= (tool.schedule.maxDaily ?? Infinity)) {
+    result.message = `${result.message}（今日重试结束）`;
+  }
 }
 
 const publicResult = (r) => ({
@@ -391,10 +407,13 @@ export async function runTick({ env, budget, tools, trigger = "cron", now = nowS
         continue;
       }
       const result = await runOneAccount({ env, budget, tool, uid, config, day, now, trigger });
-      const view = publicResult(result);
-      results.push(view);
       commitSched(index, tool, uid, result, day, now);
       if (result.sched) touched.push(uid);
+      // 补「今日重试结束」要在 publicResult 之前：它改的是 result.message，
+      // 消息的四个出口（列表返回值、运行日志、手动执行页、console）都从那里取
+      markExhausted(tool, result, index.entries[uid], day);
+      const view = publicResult(result);
+      results.push(view);
       await logOutcome(env, { now, tool, result, view, budget, trigger });
       if (!result.quiet) ran += 1;
     }
@@ -443,6 +462,7 @@ export async function runAccountNow({ env, budget, tool, uid, trigger = "manual"
   const result = await runOneAccount({ env, budget, tool, uid, config, day, now, trigger });
   commitSched(index, tool, uid, result, day, now);
   await safe(() => commitSchedEntries(env, tool.id, result.sched ? { [uid]: index.entries[uid] } : {}));
+  markExhausted(tool, result, index.entries[uid], day);
   const view = publicResult(result);
   await logOutcome(env, { now, tool, result, view, budget, trigger });
   return view;

@@ -513,6 +513,49 @@ test("maxDaily 闸：当日次数用尽就不排", async () => {
   assert.equal((await tick(env, { now: cst(10, 40) }).run()).ran, 0);
 });
 
+test("失败账号每天最多 3 次尝试：首跑 + 2 次重试，末次消息带「今日重试结束」", async () => {
+  // 反面案例：maxDaily=20 配 30 分钟一轮时，凭据坏掉的账号会在 /runs 里刷一整天
+  // 一模一样的失败。3 次之后必须停，而且最后一次要自己把「不会再来」说出来。
+  const steps = [{ id: "a", label: "甲", cost: 4, async run() { return { status: "error", message: "上游炸了" }; } }];
+  const tools = [{ ...syntheticTool("cap3", steps), schedule: { resetHour: 0, notBeforeHour: 0, minIntervalSec: 1800, maxDaily: 3, backoff: [] } }];
+  const kv = fakeKv();
+  kv.store.set("v1:tool:cap3", "{}");
+  kv.store.set("v1:acct:cap3:S1", JSON.stringify({ label: "S1", cred: { seatId: "S1" }, createdAt: 1, updatedAt: 1 }));
+  const views = [];
+  for (let i = 0; i < 3; i += 1) {
+    const { summary } = await tickWith(kv, tools, 45, cst(10) + i * 1801);
+    views.push(planOf(summary, "cap3").accounts[0]);
+  }
+  assert.ok(!/重试结束/.test(views[0].message), `第 1 次还没到上限：${views[0].message}`);
+  assert.ok(!/重试结束/.test(views[1].message), `第 2 次还没到上限：${views[1].message}`);
+  assert.match(views[2].message, /今日重试结束/, `第 3 次（末次）要把「不会再来」说出来：${views[2].message}`);
+  assert.equal((await tickWith(kv, tools, 45, cst(10) + 3 * 1801)).summary.ran, 0, "第 4 次不许再排队：当日尝试额度已用尽");
+  const entry = schedEntryOf(kv, "cap3", "S1");
+  assert.equal(entry.attempts, 3);
+  assert.equal(entry.attemptsDate, logicalDay(0, cst(10)));
+  // /runs 读的是运行日志，不是调度的返回值 —— 那句话必须也落到日志里
+  const logs = logKeys(kv).filter((k) => k.startsWith("v1:run:cap3:")).map((k) => kv.store.get(k));
+  assert.ok(logs.some((l) => l.includes("今日重试结束")), "运行日志里没有「今日重试结束」，/runs 上就看不到");
+});
+
+test("限频不占尝试额度：退避阶梯不会被次数闸掐死", async () => {
+  // 把限频记进 attempts 的话，maxDaily=1 时第 2 档根本轮不到 —— backoff 声明就白写了。
+  // 本用例 4 轮全部照跑、attempts 始终 0，就是这条豁免的直接断言。
+  const steps = [{ id: "a", label: "甲", cost: 4, async run() { return { status: "rate_limited", message: "当前参与用户太多" }; } }];
+  const tools = [{ ...syntheticTool("rl", steps), schedule: { resetHour: 0, notBeforeHour: 0, minIntervalSec: 0, maxDaily: 1, backoff: [5, 15] } }];
+  const kv = fakeKv();
+  kv.store.set("v1:tool:rl", "{}");
+  kv.store.set("v1:acct:rl:S1", JSON.stringify({ label: "S1", cred: { seatId: "S1" }, createdAt: 1, updatedAt: 1 }));
+  const rans = [];
+  for (const at of [0, 700, 2200, 3700]) {
+    rans.push((await tickWith(kv, tools, 45, cst(10) + at)).summary.ran);
+  }
+  assert.deepEqual(rans, [1, 1, 1, 1], `限频轮次被次数闸挡住：${JSON.stringify(rans)}`);
+  const entry = schedEntryOf(kv, "rl", "S1");
+  assert.equal(entry.attempts, 0, "限频不该计入尝试次数");
+  assert.equal(entry.rateStrikes, 4);
+});
+
 test("限频走退避阶梯，且退避期内不排队", async () => {
   // 关掉 minIntervalSec，单独测退避：FIX 的 30 分钟间隔比第 1 档 5 分钟更严，
   // 两个闸叠在一起就看不出退避本身对不对

@@ -79,7 +79,7 @@ export default {
     resetHour: 0,
     notBeforeHour: 0,
     minIntervalSec: 1800,
-    maxDaily: 10,
+    maxDaily: 3,
     // 退避阶梯，**单位是分钟**（内核的 backoffSec 会 ×60，别写成秒）。
     // 只有上游回 429（真限频）时步骤才产出 rate_limited，而内核也只在那个状态下读它。
     // cron 是 30 分钟一轮，所以前两档在下一轮醒来时早已过期 —— 实际节奏由 30 分钟那档
@@ -100,7 +100,8 @@ export default {
   //
   // 别把 maxDaily 也当成"一天打几次"来改：稳态下 already ∈ SETTLED，
   // isDue 的第一道闸（scheduler.js）当天就不再排这个账号，一天实际只打 1 次签到。
-  // maxDaily 只在"当天一次都没走到 SETTLED"（连着 waiting/error）时才有意义。
+  // maxDaily 只在"当天一次都没走到 SETTLED"时才有意义：首跑 + 2 次重试，
+  // 用尽那一轮内核在消息尾巴补「今日重试结束」（定义与限频豁免见 runner.js 的 commitSched）。
   steps: [
     {
       id: "checkin",

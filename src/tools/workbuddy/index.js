@@ -66,7 +66,7 @@ export default {
     resetHour: 0,        // 上游按北京零点判"今天签没签"，我们不在本地重算日子
     notBeforeHour: 0,    // 零点第一轮就跑，越早领越好
     minIntervalSec: 1800,
-    maxDaily: 20,
+    maxDaily: 3,         // 每天最多尝试 3 次 = 首跑 + 2 次重试；限频不计入（走退避阶梯）
     backoff: [10, 30],   // 只兜住偶发限频，让它下一轮再来
   },
 

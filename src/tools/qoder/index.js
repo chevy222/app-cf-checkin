@@ -106,7 +106,7 @@ export default {
     resetHour: 10,
     notBeforeHour: 10,     // 10 点之前去打只是白烧子请求
     minIntervalSec: 1800,
-    maxDaily: 20,
+    maxDaily: 3,           // 每天最多尝试 3 次 = 首跑 + 2 次重试；用尽那一轮消息里补「今日重试结束」
     backoff: [],           // 这家没有限频方言（429/9074 都不出现），退避阶梯留空
   },
 
