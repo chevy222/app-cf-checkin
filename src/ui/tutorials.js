@@ -417,6 +417,58 @@ Write-Host "=================================" -ForegroundColor Cyan
       ["**会话 Cookie**", "自动生成，无需填写", "登录后自动保存，readonly 字段"],
     ],
   },
+  doubao: {
+    intro: "豆包（doubao.com）每日签到领体验额度。鉴权方式是纯 Cookie——"
+      + "你在浏览器里登录豆包后，把整串 Cookie 复制粘贴进来即可。"
+      + "Cookie 有效期约 60 天，失效后重新登录浏览器复制就行，不需要在签到台里维护登录信息。",
+    steps: [
+      step("在浏览器里登录豆包",
+        "打开 https://www.doubao.com，用手机号验证码登录。"
+        + "能看到聊天界面就说明登录成功了。"),
+      step("打开开发者工具，复制整串 Cookie",
+        "按 F12 打开开发者工具 → 切到「Network / 网络」标签 → "
+        + "刷新页面 → 点任意一个请求 → 找到「Request Headers / 请求头」里的 `Cookie:` 那一行 → "
+        + "把冒号后面的整串文字全选复制。",
+        "注意：要复制的是 Cookie 请求头的**值**，不是 `Cookie:` 这几个字本身。"
+        + "整串很长（sessionid、multi_sids、uid_tt 等十几个字段），全部复制不要漏。"),
+      step("粘贴到表单",
+        "把刚才复制的整串 Cookie 粘贴到「Cookie（整串）」栏。"
+        + "你的用户 ID 会自动从 Cookie 里的 `multi_sids` 字段解出，不需要手动填。"),
+      step("（可选）用 PowerShell 验证 Cookie 是否有效",
+        "把整串 Cookie 填进去之前，先用这段脚本测一下能不能通。"
+        + "返回「Cookie 有效」就说明可以了。",
+        `& {
+  $cookie = "把你复制的整串 Cookie 粘到这里"
+  $headers = @{
+    "Cookie" = $cookie
+    "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) DoubaoDesktop/2.32.6 Chrome/147.0.7727.149 Safari/537.36"
+    "Content-Type" = "application/json"
+  }
+  $body = '{"campaign_group_code":"pc_incentive_task_mvp_v3"}'
+  $qs = "?aid=497858&device_platform=web&web_platform=desktop&version_code=20800"
+  try {
+    $r = Invoke-RestMethod -Uri "https://www.doubao.com/alice/ug/campaign/v3/detail/$qs" \
+      -Method Post -Headers $headers -Body $body
+    if ($r.code -eq 0) {
+      Write-Host "Cookie 有效！填进签到台即可" -ForegroundColor Green
+    } elseif ($r.code -eq 710012001) {
+      Write-Host "Cookie 已失效，请重新登录浏览器复制" -ForegroundColor Red
+    } else {
+      Write-Host "返回 code=$($r.code): $($r.msg)" -ForegroundColor Yellow
+    }
+  } catch {
+    Write-Host "请求失败: $_" -ForegroundColor Red
+  }
+}`),
+    ],
+    notes: [
+      note("info", "Cookie 有效期约 60 天：失效后签到台会报「登录态已失效」，重新登录浏览器复制一遍新 Cookie 即可。"),
+      note("warn", "Cookie 等于你的登录凭证：不要分享给别人，签到台会把它加密存在你的 Cloudflare KV 里。"),
+    ],
+    fields: [
+      ["**Cookie（整串）**", "浏览器里复制的完整 Cookie 字符串", "包含 sessionid、multi_sids 等字段，自动解出用户 ID"],
+    ],
+  },
 };
 
 // 渲染成 HTML。刻意保持得比表格窄一点 —— 界面是给"填表时瞄一眼"用的，

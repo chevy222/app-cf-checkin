@@ -4,7 +4,7 @@
 
 **跑在 Cloudflare Worker 上的离线自动签到台 · 部署一次后 cron 无人值守**
 
-🔄 离线无人值守 · 🆓 免费运行 · 🔐 口令保护 + 凭据脱敏 · ♻️ 断点续跑不重复领取 · 🛠️ 支持 Qoder / Trae / WorkBuddy / 69 云
+🔄 离线无人值守 · 🆓 免费运行 · 🔐 口令保护 + 凭据脱敏 · ♻️ 断点续跑不重复领取 · 🛠️ 支持 Qoder / Trae / WorkBuddy / 69 云 / 豆包
 
 <img src="https://img.shields.io/badge/Cloudflare-Worker-F38020?style=for-the-badge&logo=cloudflare&logoColor=white" />
 <img src="https://img.shields.io/badge/Zero%20Runtime%20Deps-0%20package-A78BFA?style=for-the-badge" />
@@ -190,6 +190,7 @@ npm run dev
 | Trae | 登录后浏览器跳到的那条 `127.0.0.1` 地址（页面打不开是**正常的**），脚本从里面解析 | 客户端 `storage.json` 里的 8–20 位数字 |
 | WorkBuddy | 官方短信登录接口换明文 Token | 无（uid 平台自己解） |
 | 69 云 | 机场网站的登录邮箱和密码 | 无（uid 就是邮箱） |
+| 豆包 | 浏览器登录后 F12 复制的整串 Cookie | 无（从 Cookie 的 `multi_sids` 自动解） |
 
 ### Qoder
 
@@ -521,3 +522,41 @@ Write-Host "=================================" -ForegroundColor Cyan
 **第 3 步 · 填到表单**。邮箱填进「邮箱」栏，密码填进「密码」栏。「会话 Cookie」那一栏留空就行——签到台第一次签到时会自动登录并保存。
 
 > Cookie 自动管理：第一次签到时如果没有 Cookie，会自动走登录流程并保存；之后每次直接用 Cookie，失效时自动重新登录。
+
+### 豆包
+
+豆包（doubao.com）每日签到领体验额度。鉴权方式是纯 Cookie——你在浏览器里登录豆包后，把整串 Cookie 复制粘贴进来即可。Cookie 有效期约 60 天，失效后重新登录浏览器复制就行。
+
+**第 1 步 · 在浏览器里登录豆包**。打开 <https://www.doubao.com>，用手机号验证码登录，能看到聊天界面就说明登录成功了。
+
+**第 2 步 · 打开开发者工具，复制整串 Cookie**。按 F12 → 切到「Network / 网络」标签 → 刷新页面 → 点任意一个请求 → 找到「Request Headers / 请求头」里的 `Cookie:` 那一行 → 把冒号后面的整串文字全选复制。注意要复制的是 Cookie 请求头的**值**，不是 `Cookie:` 这几个字本身。
+
+**第 3 步 · 粘贴到表单**。把整串 Cookie 粘贴到「Cookie（整串）」栏，你的用户 ID 会自动从 Cookie 里的 `multi_sids` 字段解出，不需要手动填。
+
+**第 4 步 ·（可选）用 PowerShell 验证 Cookie 是否有效**：
+
+```powershell
+& {
+  $cookie = "把你复制的整串 Cookie 粘到这里"
+  $headers = @{
+    "Cookie" = $cookie
+    "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) DoubaoDesktop/2.32.6 Chrome/147.0.7727.149 Safari/537.36"
+    "Content-Type" = "application/json"
+  }
+  $body = '{"campaign_group_code":"pc_incentive_task_mvp_v3"}'
+  $qs = "?aid=497858&device_platform=web&web_platform=desktop&version_code=20800"
+  try {
+    $r = Invoke-RestMethod -Uri "https://www.doubao.com/alice/ug/campaign/v3/detail/$qs" `
+      -Method Post -Headers $headers -Body $body
+    if ($r.code -eq 0) {
+      Write-Host "Cookie 有效！填进签到台即可" -ForegroundColor Green
+    } elseif ($r.code -eq 710012001) {
+      Write-Host "Cookie 已失效，请重新登录浏览器复制" -ForegroundColor Red
+    } else {
+      Write-Host "返回 code=$($r.code): $($r.msg)" -ForegroundColor Yellow
+    }
+  } catch {
+    Write-Host "请求失败: $_" -ForegroundColor Red
+  }
+}
+```

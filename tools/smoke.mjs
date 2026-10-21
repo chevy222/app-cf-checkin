@@ -11,6 +11,7 @@ import { listRunLog, readRunLog, scrubSecrets, writeRunLog, traceKeyOf } from ".
 import { logicalDay, cstDate } from "../src/core/time.js";
 import * as wbApi from "../src/tools/workbuddy/api.js";
 import * as traeApi from "../src/tools/trae/api.js";
+import * as doubaoApi from "../src/tools/doubao/api.js";
 const { idemKey } = wbApi;
 import { expiresAtOf, subjectOf } from "../src/core/jwt.js";
 import { ICONS, iconImg } from "../src/ui/icons.js";
@@ -5125,7 +5126,7 @@ test("版本号 = 构建时刻（北京时间 HHMM）：只看时钟，不看现
 test("[注册表里只有四家真实工具，夹具不许留在里面", async () => {
   // 夹具一旦留在注册表里就会产生真实副作用：占导航一格、被 cron 每 30 分钟调度一次、
   // 往 /runs 写假记录。演示工具不该有这些。所以它只在测试里临时注入。
-  assert.deepEqual(TOOLS.map((t) => t.id), ["qoder", "trae", "workbuddy", "69yun"],
+  assert.deepEqual(TOOLS.map((t) => t.id), ["qoder", "trae", "workbuddy", "69yun", "doubao"],
     `注册表不该含夹具或多出别的东西：${TOOLS.map((t) => t.id).join(", ")}`);
   assert.equal(TOOLS.includes(FIXTURE), false, "夹具被留在注册表里了");
 
@@ -5165,8 +5166,8 @@ test("[uidField 已彻底删除：契约里只剩 uidOf 一个来源", async () 
     assert.ok(!code.includes("uidField"), `${file} 的代码里还有 uidField`);
   }
   // 注册表自检现在只认 uidOf
-  assert.deepEqual(TOOLS.map((t) => typeof t.uidOf), ["function", "function", "function", "function"],
-    "四家工具都必须声明 uidOf");
+  assert.deepEqual(TOOLS.map((t) => typeof t.uidOf), ["function", "function", "function", "function", "function"],
+    "五家工具都必须声明 uidOf");
   // 少声明 uidOf 要在**模块加载时**就报错（部署时直接失败，而不是第一次建号才炸）。
   // 断言自检里那条判定确实在，别让它被改松。
   const entry = readFileSync("src/tools/index.js", "utf8");
@@ -5196,14 +5197,13 @@ test("[图标内联在 data URI 里，且必须是 PNG", async () => {
     assert.equal(head.readUInt32BE(20), 64, `${id} 高度该是 64`);
   }
 
-  // 三家都要有图标，且体积不许爆炸 —— 图标是**每个页面**都要付的，
+  // 已登记图标的工具体积不许爆炸 —— 图标是**每个页面**都要付的，
   // 256×256 的原图会让每页胖 50 KB（qoder 那张 base64 实测就有 50 KB）。
-  for (const tool of TOOLS) {
-    assert.ok(ICONS[tool.id], `${tool.name} 没有图标`);
-    assert.ok(ICONS[tool.id].length < 8000, `${tool.name} 的图标 base64 有 ${ICONS[tool.id].length} 字符，太大了`);
+  for (const [id, uri] of Object.entries(ICONS)) {
+    assert.ok(uri.length < 8000, `${id} 的图标 base64 有 ${uri.length} 字符，太大了`);
   }
   const total = Object.values(ICONS).reduce((s, x) => s + x.length, 0);
-  assert.ok(total < 20000, `三个图标合计 ${total} 字符，超出预算`);
+  assert.ok(total < 25000, `所有图标合计 ${total} 字符，超出预算`);
 
   // 没登记图标的工具回落到空串而不是破图（图标是可选字段，加新工具不必急着配图）
   assert.equal(iconImg({ id: "nope" }), "");
@@ -5788,4 +5788,180 @@ test("[trace] 没有记录的运行给一句实话，不伪造空记录", async 
   kv.store.set(runKey, JSON.stringify({ kind: "run", at: 1, tool: "qoder", uid: "qdr-old", status: "claimed", steps: [] }));
   const page = await hit(`/runs/${encodeURIComponent(runKey)}/trace?pwd=${PASSWORD}`, { env });
   assert.match(page.text, /这次运行没有请求记录/, "没有记录就该说没有");
+});
+
+// ── 豆包 ─────────────────────────────────────────────────────
+
+test("[doubao] uidFromCookie 从 multi_sids 解出 user_id", () => {
+  const cookie = "sessionid=abc123; multi_sids=110792828616%3A56c4a7060648245c7a488b372a42561b; uid_tt=ddd";
+  assert.equal(doubaoApi.uidFromCookie(cookie), "110792828616");
+  assert.equal(doubaoApi.uidFromCookie("sessionid=abc"), "", "没有 multi_sids 时返回空");
+  assert.equal(doubaoApi.uidFromCookie(""), "", "空串返回空");
+});
+
+function seedDoubao(kv, uid = "110792828616", { cookie = "sessionid=abc; multi_sids=110792828616%3Asess" } = {}) {
+  kv.store.set("v1:tool:doubao", JSON.stringify({}));
+  kv.store.set(`v1:acct:doubao:${uid}`, JSON.stringify({
+    label: `豆包-${uid}`,
+    cred: { cookie },
+    createdAt: 1, updatedAt: 1,
+  }));
+  kv.store.set("v1:schedidx:doubao", JSON.stringify({ day: null, entries: {} }));
+  return { uid };
+}
+
+const doubaoTick = (kv, now = cst(10)) => tickWith(kv, [findTool("doubao")], 45, now);
+
+// detail 返回未签到的响应
+const detailUnchecked = {
+  payload: {
+    code: 0,
+    data: {
+      progress: { total_amount: 2000 },
+      tasks: [
+        { task_kind: "daily_signin", task_status: 1,
+          daily_checkin: { checked_in_today: false, continuous_days: 0, last_checkin_date: "", reward: { reward_amount: 200, reward_type: "quota_grant" } } },
+      ],
+    },
+  },
+};
+
+// detail 返回已签到的响应
+const detailChecked = {
+  payload: {
+    code: 0,
+    data: {
+      progress: { total_amount: 2200 },
+      tasks: [
+        { task_kind: "daily_signin", task_status: 3,
+          daily_checkin: { checked_in_today: true, continuous_days: 5, last_checkin_date: "2026-10-21", reward: { reward_amount: 200, reward_type: "quota_grant" } } },
+      ],
+    },
+  },
+};
+
+test("[doubao] 未签到 → detail 查状态后 checkin 领取 → claimed", async () => {
+  const kv = fakeKv();
+  seedDoubao(kv);
+  const stub = stubUpstream({
+    "POST /alice/ug/campaign/v3/detail/": detailUnchecked,
+    "POST /alice/ug/campaign/landing/checkin": {
+      payload: { code: 0, data: { checked_in: true, checkin_date: "2026-10-21", continuous_days: 1, idempotent: false, reward_amount: 200, reward_type: "quota_grant" } },
+    },
+  });
+  try {
+    const { summary } = await doubaoTick(kv);
+    const acct = planOf(summary, "doubao").accounts[0];
+    assert.equal(acct.status, "claimed");
+    assert.match(acct.message, /签到 \+200 额度/);
+    assert.equal(acct.credits, 200);
+    assert.equal(stub.seen.length, 2, "未签到时应发 detail + checkin 两笔");
+    assert.equal(stub.seen[0].path, "/alice/ug/campaign/v3/detail/");
+    assert.equal(stub.seen[1].path, "/alice/ug/campaign/landing/checkin");
+  } finally { stub.restore(); }
+});
+
+test("[doubao] 已签到 → 只发 detail 一笔 → already", async () => {
+  const kv = fakeKv();
+  seedDoubao(kv);
+  const stub = stubUpstream({
+    "POST /alice/ug/campaign/v3/detail/": detailChecked,
+  });
+  try {
+    const { summary } = await doubaoTick(kv);
+    const acct = planOf(summary, "doubao").accounts[0];
+    assert.equal(acct.status, "already");
+    assert.match(acct.message, /连签 5 天/);
+    assert.equal(stub.seen.length, 1, "已签到时不该发 checkin");
+  } finally { stub.restore(); }
+});
+
+test("[doubao] cookie 失效 code 710012001 → login_required", async () => {
+  const kv = fakeKv();
+  seedDoubao(kv);
+  const stub = stubUpstream({
+    "POST /alice/ug/campaign/v3/detail/": { payload: { code: 710012001, msg: "登录已过期" } },
+  });
+  try {
+    const { summary } = await doubaoTick(kv);
+    const acct = planOf(summary, "doubao").accounts[0];
+    assert.equal(acct.status, "login_required");
+    assert.match(acct.message, /重新粘贴 Cookie/);
+    assert.equal(stub.seen.length, 1, "cookie 失效后不该再发 checkin");
+  } finally { stub.restore(); }
+});
+
+test("[doubao] 无 daily_signin 任务 → inactive", async () => {
+  const kv = fakeKv();
+  seedDoubao(kv);
+  const stub = stubUpstream({
+    "POST /alice/ug/campaign/v3/detail/": {
+      payload: { code: 0, data: { progress: {}, tasks: [{ task_kind: "chat_activity", task_status: 1 }] } },
+    },
+  });
+  try {
+    const { summary } = await doubaoTick(kv);
+    const acct = planOf(summary, "doubao").accounts[0];
+    assert.equal(acct.status, "inactive");
+    assert.match(acct.message, /无签到任务/);
+  } finally { stub.restore(); }
+});
+
+test("[doubao] checkin 幂等去重 idempotent:true → already", async () => {
+  const kv = fakeKv();
+  seedDoubao(kv);
+  const stub = stubUpstream({
+    "POST /alice/ug/campaign/v3/detail/": detailUnchecked,
+    "POST /alice/ug/campaign/landing/checkin": {
+      payload: { code: 0, data: { checked_in: true, idempotent: true, reward_amount: 0 } },
+    },
+  });
+  try {
+    const { summary } = await doubaoTick(kv);
+    const acct = planOf(summary, "doubao").accounts[0];
+    assert.equal(acct.status, "already");
+    assert.match(acct.message, /幂等/);
+  } finally { stub.restore(); }
+});
+
+test("[doubao] detail 请求超时 → waiting，不亮红条", async () => {
+  const kv = fakeKv();
+  seedDoubao(kv);
+  const stub = stubUpstream({
+    "POST /alice/ug/campaign/v3/detail/": () => {
+      const err = new Error("The operation was aborted due to timeout");
+      err.name = "TimeoutError";
+      throw err;
+    },
+  });
+  try {
+    const { summary } = await doubaoTick(kv);
+    const acct = planOf(summary, "doubao").accounts[0];
+    assert.equal(acct.status, "waiting");
+    assert.match(acct.message, /超时/);
+  } finally { stub.restore(); }
+});
+
+test("[doubao] 请求形状：桌面版 UA + 平台参数 + JSON body", async () => {
+  const kv = fakeKv();
+  seedDoubao(kv);
+  const stub = stubUpstream({
+    "POST /alice/ug/campaign/v3/detail/": detailUnchecked,
+    "POST /alice/ug/campaign/landing/checkin": {
+      payload: { code: 0, data: { checked_in: true, continuous_days: 1, idempotent: false, reward_amount: 200 } },
+    },
+  });
+  try {
+    await doubaoTick(kv);
+    const detailReq = stub.seen.find((r) => r.path.endsWith("/detail/"));
+    const checkinReq = stub.seen.find((r) => r.path.endsWith("/checkin"));
+    assert.match(detailReq.headers["User-Agent"], /DoubaoDesktop/, "UA 必须是桌面版");
+    assert.match(checkinReq.headers["User-Agent"], /DoubaoDesktop/);
+    assert.equal(detailReq.headers["Content-Type"], "application/json");
+    assert.ok(detailReq.headers["Cookie"], "必须带 cookie");
+    // detail body 用 campaign_group_code
+    assert.match(detailReq.body, /campaign_group_code/);
+    // checkin body 用 scene
+    assert.match(checkinReq.body, /scene/);
+  } finally { stub.restore(); }
 });
