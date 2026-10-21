@@ -21,10 +21,10 @@ const DETAIL_PATH = "/alice/ug/campaign/v3/detail/";
 const CHECKIN_PATH = "/alice/ug/campaign/landing/checkin";
 const CAMPAIGN_GROUP = "pc_incentive_task_mvp_v3";
 
-// 桌面版 webview UA（裸浏览器 UA 会被「请求非法」挡掉，issue #32 实测）
+// 桌面客户端 webview UA（抓包实测 2026-10-21）
 const CLIENT_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-  + "DoubaoDesktop/2.32.6 Chrome/147.0.7727.149 Safari/537.36";
+  + "Chrome/147.0.0.0 Safari/537.36 SamanthaDoubaoWork/2.32.14";
 
 // detail 与 checkin 的平台参数不同（抓包实测 2026-10-21）：
 //   detail：work_desktop / doubao_device_platform=web / aid=497858（网页工作台）
@@ -43,6 +43,8 @@ const DETAIL_PARAMS = {
   samantha_web: "1",
   web_platform: "work_desktop",
   "use-olympus-account": "1",
+  runtime: "web",
+  runtime_version: "5.72.66",
   web_tab_id: "0",
 };
 
@@ -59,6 +61,11 @@ const CHECKIN_PARAMS = {
   samantha_web: "1",
   web_platform: "desktop",
   "use-olympus-account": "1",
+  runtime: "web",
+  runtime_version: "3.41.4",
+  client_platform: "pc_client",
+  chromium_version: "147.0.7727.149",
+  channel: "win",
   web_tab_id: "0",
 };
 
@@ -84,21 +91,26 @@ function deviceIdsFor(uid) {
   let webId = "76";
   let n = seed;
   for (let i = 0; i < 16; i++) { n = (n * 31 + i) >>> 0; webId += String(n % 10); }
-  // tea_uuid: 16 位数字
-  let teaUuid = "";
+  // device_id / tea_uuid: 16 位数字（抓包实测两者相同）
+  let devId = "";
   n = (seed * 2654435761) >>> 0;
-  for (let i = 0; i < 16; i++) { n = (n * 31 + i * 7) >>> 0; teaUuid += String(n % 10); }
-  return { web_id: webId, tea_uuid: teaUuid };
+  for (let i = 0; i < 16; i++) { n = (n * 31 + i * 7) >>> 0; devId += String(n % 10); }
+  return {
+    web_id: webId,
+    device_id: devId,
+    tea_uuid: devId,
+    fp: `verify_${devId}`,
+  };
 }
 
 function apiUrl(path, uid) {
   const baseParams = path === DETAIL_PATH ? DETAIL_PARAMS : CHECKIN_PARAMS;
+  const ids = deviceIdsFor(uid);
   const params = new URLSearchParams({
     ...baseParams,
-    ...deviceIdsFor(uid),
-    device_id: "",
-    region: "",
-    sys_region: "",
+    ...ids,
+    region: "CN",
+    sys_region: "CN",
   });
   return `https://${HOST}${path}?${params.toString()}`;
 }
@@ -114,8 +126,16 @@ async function postJson(ctx, path, body, uid) {
         Accept: "application/json, text/plain, */*",
         "Content-Type": "application/json",
         Cookie: cookie,
-        Referer: "https://www.doubao.com/pc/agent-explore",
+        Referer: `https://${HOST}/`,
         Origin: `https://${HOST}`,
+        "agw-js-conv": "str",
+        "sec-ch-ua": '"Chromium";v="147", "Not.A/Brand";v="8"',
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-fetch-site": "cross-site",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-dest": "empty",
+        "accept-language": "zh-CN,zh;q=0.9",
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs(ctx.config)),

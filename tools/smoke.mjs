@@ -5955,8 +5955,8 @@ test("[doubao] 请求形状：桌面版 UA + 平台参数 + JSON body", async ()
     await doubaoTick(kv);
     const detailReq = stub.seen.find((r) => r.path.endsWith("/detail/"));
     const checkinReq = stub.seen.find((r) => r.path.endsWith("/checkin"));
-    assert.match(detailReq.headers["User-Agent"], /DoubaoDesktop/, "UA 必须是桌面版");
-    assert.match(checkinReq.headers["User-Agent"], /DoubaoDesktop/);
+    assert.match(detailReq.headers["User-Agent"], /SamanthaDoubaoWork/, "UA 必须是桌面客户端版");
+    assert.match(checkinReq.headers["User-Agent"], /SamanthaDoubaoWork/);
     assert.equal(detailReq.headers["Content-Type"], "application/json");
     assert.ok(detailReq.headers["Cookie"], "必须带 cookie");
     // detail body 用 campaign_group_code
