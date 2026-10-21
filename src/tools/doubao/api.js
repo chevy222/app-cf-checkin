@@ -26,7 +26,11 @@ const CLIENT_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
   + "DoubaoDesktop/2.32.6 Chrome/147.0.7727.149 Safari/537.36";
 
-const COMMON_PARAMS = {
+// detail 与 checkin 的平台参数不同（抓包实测 2026-10-21）：
+//   detail：work_desktop / doubao_device_platform=web / aid=497858（网页工作台）
+//   checkin：desktop / doubao_device_platform=desktop / aid=1044603（桌面客户端）
+// 混用会返回 code=2 "campaign not found"。
+const DETAIL_PARAMS = {
   version_code: "20800",
   language: "zh",
   device_platform: "web",
@@ -34,8 +38,24 @@ const COMMON_PARAMS = {
   aid: "497858",
   real_aid: "497858",
   pkg_type: "release_version",
-  pc_version: "2.32.6",
+  pc_version: "2.32.14",
   doubao_pc_version: "5.72.66",
+  samantha_web: "1",
+  web_platform: "work_desktop",
+  "use-olympus-account": "1",
+  web_tab_id: "0",
+};
+
+const CHECKIN_PARAMS = {
+  version_code: "20800",
+  language: "zh",
+  device_platform: "web",
+  doubao_device_platform: "desktop",
+  aid: "1044603",
+  real_aid: "1044603",
+  pkg_type: "release_version",
+  pc_version: "2.32.14",
+  doubao_pc_version: "2.32.14",
   samantha_web: "1",
   web_platform: "desktop",
   "use-olympus-account": "1",
@@ -72,8 +92,9 @@ function deviceIdsFor(uid) {
 }
 
 function apiUrl(path, uid) {
+  const baseParams = path === DETAIL_PATH ? DETAIL_PARAMS : CHECKIN_PARAMS;
   const params = new URLSearchParams({
-    ...COMMON_PARAMS,
+    ...baseParams,
     ...deviceIdsFor(uid),
     device_id: "",
     region: "",
