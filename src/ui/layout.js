@@ -25,6 +25,7 @@ body{margin:0;background:var(--bg);color:var(--text);line-height:1.55;font-size:
 .wrap{max-width:1180px;margin:0 auto;padding:20px 18px 72px}
 a{color:var(--accent)}
 code,.mono,.num{font-family:ui-monospace,"Cascadia Mono",Consolas,"Sarasa Mono SC",monospace}
+pre.mono{white-space:pre-wrap;word-break:break-all}
 code{font-size:12px;background:var(--panel3);padding:1px 5px;border-radius:4px}
 .num{font-size:12.5px;white-space:nowrap}
 .dim{color:var(--faint)}
