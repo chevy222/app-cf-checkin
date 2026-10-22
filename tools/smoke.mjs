@@ -2301,6 +2301,32 @@ test("[qoder] 401 → 续期 → 只重试一次；新凭据当场写回 KV", as
   } finally { stub.restore(); }
 });
 
+test("[qoder] 新版续期响应字段是 device_token/refresh_token（下划线），同样要认并写回", async () => {
+  // 新版客户端（dt-- 设备令牌）的 refresh 响应不回 token，而回 device_token；
+  // 只认 token/access_token 会把 200 判成"没拿到令牌"，新串不重试也不落盘，下一轮拿旧串死循环。
+  const kv = fakeKv();
+  const { uid } = seedQoder(kv);
+  let refreshed = 0;
+  const stub = stubUpstream({
+    "GET /sash/api/v1/me/campaigns": (rec, n) => (n === 1
+      ? { status: 401, body: "unauthorized" }
+      : { payload: { campaigns: claimable(1) } }),
+    "POST /api/v1/deviceToken/refresh": () => {
+      refreshed += 1;
+      return { payload: { device_token: "dt-NEW-123", refresh_token: "drt-new-456", token_type: "Bearer" } };
+    },
+    "POST /sash/api/v1/me/campaigns/cmp-0/claim": { payload: { data: { status: "CLAIMED", benefit: { amount: 20 } } } },
+  });
+  try {
+    const { summary } = await qoderTick(kv);
+    assert.equal(refreshed, 1);
+    assert.equal(planOf(summary, "qoder").accounts[0].status, "claimed", "device_token 没被认出来就会续期失败");
+    const cred = JSON.parse(kv.store.get(`v1:acct:qoder:${uid}`)).cred;
+    assert.equal(cred.accessToken, "dt-NEW-123", "新 device_token 没写回");
+    assert.equal(cred.refreshToken, "drt-new-456", "新 refresh_token 没写回，下一轮还拿旧串");
+  } finally { stub.restore(); }
+});
+
 test("[qoder] 续期也救不回来才是 login_required，且不再发 claim", async () => {
   const kv = fakeKv();
   seedQoder(kv);

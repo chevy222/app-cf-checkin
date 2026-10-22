@@ -65,12 +65,14 @@ const unwrap = (payload) => (payload && typeof payload === "object" && "data" in
 async function refreshToken(ctx) {
   const result = await call(ctx, { path: REFRESH, method: "POST", body: { refresh_token: ctx.account.cred.refreshToken } });
   const data = unwrap(result.payload);
-  const token = data && (data.token || data.accessToken || data.access_token);
+  // 新版客户端（dt-- 设备令牌）续期响应把新令牌放在 device_token；旧版 JWT 才回 token/access_token。
+  // 只认后三个会让新版 200 响应被当成"没拿到令牌"判失败，新串既不重试也不落盘，下一轮还拿旧串死循环。
+  const token = data && (data.device_token || data.deviceToken || data.token || data.accessToken || data.access_token);
   if (result.status !== 200 || !token) return null;
   return {
     accessToken: String(token),
     // 上游可能不发新串；发空串当没发处理（否则空串写回 KV，下一轮必然认证失败）
-    refreshToken: String((data && (data.refreshToken || data.refresh_token)) || ctx.account.cred.refreshToken),
+    refreshToken: String((data && (data.refresh_token || data.refreshToken)) || ctx.account.cred.refreshToken),
     // 不返回 expiresAt：这家续期靠上游的 401 触发，不做"提前 N 天主动换票"，
     // 所以本地到期时间没有决策价值；而 dt-- 形态的令牌解不出 exp，猜一个日期只会误导。
     // creds 里也没声明它，写回时会被内核按白名单拒掉。
