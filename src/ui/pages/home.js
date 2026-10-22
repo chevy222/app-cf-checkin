@@ -49,7 +49,7 @@ export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, f
       ${redBar}
       <div class="hd">
         <div class="id">${iconImg(tool)}<div><div class="t">${escapeHtml(tool.name)}</div><div class="d">${escapeHtml(tool.summary || "")}</div></div></div>
-        ${off ? `<span class="dim" style="font-size:11px;font-weight:500;">已停用 · ${fmtCST(offAt)}</span>` : ""}
+        ${off ? `<span style="display:inline-flex;flex-direction:column;gap:2px;align-items:flex-start;"><span style="font-size:11px;font-weight:600;padding:1.5px 8px;border-radius:99px;background:var(--panel3);color:var(--dim);">已停用</span><span style="font-size:11px;color:var(--faint);">${fmtCST(offAt)}</span></span>` : ""}
         <a href="${escapeHtml(link(`/tool/${tool.id}`, pwd))}">管理 ›</a>
       </div>
       <div class="bd">
