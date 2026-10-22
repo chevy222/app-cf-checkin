@@ -60,6 +60,7 @@ h2{margin:0;font-size:17px;font-weight:650;letter-spacing:-.2px}
 /* 只作用于文字链接（如「管理 ›」）：这条规则的优先级高于 .btn.pri，
    不收窄会把卡片头里主按钮的白字覆盖成橙色 —— 橙底橙字，文字隐形 */
 .card .hd a:not(.btn){margin-left:auto;color:var(--accent);text-decoration:none;font-size:12.5px}
+.card .hd .chip{margin-left:auto}
 .card .hd a:not(.btn):hover{text-decoration:underline}
 /* 图标是内联 data URI（见 icons.js 的理由：必须在口令闸后）。64×64 缩到 22px，
    交给浏览器双线性插值；只做圆角与去白边，不加滤镜 —— 图标是配角。 */
