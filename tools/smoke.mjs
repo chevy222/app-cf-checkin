@@ -5799,6 +5799,17 @@ test("[doubao] uidFromCookie 从 multi_sids 解出 user_id", () => {
   assert.equal(doubaoApi.uidFromCookie(""), "", "空串返回空");
 });
 
+test("[doubao] uidFromCookie 从 LARK_SUITE_ACCESS_TOKEN JWT 解 doubao_uid（新版工作台 cookie）", () => {
+  // 不验签，payload 随便造一个 base64url
+  const payload = Buffer.from(JSON.stringify({ doubao_uid: "110792828616", uid: "7582199987581307849" })).toString("base64url");
+  const token = `abc.${payload}.xyz`;
+  const cookie = `sessionid=12935375; LARK_SUITE_ACCESS_TOKEN=${token}; biz_trace_id=7b0b`;
+  assert.equal(doubaoApi.uidFromCookie(cookie), "110792828616", "优先取 doubao_uid");
+  // 只有 uid 没有 doubao_uid 时兜底取 uid
+  const payload2 = Buffer.from(JSON.stringify({ uid: "7582199987581307849" })).toString("base64url");
+  assert.equal(doubaoApi.uidFromCookie(`LARK_SUITE_ACCESS_TOKEN=abc.${payload2}.xyz`), "7582199987581307849", "兜底取 uid");
+});
+
 function seedDoubao(kv, uid = "110792828616", { cookie = "sessionid=abc; multi_sids=110792828616%3Asess" } = {}) {
   kv.store.set("v1:tool:doubao", JSON.stringify({}));
   kv.store.set(`v1:acct:doubao:${uid}`, JSON.stringify({

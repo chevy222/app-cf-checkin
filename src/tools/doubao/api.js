@@ -1,4 +1,5 @@
 import { truncate } from "../../core/text.js";
+import { readJwtClaims } from "../../core/jwt.js";
 
 // 豆包（doubao.com）网页会话签到领体验额度。
 //
@@ -209,8 +210,19 @@ export async function doCheckin(ctx, uid) {
 // cookie 是用户从浏览器 F12 整串复制的，multi_sids 一定有（登录下发的）。
 export function uidFromCookie(cookieStr) {
   if (!cookieStr) return "";
-  const m = String(cookieStr).match(/multi_sids\s*=\s*(\d+)/);
-  return m ? m[1] : "";
+  const text = String(cookieStr);
+  // 旧版 cookie：multi_sids=<uid>%3A<sessionid>
+  const m = text.match(/multi_sids\s*=\s*(\d+)/);
+  if (m) return m[1];
+  // 新版工作台 cookie：没有 multi_sids，但有 LARK_SUITE_ACCESS_TOKEN（JWT），
+  // payload 里的 doubao_uid 就是账号标识
+  const token = text.match(/LARK_SUITE_ACCESS_TOKEN\s*=\s*([A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+)/);
+  if (token) {
+    const claims = readJwtClaims(token[1]);
+    const uid = claims && (claims.doubao_uid || claims.uid || claims.sub);
+    if (uid !== undefined && uid !== null && String(uid).trim() !== "") return String(uid).trim();
+  }
+  return "";
 }
 
 export const doubaoHosts = [HOST];
