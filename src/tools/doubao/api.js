@@ -222,6 +222,9 @@ export function uidFromCookie(cookieStr) {
     const uid = claims && (claims.doubao_uid || claims.uid || claims.sub);
     if (uid !== undefined && uid !== null && String(uid).trim() !== "") return String(uid).trim();
   }
+  // 兜底：从 Application 面板复制的精简 cookie（没有 HttpOnly 段），用 uid_tt 做稳定标识
+  const tt = text.match(/uid_tt\s*=\s*([A-Za-z0-9]+)/);
+  if (tt) return `tt_${tt[1]}`;
   return "";
 }
 

@@ -5810,6 +5810,12 @@ test("[doubao] uidFromCookie 从 LARK_SUITE_ACCESS_TOKEN JWT 解 doubao_uid（�
   assert.equal(doubaoApi.uidFromCookie(`LARK_SUITE_ACCESS_TOKEN=abc.${payload2}.xyz`), "7582199987581307849", "兜底取 uid");
 });
 
+test("[doubao] uidFromCookie 精简 cookie 兜底从 uid_tt 解（Application 面板复制无 HttpOnly 段）", () => {
+  const cookie = "sessionid=abc; uid_tt=10ed874e422c0dc90e3f0364a2488b17; biz_trace_id=7b0b";
+  assert.equal(doubaoApi.uidFromCookie(cookie), "tt_10ed874e422c0dc90e3f0364a2488b17");
+  assert.equal(doubaoApi.uidFromCookie("sessionid=abc"), "", "连 uid_tt 也没有才返回空");
+});
+
 function seedDoubao(kv, uid = "110792828616", { cookie = "sessionid=abc; multi_sids=110792828616%3Asess" } = {}) {
   kv.store.set("v1:tool:doubao", JSON.stringify({}));
   kv.store.set(`v1:acct:doubao:${uid}`, JSON.stringify({
