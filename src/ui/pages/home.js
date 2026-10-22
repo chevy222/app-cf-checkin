@@ -49,7 +49,7 @@ export function renderHome({ pwd, tools, counts, sched = {}, runs = [], flash, f
       ${redBar}
       <div class="hd">
         <div class="id">${iconImg(tool)}<div><div class="t">${escapeHtml(tool.name)}</div><div class="d">${escapeHtml(tool.summary || "")}</div></div></div>
-        ${off ? chip(`已停用 · 关于 ${fmtCST(offAt)}`, true) : ""}
+        ${off ? `<span class="dim" style="font-size:11px;font-weight:500;">已停用 · ${fmtCST(offAt)}</span>` : ""}
         <a href="${escapeHtml(link(`/tool/${tool.id}`, pwd))}">管理 ›</a>
       </div>
       <div class="bd">
