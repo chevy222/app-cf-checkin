@@ -5123,7 +5123,7 @@ test("版本号 = 构建时刻（北京时间 HHMM）：只看时钟，不看现
   assert.equal(stampFor.length, 1, "不要重新引入「现版本」参数");
 });
 
-test("[注册表里只有四家真实工具，夹具不许留在里面", async () => {
+test("[注册表里只有五家真实工具，夹具不许留在里面", async () => {
   // 夹具一旦留在注册表里就会产生真实副作用：占导航一格、被 cron 每 30 分钟调度一次、
   // 往 /runs 写假记录。演示工具不该有这些。所以它只在测试里临时注入。
   assert.deepEqual(TOOLS.map((t) => t.id), ["qoder", "trae", "workbuddy", "69yun", "doubao"],
@@ -5277,9 +5277,9 @@ test("说明页工具清单里图标排在名字左边（.kv .k 带图标时显�
     "说明页的工具名与图标不在同一个 .k 里");
 });
 
-test("[三家的参数获取教程在「新增账号」页上，且步骤完整", async () => {
-  // 教程内容挪自三个旧 Worker 的 README（客户端取值那一套），不是 F12 抓包。
-  // 这条守三件事：三家都有教程、步骤带序号、PowerShell 代码块完整。
+test("[五家的参数获取教程在「新增账号」页上，且步骤完整", async () => {
+  // 教程内容挪自旧 Worker 的 README（客户端取值那一套），不是 F12 抓包。
+  // 这条守三件事：五家都有教程、步骤带序号、PowerShell 代码块完整。
   const env = envFor(fakeKv());
   for (const tool of TOOLS) {
     const page = await authed(`/account/new?tool=${tool.id}`, env);
