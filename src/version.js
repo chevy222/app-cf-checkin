@@ -8,7 +8,7 @@
 // 不要手改：仓库里这个值只有本地 `npm run dev` / `npm run check` 会渲染，
 // 线上由 tools/bump-version.mjs 在构建期按当前北京时间重写。
 
-export const VERSION = "2026-10-02:1500";
+export const VERSION = "2026-10-26:0921";
 
 // 构建戳 = 传入时刻的 `yyyy-MM-dd:HHMM`。nowCst 形如 "2026-10-02T14:47"，
 // 调用方负责按 UTC+8 算好（时区换算不在这一层）。
