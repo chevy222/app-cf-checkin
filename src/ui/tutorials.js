@@ -417,6 +417,55 @@ Write-Host "=================================" -ForegroundColor Cyan
       ["**会话 Cookie**", "自动生成，无需填写", "登录后自动保存，readonly 字段"],
     ],
   },
+  doubao: {
+    intro: "豆包只认 Cookie，而且**没有自动续期**：Cookie 里的 LARK_SUITE_ACCESS_TOKEN 大约 5–6 天就过期，"
+      + "过期后只能重新抓一份。所以这个工具最重要的不是签到，而是让你知道凭据还剩几天。"
+      + "另外：只支持**个人账号**，飞书企业号即使录进来也领不到额度。",
+    steps: [
+      step("登录 www.doubao.com",
+        "用要签到的那个个人账号登录，随便打开一个对话页或工作台页面即可。"),
+      step("从 Network 里整段复制 Cookie",
+        "按 F12 打开开发者工具 → **Network** → 刷新页面 → 点任意一个发往 `www.doubao.com` 的请求 → "
+        + "在 **Request Headers** 里找到 `Cookie`，**整段复制**（右键 Copy as cURL 再取出也行）。"
+        + "**不要手工精简**：账号标识所需的 `multi_sids` 与 `LARK_SUITE_ACCESS_TOKEN` 都是 HttpOnly，"
+        + "在 Application 面板里根本看不到，精简过的 Cookie 会报「无法从该字段得出账号标识」。"),
+      step("（可选）先在本机验证这段 Cookie",
+        "把整段 Cookie 粘进 `$cookie` 里（保留换行没关系，脚本会自己拼）。"
+        + "输出「账号标识: …」就说明能自动解出来，表单里「账号标识」留空即可。",
+        `& {
+$cookie = @'
+粘贴整段 Cookie（含 cookie: 前缀也行）
+'@
+$flat = (($cookie -replace "\`r\`n", " ") -replace "\`n", " ") -replace "cookie:", ""
+if ($flat -match "multi_sids=([0-9]+)") {
+  Write-Host "账号标识: $($matches[1])" -ForegroundColor Green
+} elseif ($flat -match "LARK_SUITE_ACCESS_TOKEN=([^;]+)") {
+  $jwt = $matches[1].Trim().Split('.')[1]
+  $pad = $jwt.PadRight($jwt.Length + (4 - $jwt.Length % 4) % 4, '=')
+  $json = [Text.Encoding]::UTF8.GetString(
+    [Convert]::FromBase64String($pad.Replace('-', '+').Replace('_', '/'))) | ConvertFrom-Json
+  Write-Host "账号标识: $($json.doubao_uid)" -ForegroundColor Green
+} else {
+  Write-Host "两个关键字段都没有，请在表单里手填「账号标识」" -ForegroundColor Yellow
+}
+}`),
+      step("填到表单",
+        "Cookie 整段粘进「Cookie」栏。能解出账号标识时「账号标识」留空；"
+        + "解不出时手填一个固定代号（如 `main`），建号后不要再改。"),
+    ],
+    notes: [
+      note("warn", "Cookie 失效只能重抓：豆包没有 refresh_token 换票接口。"
+        + "看到「凭据最早到期时间」快到了就提前换一份，别等它变红。"),
+      note("info", "每日 200 额度、周一翻倍 400；赠送额度 30 天有效、漏领不补。"
+        + "签到成功与否只看上游的 `checked_in:true`，不是「请求发出去了」。"),
+    ],
+    fields: [
+      ["**网页 Cookie（整段）**", "Network → 任意 doubao.com 请求 → Request Headers → Cookie 整段",
+        "必须整段复制：`multi_sids` / `LARK_SUITE_ACCESS_TOKEN` 都在里面"],
+      ["**账号标识**", "多数情况下留空（自动从 Cookie 解）", "只有两个关键字段都缺失时才手填，建号后不可改"],
+      ["**凭据最早到期时间**", "自动解出，无需填写", "取自 LARK_SUITE_ACCESS_TOKEN 的 exp，约 5–6 天"],
+    ],
+  },
 };
 
 // 渲染成 HTML。刻意保持得比表格窄一点 —— 界面是给"填表时瞄一眼"用的，

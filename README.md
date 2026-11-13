@@ -4,7 +4,7 @@
 
 **跑在 Cloudflare Worker 上的离线自动签到台 · 部署一次后 cron 无人值守**
 
-🔄 离线无人值守 · 🆓 免费运行 · 🔐 口令保护 + 凭据脱敏 · ♻️ 断点续跑不重复领取 · 🛠️ 支持 Qoder / Trae / WorkBuddy / 69 云
+🔄 离线无人值守 · 🆓 免费运行 · 🔐 口令保护 + 凭据脱敏 · ♻️ 断点续跑不重复领取 · 🛠️ 支持 Qoder / Trae / WorkBuddy / 69 云 / 豆包工作
 
 <img src="https://img.shields.io/badge/Cloudflare-Worker-F38020?style=for-the-badge&logo=cloudflare&logoColor=white" />
 <img src="https://img.shields.io/badge/Zero%20Runtime%20Deps-0%20package-A78BFA?style=for-the-badge" />
@@ -129,7 +129,7 @@ npm run deploy
 
 **第 6 步 ·（可选）绑自己的域名**：在 Cloudflare 面板 → Workers 和 Pages → 你的 Worker → 设置 → 域名和路由 → 添加自定义域名。该域名需已托管在这个 Cloudflare 账号下。不绑的话直接用 Cloudflare 送的 `*.workers.dev` 免费域名即可。
 
-浏览器打开、输入口令，按「新增账号」页左侧的教程把四家账号加进去，当天就能开始领。
+浏览器打开、输入口令，按「新增账号」页左侧的教程把五家账号加进去，当天就能开始领。
 
 ---
 
@@ -176,8 +176,9 @@ npm run dev
 
 ## 凭据怎么取
 
-四个工具的凭据都在**本机的客户端上**取值，平台不参与 —— 这一点是安全设计的核心，
-也意味着**全程不需要 F12 抓包**。69 云例外：它的凭据就是网站的登录邮箱和密码。
+多数工具的凭据都在**本机的客户端上**取值，平台不参与 —— 这一点是安全设计的核心。
+两个例外：69 云用的是网站登录邮箱和密码；豆包必须从浏览器 Network 里**整段复制 Cookie**
+（它的账号标识字段是 HttpOnly，Application 面板看不到，精简过的 Cookie 会报「无法从该字段得出账号标识」）。
 
 下面每一段脚本都整段复制到 **PowerShell** 回车即可（Windows）。
 **界面上也有同一份教程**（「新增账号」与「工具配置」页左侧）。
@@ -190,6 +191,7 @@ npm run dev
 | Trae | 登录后浏览器跳到的那条 `127.0.0.1` 地址（页面打不开是**正常的**），脚本从里面解析 | 客户端 `storage.json` 里的 8–20 位数字 |
 | WorkBuddy | 官方短信登录接口换明文 Token | 无（uid 平台自己解） |
 | 69 云 | 机场网站的登录邮箱和密码 | 无（uid 就是邮箱） |
+| 豆包工作 | 浏览器 Network → 请求头里的整段 Cookie（无自动续期） | 无（Cookie 里解 `multi_sids` / `LARK_SUITE_ACCESS_TOKEN`） |
 
 ### Qoder
 
@@ -521,3 +523,38 @@ Write-Host "=================================" -ForegroundColor Cyan
 **第 3 步 · 填到表单**。邮箱填进「邮箱」栏，密码填进「密码」栏。「会话 Cookie」那一栏留空就行——签到台第一次签到时会自动登录并保存。
 
 > Cookie 自动管理：第一次签到时如果没有 Cookie，会自动走登录流程并保存；之后每次直接用 Cookie，失效时自动重新登录。
+
+### 豆包工作
+
+豆包只认 Cookie，**没有 refresh_token 自动续期**：`LARK_SUITE_ACCESS_TOKEN` 约 5–6 天过期，过期只能重抓。
+只支持个人账号，飞书企业号领不到。
+
+**第 1 步 · 登录并复制整段 Cookie**。打开 <https://www.doubao.com> 登录，F12 → Network → 刷新页面 →
+点任意一条 `doubao.com` 请求 → Request Headers 里的 `Cookie` **整段复制**。不要手工删字段：
+账号标识（`multi_sids` / `LARK_SUITE_ACCESS_TOKEN`）就在里面，删了会报「无法从该字段得出账号标识」。
+
+**第 2 步 ·（可选）在本机验证**。输出「Cookie 有效」就说明能解出账号标识：
+
+```powershell
+& {
+  $cookie = @'
+粘贴整段 Cookie（带 cookie: 前缀、带换行都行）
+'@
+  $flat = (($cookie -replace "`r`n", " ") -replace "`n", " ") -replace "cookie:", ""
+  $sid = [regex]::Match($flat, "multi_sids=([^;]+)").Groups[1].Value
+  $uid = ($sid -split ":")[0]
+  if ($uid -match "^\d{5,}$") {
+    Write-Host "Cookie 有效，账号标识 $uid" -ForegroundColor Green
+  } else {
+    Write-Host "multi_sids 里没有数字 uid，检查是否复制了整段" -ForegroundColor Red
+  }
+}
+```
+
+**第 3 步 · 填到表单**。粘进「网页 Cookie（整段）」，其余保持默认即可。
+
+> 每日 200 额度，周一 400；赠送额度 30 天有效，漏领不补。
+> 签到是否成功只看上游返回的 `checked_in: true` —— 接口回 `code: 0` 但没这个字段时，签到台会报「等待」而不是「成功」。
+
+> 若日志一直是 `campaign not found`，先在「工具配置」把「身份参数组合」从「工作端」切到「客户端」再试一轮；
+> 两边都报，才说明是活动换季或 Worker 出口 IP 被拦。
