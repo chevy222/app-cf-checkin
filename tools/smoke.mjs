@@ -5345,6 +5345,12 @@ test("[有默认值的字段：界面预填且留空提交不报错]", async () 
       assert.equal(values[field.key], undefined, `「${field.label}」编辑留空应保持原值，而不是回落到默认值`);
       continue;
     }
+    // 可选字段（豆包的「活动组代码」）留空 = 清空，不写默认值；
+    // 执行侧对空值有 `|| 默认值` 的兜底，所以"不保存也能跑"仍然成立。
+    if (!field.required) {
+      assert.equal(values[field.key], "", `「${field.label}」是可选字段，留空应清空而不是写默认值`);
+      continue;
+    }
     assert.equal(String(values[field.key]), String(field.default), `留空后没有回落到默认值`);
   }
 });
@@ -6042,4 +6048,39 @@ test("[doubao] 到期时间从 LARK_SUITE_ACCESS_TOKEN 的 exp 解出，解不�
   const found = findTool("doubao").uidOf({ cookie: `LARK_SUITE_ACCESS_TOKEN=${token}` });
   assert.deepEqual(found, { uid: "99887766", cred: { expiresAt: String(exp) } });
   assert.equal(findTool("doubao").uidOf({ cookie: "a=1", uid: "manual" }), "manual");
+});
+
+test("[doubao] 没保存过工具配置也能跑：默认值直接生效", async () => {
+  const kv = fakeKv();
+  seedDoubao(kv);
+  kv.store.delete("v1:tool:doubao");
+  let detailCalls = 0;
+  const stub = stubUpstream({
+    "POST /alice/ug/campaign/v3/detail/": () => ({
+      payload: detailCalls++ === 0 ? doubaoDetail({ checked: false }) : doubaoDetail({ checked: true, total: 400, days: 4 }),
+    }),
+    "POST /alice/ug/campaign/landing/report": { payload: { code: 0 } },
+    "POST /alice/ug/campaign/landing/checkin": { payload: doubaoSign({ continuous_days: 4 }) },
+  });
+  try {
+    const { summary } = await doubaoTick(kv);
+    const view = doubaoView(summary);
+    assert.equal(view.status, "claimed", "空配置要按 work + 默认活动组跑，不该报配置未完成");
+    assert.equal(view.credits, 200);
+    const q = new URLSearchParams(stub.seen[0].query);
+    assert.equal(q.get("aid"), "497858", "没保存配置时也要落到默认的 work 身份");
+    assert.equal(JSON.parse(stub.seen[0].body).campaign_group_code, "pc_incentive_task_mvp_v3");
+  } finally { stub.restore(); }
+});
+
+test("[doubao] cron 侧：空配置不再把整个工具跳过", async () => {
+  const kv = fakeKv();
+  seedDoubao(kv);
+  kv.store.delete("v1:tool:doubao");
+  const stub = stubUpstream({ "POST /alice/ug/campaign/v3/detail/": { payload: doubaoDetail({ checked: true }) } });
+  try {
+    const { summary } = await tickWith(kv, [findTool("doubao")], 45, cst(10));
+    assert.equal(planOf(summary, "doubao").skipped, undefined, "空配置不该进 skipped");
+    assert.equal(doubaoView(summary).status, "already");
+  } finally { stub.restore(); }
 });

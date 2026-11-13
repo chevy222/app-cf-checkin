@@ -41,22 +41,22 @@ export default {
       key: "profile",
       label: "身份参数组合",
       type: "select",
-      required: true,
+      // 不设 required：这两项都有代码内的默认值，要求"先保存一次配置"才肯跑，
+      // 只会让刚加进来的工具在 cron 里静默空转（报缺项的那条文案还说是配置没填）。
       default: "work",
       options: [
         { value: "work", label: "工作端（aid=497858，免签名，detail 已实测）" },
         { value: "client", label: "客户端（aid=1044603，checkin 已实测）" },
       ],
-      help: "默认已预填，不用动。两套都来自本机成功抓包：默认的「工作端」在 2026-10-21 实测 detail 返回 code:0；"
+      help: "默认已预填，不用动（配置不保存也按默认值跑）。两套都来自本机成功抓包：默认的「工作端」在 2026-10-21 实测 detail 返回 code:0；"
         + "若宿主机出口 IP 被上游按另一套活动拦截，切到「客户端」再试一轮。",
     },
     {
       key: "campaignGroup",
       label: "活动组代码",
       type: "text",
-      required: true,
       default: GROUP_FALLBACK,
-      help: "已预填当前值，通常不用动。上游换季时会返回 code:2 campaign not found，"
+      help: "已预填当前值，通常不用动（留空也回落到这个默认值）。上游换季时会返回 code:2 campaign not found，"
         + "届时把这个值改成新的（工具也会尝试用 launch 自动发现一次）。",
     },
     {
