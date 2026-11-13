@@ -5199,14 +5199,14 @@ test("[图标内联在 data URI 里，且必须是 PNG", async () => {
 
   // 每家都要有图标，且体积不许爆炸 —— 图标是**每个页面**都要付的，
   // 256×256 的原图会让每页胖 50 KB（qoder 那张 base64 实测就有 50 KB）。
-  // 总预算从 4 家时的 20KB 提到 21.4KB：豆包是官方位图头像（不是扁平原生图标），
-  // 只有 10 色会在 22px 下糊成色块，取 64 色（与 69 云同规模）才够；单个仍限 8KB。
+  // 豆包是官方位图头像（不是扁平原生图标）：10 色会糊成色块，64 色仍有调色板痕迹，
+  // 按要求上 RGBA 真彩后单图 11838 字符，故单个上限 8K→13K、总预算 21.4K→31K。
   for (const tool of TOOLS) {
     assert.ok(ICONS[tool.id], `${tool.name} 没有图标`);
-    assert.ok(ICONS[tool.id].length < 8000, `${tool.name} 的图标 base64 有 ${ICONS[tool.id].length} 字符，太大了`);
+    assert.ok(ICONS[tool.id].length < 13000, `${tool.name} 的图标 base64 有 ${ICONS[tool.id].length} 字符，太大了`);
   }
   const total = Object.values(ICONS).reduce((s, x) => s + x.length, 0);
-  assert.ok(total < 21400, `五个图标合计 ${total} 字符，超出预算`);
+  assert.ok(total < 31000, `五个图标合计 ${total} 字符，超出预算`);
 
   // 没登记图标的工具回落到空串而不是破图（图标是可选字段，加新工具不必急着配图）
   assert.equal(iconImg({ id: "nope" }), "");
