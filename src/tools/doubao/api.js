@@ -10,13 +10,11 @@ import { truncate } from "../../core/text.js";
 // 出口只有一个域名。不要加"换 host 重试"的循环 —— 换了就不是同一套登录态了。
 const HOST = "www.doubao.com";
 const BASE = `https://${HOST}`;
-const PATH_LAUNCH = "/alice/user/launch";
-const PATH_DETAIL = "/alice/ug/campaign/v3/detail/";
 const PATH_REPORT = "/alice/ug/campaign/landing/report";
 const PATH_CHECKIN = "/alice/ug/campaign/landing/checkin";
 
 // 两套身份参数（aid + device_platform 组合）都来自实证抓包，不是猜的：
-//   · work   —— 豆包工作桌面端的 detail 抓包（2026-10-21 本机，code:0 返回完整任务列表）
+//   · work   —— 2026-11-13 线上 trace 里 checkin 回 code:0（idempotent，同一套参数）
 //   · client —— 同一个账号的 checkin 抓包（2026-10-23 本机，code:0 领到 200 额度）
 // 两套的 aid 不同，服务端按 aid 决定下发哪套活动配置。历史上 Worker 上报
 // "campaign not found" 时没有条件区分"参数用错"与"活动换季"，
@@ -263,48 +261,6 @@ export function classify(result) {
   return { kind: "error", code, message };
 }
 
-const dataOf = (payload) => (payload && typeof payload === "object" ? payload.data : null);
-
-// 只读预检。返回的 daily 是"今天到底签没签"的唯一判据：
-//   checked_in_today 优先（上游在 daily_checkin 里明说），
-//   task_status===3 兜底（老版本响应没有 checked_in_today 字段）。
-export async function readDetail(ctx, group = DEFAULT_GROUP) {
-  const result = await call(ctx, { path: PATH_DETAIL, body: { campaign_group_code: group } });
-  const verdict = classify(result);
-  if (verdict.kind !== "ok") return { ...verdict, group };
-
-  const data = dataOf(result.payload);
-  if (!data || typeof data !== "object") {
-    return { kind: "error", code: verdict.code, message: "detail 响应里没有 data 对象", group };
-  }
-  const tasks = Array.isArray(data.tasks) ? data.tasks : [];
-  const task = tasks.find((item) => item && item.campaign_code === "daily_signin") || null;
-  const daily = task && task.daily_checkin && typeof task.daily_checkin === "object" ? task.daily_checkin : {};
-  const total = Number(data.progress && data.progress.total_amount);
-  return {
-    kind: "ok",
-    code: verdict.code,
-    message: verdict.message,
-    group,
-    hasDaily: !!task,
-    taskStatus: Number(task && task.task_status),
-    checkedInToday: daily.checked_in_today === true || Number(task && task.task_status) === 3,
-    continuousDays: Number(daily.continuous_days),
-    totalAmount: Number.isFinite(total) ? total : null,
-  };
-}
-
-// launch 只在 detail 报"活动不存在"时才调：用来发现换季后的新活动组。
-// 响应结构没有取证样本，所以只做一件事 —— 从原文里捞出 pc_incentive_* 候选，
-// 再拿它去 detail 复核；复核不过就当没发现，绝不把猜到的名字当事实写进消息。
-export async function discoverGroup(ctx) {
-  const result = await call(ctx, { path: PATH_LAUNCH, body: {} });
-  if (classify(result).kind !== "ok") return "";
-  const text = JSON.stringify(result.payload || {});
-  const found = [...text.matchAll(/pc_incentive_[A-Za-z0-9_]+/g)].map((match) => match[0]);
-  return found.find((code) => code !== DEFAULT_GROUP) || "";
-}
-
 // 落地页事件上报。纯 best-effort：抓包里它在 checkin 之前，
 // 但没有任何证据表明缺了它签到会失败；失败也不该让整轮变红。
 export async function reportLanding(ctx) {
@@ -318,6 +274,8 @@ export async function reportLanding(ctx) {
     return false;
   }
 }
+
+const dataOf = (payload) => (payload && typeof payload === "object" ? payload.data : null);
 
 // 签到本体。判据只看 data.checked_in：
 //   · idempotent:true —— 今天早些时候已经签过，这次是幂等重放，不算新领取；

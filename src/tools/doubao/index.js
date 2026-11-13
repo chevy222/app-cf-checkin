@@ -2,11 +2,17 @@ import * as api from "./api.js";
 
 // 豆包工作（doubao.com）签到工具。
 //
-// 流程刻意做成"预检 → 上报 → 签到 → 复核"，而不是"直接打签到接口"：
-//   · 预检（detail）先看今天签没签，已签就一次请求收工，不发多余的写请求；
-//   · 复核再把上游的 checked_in 落到前台，避免"请求发出去了"被当成"额度到账了"。
+// 流程只有两步：上报落地页事件 → 打签到接口。
 //
-// 这家有一条与另外四家都不同的硬约束：**没有 refresh_token 自动续期**。
+// 不做 detail 预检。2026-11-13 线上 trace 实测：detail 恒回 code:2 campaign not found，
+// 而同一个号、同一套参数下 checkin 正常回 checked_in:true。预检不但白花一次请求，
+// 还会把"这个接口已下线"误报成"活动换季"，再触发一次 180KB 的 launch 启动配置。
+//
+// 成功判据完全落在 checkin 的 data.checked_in 上：
+//   checked_in:true + idempotent:false → 本次真的签上
+//   checked_in:true + idempotent:true  → 今天早就签过（幂等重放，不重复记额度）
+//
+// 这家有一条与另外几家都不同的硬约束：**没有 refresh_token 自动续期**。
 // Cookie 里的 LARK_SUITE_ACCESS_TOKEN 大约 5–6 天就过期，过期只能人工重抓。
 // 所以凭据里放了一个只读的「到期时间」，并且 401/710012001 一律报 login_required，
 // 不重试、不吞掉 —— 让它在卡片上一直红着，比每天安静地失败要好。
@@ -14,12 +20,11 @@ import * as api from "./api.js";
 // 上游方言（翻成内核状态）：
 //   code:0 + data.checked_in=true + idempotent:false → claimed（本次新领到）
 //   code:0 + data.checked_in=true + idempotent:true  → already（今天早就签过）
-//   detail daily_checkin.checked_in_today=true       → already（预检直接收工）
 //   710012001 / HTTP 401 / 403                       → login_required（不重试）
 //   710010702                                        → pending（今天还没开门，换窗口再来）
 //   code:2 / campaign not found                      → inactive（活动换季，要改配置）
 //   710022004 / HTTP 429                             → rate_limited
-//   HTTP 408 / 5xx / 网络失败                         → waiting（请求可能已生效，下一轮复核）
+//   HTTP 408 / 5xx / 网络失败                         → waiting（请求可能已生效，下一轮再试）
 //
 // 一个反复踩过的坑：这些"看起来像失败"的码不能用 error 表达。
 // error 在界面上是红条（NEEDS_ACTION），而 710010702 每天都会出现；
@@ -45,10 +50,10 @@ export default {
       // 只会让刚加进来的工具在 cron 里静默空转（报缺项的那条文案还说是配置没填）。
       default: "work",
       options: [
-        { value: "work", label: "工作端（aid=497858，免签名，detail 已实测）" },
+        { value: "work", label: "工作端（aid=497858，免签名，线上 checkin 已实测）" },
         { value: "client", label: "客户端（aid=1044603，checkin 已实测）" },
       ],
-      help: "默认已预填，不用动（配置不保存也按默认值跑）。两套都来自本机成功抓包：默认的「工作端」在 2026-10-21 实测 detail 返回 code:0；"
+      help: "默认已预填，不用动（配置不保存也按默认值跑）。默认的「工作端」在 2026-11-13 线上实测 checkin 返回 code:0；"
         + "若宿主机出口 IP 被上游按另一套活动拦截，切到「客户端」再试一轮。",
     },
     {
@@ -57,7 +62,7 @@ export default {
       type: "text",
       default: GROUP_FALLBACK,
       help: "已预填当前值，通常不用动（留空也回落到这个默认值）。上游换季时会返回 code:2 campaign not found，"
-        + "届时把这个值改成新的（工具也会尝试用 launch 自动发现一次）。",
+        + "届时把这个值改成新的（工具不再自动猜组名）。",
     },
     {
       key: "deviceId",
@@ -142,85 +147,20 @@ export default {
 
   hosts: api.doubaoHosts,
 
-  // 最坏情况：detail 1 + launch 1 + detail 1 + report 1 + checkin 1 + 复核 detail 1 = 6。
-  // 声明 8 而不是 6：这家的请求形状还在实测期，多留两次重试余量，
-  // 免得"预检换季 → 发现新组 → 复核"这条路径被预算判成装不下、整轮顺延。
+  // 最坏情况：report 1 + checkin 1 = 2。声明 4 而不是 2：
+  // 留两次余量给"签名参数不对、上游 5xx、下一轮再试"这类需要重跑的场景。
   steps: [
     {
       id: "checkin",
       label: "每日签到",
-      cost: 8,
+      cost: 4,
       async run(ctx) {
         const group = String(ctx.config.campaignGroup || "").trim() || GROUP_FALLBACK;
-        const notes = [];
 
-        let detail = await api.readDetail(ctx, group);
-
-        if (detail.kind === "login") {
-          return {
-            status: "login_required",
-            message: `登录态已失效（${detail.message || "401/710012001"}）：请重新抓取完整 Cookie`,
-            credits: 0,
-          };
-        }
-        if (detail.kind === "rate") {
-          return { status: "rate_limited", message: `预检被限流：${detail.message || "429"}`, credits: 0 };
-        }
-        if (detail.kind === "pending") {
-          return {
-            status: "pending",
-            message: "今日签到尚未开放（710010702）：上游按自然日分批开窗，下一轮再来",
-            credits: 0,
-          };
-        }
-        if (detail.kind === "risk") {
-          return {
-            status: "error",
-            message: `预检被上游判定为人机验证/风控：${detail.message || "无详情"}`
-              + "（Worker 出口 IP 可能受限，这不是凭据问题）",
-            credits: 0,
-          };
-        }
-
-        if (detail.kind === "notfound") {
-          // 活动组换季：先用 launch 找一次新组。找到也必须用 detail 复核过才采信，
-          // 不能拿"原文里捞出来的字符串"当事实。
-          const discovered = await api.discoverGroup(ctx);
-          if (discovered) {
-            const retry = await api.readDetail(ctx, discovered);
-            if (retry.kind === "ok") {
-              notes.push(`活动组已换季：${group} → ${discovered}`);
-              detail = retry;
-            } else {
-              notes.push(`发现候选活动组 ${discovered}，但复核未通过`);
-            }
-          } else {
-            notes.push(`活动组 ${group} 报 campaign not found（可能是换季），仍尝试签到`);
-          }
-        } else if (detail.kind !== "ok") {
-          notes.push(`预检未完成（${detail.kind}: ${detail.message || "无详情"}），直接尝试签到`);
-        } else if (!detail.hasDaily) {
-          notes.push(`活动组 ${group} 里没有 daily_signin 任务`);
-        }
-
-        // 已签的判定放在换季复核之后：launch 找到的新组可能今天已经签过，
-        // 这一步要能看见它，否则会白补一次幂等 checkin。
-        if (detail.kind === "ok" && detail.checkedInToday) {
-          const extras = [
-            detail.continuousDays ? `连续 ${detail.continuousDays} 天` : "",
-            detail.totalAmount !== null ? `累计 ${detail.totalAmount} 额度` : "",
-          ].filter(Boolean).join("，");
-          return {
-            status: "already",
-            message: `今日已签到${extras ? `（${extras}）` : ""}，没有重复发签到请求`,
-            credits: 0,
-          };
-        }
-
-        // 预检通过且今天没签 → 补一条落地页事件。best-effort，失败不影响后面。
+        // 落地页事件是 best-effort，失败不影响签到
         await api.reportLanding(ctx);
 
-        const claim = await api.checkin(ctx, detail.kind === "ok" ? detail.group : group);
+        const claim = await api.checkin(ctx, group);
 
         if (claim.kind === "login") {
           return {
@@ -255,18 +195,18 @@ export default {
           };
         }
         if (claim.kind === "transient") {
-          // 超时不等于失败：签到是写请求，很可能已经在服务端生效了。
+          // 超时不等于失败：签到是写请求，可能已经在服务端生效了。
           // 报 error 会让人立刻去重抓 Cookie，报 waiting 才是这儿的真相。
           return {
             status: "waiting",
-            message: "签到请求超时或上游 5xx：可能已经在服务端生效，下一轮用预检复核",
+            message: "签到请求超时或上游 5xx：可能已经在服务端生效，下一轮再看",
             credits: 0,
           };
         }
         if (claim.kind === "unconfirmed") {
           return {
             status: "waiting",
-            message: `${claim.message || "签到未被确认"}：不当作成功，下一轮再复核`,
+            message: `${claim.message || "签到未被确认"}：不当作成功，下一轮再试`,
             credits: 0,
           };
         }
@@ -283,18 +223,6 @@ export default {
           };
         }
 
-        // 到这里才是"本次真的签上了"。复核只是补证：detail 偶发不可用时照样算成功，
-        // 因为 checkin 的响应本身就是服务端对"今天已签"的直接陈述。
-        let verified = "";
-        try {
-          const recheck = await api.readDetail(ctx, claim.scene);
-          if (recheck.kind === "ok" && recheck.checkedInToday) {
-            verified = recheck.totalAmount !== null ? `，复核已签，累计 ${recheck.totalAmount} 额度` : "，复核已签";
-          } else if (recheck.kind === "ok") {
-            verified = "（复核时 detail 仍显示未签，可能有延迟）";
-          }
-        } catch { /* 复核失败不影响已经拿到的成功应答 */ }
-
         const extras = [
           claim.rewardAmount ? `+${claim.rewardAmount} 额度` : "本次到账 0",
           claim.continuousDays ? `连续 ${claim.continuousDays} 天` : "",
@@ -303,44 +231,41 @@ export default {
 
         return {
           status: "claimed",
-          message: `签到成功：${extras}${verified}${notes.length ? `；${notes.join("；")}` : ""}`,
+          message: `签到成功：${extras}`,
           credits: claim.rewardAmount,
         };
       },
     },
   ],
 
-  // 「测试」按钮：只读 detail，一次签到都不发。
+  // 「测试」按钮：只验凭据格式与到期时间，一次请求都不发（detail 已下线）。
   async validate(ctx) {
-    const group = String(ctx.config.campaignGroup || "").trim() || GROUP_FALLBACK;
-    const detail = await api.readDetail(ctx, group);
-
-    if (detail.kind === "login") {
-      return { status: "login_required", message: `登录态已失效：${detail.message || "401/710012001"}，请重新抓取完整 Cookie` };
-    }
-    if (detail.kind === "rate") return { status: "rate_limited", message: `预检被限流：${detail.message || "429"}` };
-    if (detail.kind === "pending") {
-      return { status: "pending", message: "登录态有效，但今天还没开放（710010702）：属于正常现象" };
-    }
-    if (detail.kind === "notfound") {
+    const cred = (ctx.account && ctx.account.cred) || {};
+    const uid = api.uidFromCookie(cred);
+    if (!uid) {
       return {
-        status: "inactive",
-        message: `活动组 ${group} 报 campaign not found：可能已换季，或这个号不在投放范围`,
+        status: "error",
+        message: "Cookie 里解不出账号标识：multi_sids 与 LARK_SUITE_ACCESS_TOKEN 都没有。"
+          + "请从请求头整段复制，不要手工删字段",
+        credits: 0,
       };
     }
-    if (detail.kind === "risk") {
-      return { status: "error", message: `被判定为人机验证/风控：${detail.message || "无详情"}（不是凭据问题）` };
+    const expiresAt = api.expiresAtFromCookie(cred);
+    if (expiresAt > 0 && expiresAt <= ctx.now) {
+      return {
+        status: "login_required",
+        message: "LARK_SUITE_ACCESS_TOKEN 已过期，请重新抓取整段 Cookie",
+        credits: 0,
+      };
     }
-    if (detail.kind !== "ok") return { status: "error", message: `预检失败：${detail.message || "未知响应"}` };
-
-    if (!detail.hasDaily) {
-      return { status: "inactive", message: "登录态有效，但活动组里没有每日签到任务" };
-    }
-    const bits = [
-      detail.checkedInToday ? "今日已签到" : "今日尚未签到",
-      detail.continuousDays ? `连续 ${detail.continuousDays} 天` : "",
-      detail.totalAmount !== null ? `累计 ${detail.totalAmount} 额度` : "",
-    ].filter(Boolean).join("，");
-    return { status: "ok", message: `登录态有效：${bits}` };
+    const tail = expiresAt > 0
+      ? `LARK 令牌还剩 ${Math.ceil((expiresAt - ctx.now) / 86400)} 天`
+      : "Cookie 里没有 LARK_SUITE_ACCESS_TOKEN，判断不了到期时间";
+    // 豆包没有可靠的只读接口（detail 已下线），所以「测试」只验凭据格式与到期时间。
+    // 真实登录态只能靠一次 checkin 来回答 —— 把这句话写明，比伪装成"已连通"要好。
+    return {
+      status: "ok",
+      message: `凭据格式有效：账号 ${uid}，${tail}。豆包没有只读校验接口，真实登录态请点「执行」跑一次签到验证`,
+    };
   },
 };

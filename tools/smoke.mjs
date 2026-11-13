@@ -5808,9 +5808,8 @@ test("[trace] 没有记录的运行给一句实话，不伪造空记录", async 
 });
 
 // ── 豆包工作 ────────────────────────────────────────────────────────
-// 这一家的成功只有一条判据：checkin 响应里的 data.checked_in===true。
-// code:0 只代表"请求被受理"，重复签到也回 code:0 —— 把 code:0 当成功，
-// 等于把"今天早就签过"记成"刚领到 200"。下面每条用例钉一种上游方言。
+// 2026-11-13 线上 trace 之后，流程只剩 report + checkin：
+// detail 恒回 code:2，预检与换季发现都已删除。成功判据只有 checkin 的 data.checked_in。
 
 function seedDoubao(kv, uid = "1234567890", { cookie } = {}) {
   kv.store.set("v1:tool:doubao", JSON.stringify({ profile: "work", campaignGroup: "pc_incentive_task_mvp_v3" }));
@@ -5823,18 +5822,6 @@ function seedDoubao(kv, uid = "1234567890", { cookie } = {}) {
   return uid;
 }
 
-const doubaoDetail = ({ checked = false, total = 200, days = 3 } = {}) => ({
-  code: 0, msg: "",
-  data: {
-    progress: { total_amount: total },
-    tasks: [{
-      campaign_code: "daily_signin",
-      task_status: checked ? 3 : 1,
-      daily_checkin: { checked_in_today: checked, continuous_days: days },
-    }],
-  },
-});
-
 const doubaoSign = (data = {}) => ({
   code: 0, msg: "",
   data: {
@@ -5844,73 +5831,72 @@ const doubaoSign = (data = {}) => ({
   },
 });
 
+const doubaoReport = () => ({ payload: { code: 0, data: null, msg: "", message: "" } });
 const doubaoTick = (kv, now = cst(10)) => tickWith(kv, [findTool("doubao")], 45, now);
 const doubaoView = (summary) => planOf(summary, "doubao").accounts[0];
 
-test("[doubao] 请求形状：POST + 公共参数在 query + 完整 Cookie 走请求头", async () => {
+test("[doubao] 请求形状：只有 report + checkin，公共参数在 query，Cookie 走请求头", async () => {
   const kv = fakeKv();
   seedDoubao(kv);
-  const stub = stubUpstream({ "POST /alice/ug/campaign/v3/detail/": { payload: doubaoDetail({ checked: true }) } });
+  const stub = stubUpstream({
+    "POST /alice/ug/campaign/landing/report": doubaoReport(),
+    "POST /alice/ug/campaign/landing/checkin": { payload: doubaoSign() },
+  });
   try {
     await doubaoTick(kv);
-    const req = stub.seen[0];
-    assert.equal(req.method, "POST", "豆包这几个接口都是 POST");
-    assert.equal(req.headers.Cookie, "i18next=zh; multi_sids=1234567890%3Aabcdef012345; sessionid=abcdef012345");
-    assert.equal(req.headers["Content-Type"], "application/json");
-    assert.equal(req.headers.Origin, "https://www.doubao.com");
-    assert.equal(req.headers["Agw-Js-Conv"], "str", "抓包里一直有这个头");
-    assert.match(req.headers["User-Agent"], /SamanthaDoubaoWork/);
-    assert.equal(JSON.parse(req.body).campaign_group_code, "pc_incentive_task_mvp_v3");
-    const q = new URLSearchParams(req.query);
+    assert.equal(stub.seen.length, 2, "现在只有两次请求：report + checkin");
+    const [report, claim] = stub.seen;
+    assert.equal(report.path, "/alice/ug/campaign/landing/report");
+    assert.equal(JSON.parse(report.body).biz_event_name, "check_in");
+    assert.equal(claim.path, "/alice/ug/campaign/landing/checkin");
+    assert.equal(JSON.parse(claim.body).scene, "pc_incentive_task_mvp_v3");
+    assert.ok(!stub.seen.some((r) => r.path.includes("/v3/detail/") || r.path === "/alice/user/launch"),
+      "detail 与 launch 都该彻底消失");
+
+    assert.equal(claim.method, "POST");
+    assert.equal(claim.headers.Cookie, "i18next=zh; multi_sids=1234567890%3Aabcdef012345; sessionid=abcdef012345");
+    assert.equal(claim.headers["Content-Type"], "application/json");
+    assert.equal(claim.headers.Origin, "https://www.doubao.com");
+    assert.equal(claim.headers["Agw-Js-Conv"], "str");
+    assert.match(claim.headers["User-Agent"], /SamanthaDoubaoWork/);
+    const q = new URLSearchParams(claim.query);
     assert.equal(q.get("aid"), "497858", "工作端身份参数：aid 错了会命中另一套活动配置");
     assert.equal(q.get("device_platform"), "web");
     assert.equal(q.get("web_platform"), "work_desktop");
     assert.equal(q.get("pkg_type"), "release_version");
     assert.equal(q.get("use-olympus-account"), "1");
-    // Cookie 是凭据，不能拼进 URL —— URL 会进 trace 的白名单检查之外的那份日志
-    assert.ok(!req.query.includes("sessionid"), "Cookie 不许出现在 query 里");
+    assert.ok(!claim.query.includes("sessionid"), "Cookie 不许出现在 query 里");
   } finally { stub.restore(); }
 });
 
-test("[doubao] 预检已签：一次 detail 就收工，不发 checkin", async () => {
+test("[doubao] 签到成功：claimed + 本次额度，只发两次请求", async () => {
   const kv = fakeKv();
   seedDoubao(kv);
-  const stub = stubUpstream({ "POST /alice/ug/campaign/v3/detail/": { payload: doubaoDetail({ checked: true, total: 400, days: 5 }) } });
-  try {
-    const { summary, budget } = await doubaoTick(kv);
-    const view = doubaoView(summary);
-    assert.equal(view.status, "already");
-    assert.equal(view.credits, 0, "已签不是新领到");
-    assert.match(view.message, /今日已签到/);
-    assert.match(view.message, /连续 5 天/);
-    assert.match(view.message, /累计 400 额度/);
-    assert.equal(stub.seen.filter((r) => r.path.endsWith("/checkin")).length, 0, "已签还打 checkin，等于白送一次写请求");
-    assert.equal(budget.used, 1);
-  } finally { stub.restore(); }
-});
-
-test("[doubao] 签到成功：claimed + 本次额度，随后复核累计额度", async () => {
-  const kv = fakeKv();
-  seedDoubao(kv);
-  let detailCalls = 0;
   const stub = stubUpstream({
-    "POST /alice/ug/campaign/v3/detail/": () => ({
-      payload: detailCalls++ === 0 ? doubaoDetail({ checked: false, total: 200 }) : doubaoDetail({ checked: true, total: 400, days: 4 }),
-    }),
-    "POST /alice/ug/campaign/landing/report": { payload: { code: 0 } },
+    "POST /alice/ug/campaign/landing/report": doubaoReport(),
     "POST /alice/ug/campaign/landing/checkin": { payload: doubaoSign({ continuous_days: 4 }) },
   });
   try {
-    const { summary } = await doubaoTick(kv);
+    const { summary, budget } = await doubaoTick(kv);
     const view = doubaoView(summary);
     assert.equal(view.status, "claimed");
     assert.equal(view.credits, 200, "credits 必须来自 reward_amount");
     assert.match(view.message, /签到成功/);
     assert.match(view.message, /\+200 额度/);
-    assert.match(view.message, /复核已签/);
-    assert.equal(stub.seen.filter((r) => r.path === "/alice/ug/campaign/landing/checkin").length, 1);
-    assert.equal(stub.seen.filter((r) => r.path === "/alice/ug/campaign/v3/detail/").length, 2, "预检 + 复核各一次");
-    assert.equal(stub.seen.filter((r) => r.path === "/alice/ug/campaign/landing/report").length, 1, "落地页事件是 best-effort 的一次");
+    assert.equal(budget.used, 2, "不再有预检与复核");
+  } finally { stub.restore(); }
+});
+
+test("[doubao] report 失败不影响签到（best-effort）", async () => {
+  const kv = fakeKv();
+  seedDoubao(kv);
+  const stub = stubUpstream({
+    "POST /alice/ug/campaign/landing/report": { status: 500, payload: {} },
+    "POST /alice/ug/campaign/landing/checkin": { payload: doubaoSign() },
+  });
+  try {
+    const { summary } = await doubaoTick(kv);
+    assert.equal(doubaoView(summary).status, "claimed", "落地页事件失败只该被忽略，不该拖红整轮");
   } finally { stub.restore(); }
 });
 
@@ -5918,8 +5904,7 @@ test("[doubao] 周一翻倍：reward_amount=400 要原样记进 credits", async 
   const kv = fakeKv();
   seedDoubao(kv);
   const stub = stubUpstream({
-    "POST /alice/ug/campaign/v3/detail/": { payload: doubaoDetail({ checked: false }) },
-    "POST /alice/ug/campaign/landing/report": { payload: { code: 0 } },
+    "POST /alice/ug/campaign/landing/report": doubaoReport(),
     "POST /alice/ug/campaign/landing/checkin": { payload: doubaoSign({ reward_amount: 400, checkin_date: "2026-11-02" }) },
   });
   try {
@@ -5934,8 +5919,7 @@ test("[doubao] idempotent=true：算 already，不重复记额度", async () => 
   const kv = fakeKv();
   seedDoubao(kv);
   const stub = stubUpstream({
-    "POST /alice/ug/campaign/v3/detail/": { payload: doubaoDetail({ checked: false }) },
-    "POST /alice/ug/campaign/landing/report": { payload: { code: 0 } },
+    "POST /alice/ug/campaign/landing/report": doubaoReport(),
     "POST /alice/ug/campaign/landing/checkin": { payload: doubaoSign({ idempotent: true }) },
   });
   try {
@@ -5947,18 +5931,19 @@ test("[doubao] idempotent=true：算 already，不重复记额度", async () => 
   } finally { stub.restore(); }
 });
 
-test("[doubao] 710012001：报 login_required，且不再打后续请求", async () => {
+test("[doubao] 710012001：报 login_required，不重试", async () => {
   const kv = fakeKv();
   seedDoubao(kv);
   const stub = stubUpstream({
-    "POST /alice/ug/campaign/v3/detail/": { payload: { code: 710012001, message: "登录已过期，请重新登录" } },
+    "POST /alice/ug/campaign/landing/report": doubaoReport(),
+    "POST /alice/ug/campaign/landing/checkin": { payload: { code: 710012001, message: "登录已过期，请重新登录" } },
   });
   try {
     const { summary } = await doubaoTick(kv);
     const view = doubaoView(summary);
     assert.equal(view.status, "login_required");
     assert.match(view.message, /重新抓取完整 Cookie/);
-    assert.equal(stub.seen.length, 1, "登录失效后不该再打 report/checkin");
+    assert.equal(stub.seen.filter((r) => r.path.endsWith("/checkin")).length, 1, "不重试");
   } finally { stub.restore(); }
 });
 
@@ -5966,23 +5951,22 @@ test("[doubao] 710010702：报 pending（今天没开门），不是 error", asy
   const kv = fakeKv();
   seedDoubao(kv);
   const stub = stubUpstream({
-    "POST /alice/ug/campaign/v3/detail/": { payload: { code: 710010702, message: "活动尚未开始" } },
+    "POST /alice/ug/campaign/landing/report": doubaoReport(),
+    "POST /alice/ug/campaign/landing/checkin": { payload: { code: 710010702, message: "活动尚未开始" } },
   });
   try {
     const { summary } = await doubaoTick(kv);
     const view = doubaoView(summary);
     assert.equal(view.status, "pending", "未开放是正常等待，染红等于训练用户忽略红条");
-    assert.match(view.message, /尚未开放/);
-    assert.equal(stub.seen.length, 1);
+    assert.match(view.message, /尚未开放|还没开放/);
   } finally { stub.restore(); }
 });
 
-test("[doubao] code:2 campaign not found：报 inactive，并说明是换季/不在范围", async () => {
+test("[doubao] code:2 campaign not found：报 inactive，不再尝试 launch", async () => {
   const kv = fakeKv();
   seedDoubao(kv);
   const stub = stubUpstream({
-    "POST /alice/ug/campaign/v3/detail/": { payload: { code: 2, message: "campaign not found" } },
-    "POST /alice/user/launch": { payload: { code: 0, data: {} } },
+    "POST /alice/ug/campaign/landing/report": doubaoReport(),
     "POST /alice/ug/campaign/landing/checkin": { payload: { code: 2, message: "campaign not found" } },
   });
   try {
@@ -5990,7 +5974,7 @@ test("[doubao] code:2 campaign not found：报 inactive，并说明是换季/不
     const view = doubaoView(summary);
     assert.equal(view.status, "inactive");
     assert.match(view.message, /campaign not found/);
-    assert.match(view.message, /换季/);
+    assert.ok(!stub.seen.some((r) => r.path === "/alice/user/launch"), "launch 已删，不该再被调用");
   } finally { stub.restore(); }
 });
 
@@ -5998,8 +5982,7 @@ test("[doubao] checkin 5xx / 超时：报 waiting（可能已生效），绝不�
   const kv = fakeKv();
   seedDoubao(kv);
   const stub = stubUpstream({
-    "POST /alice/ug/campaign/v3/detail/": { payload: doubaoDetail({ checked: false }) },
-    "POST /alice/ug/campaign/landing/report": { payload: { code: 0 } },
+    "POST /alice/ug/campaign/landing/report": doubaoReport(),
     "POST /alice/ug/campaign/landing/checkin": { status: 502, payload: { code: 0 } },
   });
   try {
@@ -6014,8 +5997,7 @@ test("[doubao] checkin 返回 code:0 但没有 checked_in:true：不当作成功
   const kv = fakeKv();
   seedDoubao(kv);
   const stub = stubUpstream({
-    "POST /alice/ug/campaign/v3/detail/": { payload: doubaoDetail({ checked: false }) },
-    "POST /alice/ug/campaign/landing/report": { payload: { code: 0 } },
+    "POST /alice/ug/campaign/landing/report": doubaoReport(),
     "POST /alice/ug/campaign/landing/checkin": { payload: { code: 0, data: { checked_in: false } } },
   });
   try {
@@ -6042,6 +6024,24 @@ test("[doubao] Cookie 粘贴形态：多行、带 cookie: 前缀都能拼回一�
   assert.equal(normalizeCookie("  Cookie:  a=1  \r\n\r\n b=2 "), "a=1; b=2");
 });
 
+test("[doubao] 「测试」只验凭据格式：能解出 uid / 到期时间，不发明读接口", async () => {
+  const exp = cst(60);
+  const token = mkJwt({ doubao_uid: "99887766", exp });
+  const tool = findTool("doubao");
+  const healthy = await tool.validate({ account: { cred: { cookie: `LARK_SUITE_ACCESS_TOKEN=${token}; sessionid=x` } }, now: cst(0) });
+  assert.equal(healthy.status, "ok");
+  assert.match(healthy.message, /账号 99887766/);
+  assert.match(healthy.message, /还剩 2 天|还剩 3 天/, "60 小时该报 2–3 天");
+  assert.match(healthy.message, /没有只读校验接口/);
+
+  const expired = await tool.validate({ account: { cred: { cookie: `LARK_SUITE_ACCESS_TOKEN=${token}` } }, now: exp + 1 });
+  assert.equal(expired.status, "login_required");
+
+  const unreadable = await tool.validate({ account: { cred: { cookie: "a=1" } }, now: cst(0) });
+  assert.equal(unreadable.status, "error");
+  assert.match(unreadable.message, /解不出账号标识/);
+});
+
 test("[doubao] 到期时间从 LARK_SUITE_ACCESS_TOKEN 的 exp 解出，解不出就不猜", () => {
   const exp = cst(60);
   const token = mkJwt({ doubao_uid: "99887766", exp });
@@ -6054,22 +6054,16 @@ test("[doubao] 没保存过工具配置也能跑：默认值直接生效", async
   const kv = fakeKv();
   seedDoubao(kv);
   kv.store.delete("v1:tool:doubao");
-  let detailCalls = 0;
   const stub = stubUpstream({
-    "POST /alice/ug/campaign/v3/detail/": () => ({
-      payload: detailCalls++ === 0 ? doubaoDetail({ checked: false }) : doubaoDetail({ checked: true, total: 400, days: 4 }),
-    }),
-    "POST /alice/ug/campaign/landing/report": { payload: { code: 0 } },
-    "POST /alice/ug/campaign/landing/checkin": { payload: doubaoSign({ continuous_days: 4 }) },
+    "POST /alice/ug/campaign/landing/report": doubaoReport(),
+    "POST /alice/ug/campaign/landing/checkin": { payload: doubaoSign() },
   });
   try {
     const { summary } = await doubaoTick(kv);
-    const view = doubaoView(summary);
-    assert.equal(view.status, "claimed", "空配置要按 work + 默认活动组跑，不该报配置未完成");
-    assert.equal(view.credits, 200);
-    const q = new URLSearchParams(stub.seen[0].query);
+    assert.equal(doubaoView(summary).status, "claimed", "空配置要按 work + 默认活动组跑");
+    const q = new URLSearchParams(stub.seen[1].query);
     assert.equal(q.get("aid"), "497858", "没保存配置时也要落到默认的 work 身份");
-    assert.equal(JSON.parse(stub.seen[0].body).campaign_group_code, "pc_incentive_task_mvp_v3");
+    assert.equal(JSON.parse(stub.seen[1].body).scene, "pc_incentive_task_mvp_v3");
   } finally { stub.restore(); }
 });
 
@@ -6077,7 +6071,10 @@ test("[doubao] cron 侧：空配置不再把整个工具跳过", async () => {
   const kv = fakeKv();
   seedDoubao(kv);
   kv.store.delete("v1:tool:doubao");
-  const stub = stubUpstream({ "POST /alice/ug/campaign/v3/detail/": { payload: doubaoDetail({ checked: true }) } });
+  const stub = stubUpstream({
+    "POST /alice/ug/campaign/landing/report": doubaoReport(),
+    "POST /alice/ug/campaign/landing/checkin": { payload: doubaoSign({ idempotent: true }) },
+  });
   try {
     const { summary } = await tickWith(kv, [findTool("doubao")], 45, cst(10));
     assert.equal(planOf(summary, "doubao").skipped, undefined, "空配置不该进 skipped");
