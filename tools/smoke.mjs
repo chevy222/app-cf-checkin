@@ -6233,6 +6233,33 @@ test("[doubao] 没保存过工具配置也能跑：默认客户端身份 + 抓�
   } finally { stub.restore(); }
 });
 
+test("[doubao] 旧配置 profile=work：打开配置页自动迁到 client 并保存", async () => {
+  const kv = fakeKv();
+  kv.store.set("v1:tool:doubao", JSON.stringify({
+    profile: "work", campaignGroup: "pc_incentive_task_mvp_v3",
+    deviceId: "1202216710179008", webId: "7699062794213803529",
+  }));
+  const env = envFor(kv);
+  const page = await authed("/tool/doubao/settings", env);
+  assert.equal(page.status, 200);
+  assert.match(page.text, /已自动切换为「客户端」/);
+  assert.ok(page.text.includes('value="client" selected'), "下拉框应选中客户端，而不是旧的工作端");
+  const saved = JSON.parse(kv.store.get("v1:tool:doubao"));
+  assert.equal(saved.profile, "client");
+  assert.equal(saved.profileMigrated, "1");
+  assert.equal(saved.deviceId, "1202216710179008", "迁移只动 profile，不该丢其它配置");
+});
+
+test("[doubao] 已经迁移过、又主动选回 work：不再强制改回 client", async () => {
+  const kv = fakeKv();
+  kv.store.set("v1:tool:doubao", JSON.stringify({ profile: "work", profileMigrated: "1" }));
+  const env = envFor(kv);
+  const page = await authed("/tool/doubao/settings", env);
+  assert.equal(page.status, 200);
+  assert.ok(page.text.includes('value="work" selected'), "用户主动保存的 work 应保持选中");
+  assert.equal(JSON.parse(kv.store.get("v1:tool:doubao")).profile, "work");
+});
+
 test("[doubao] cron 侧：空配置不再把整个工具跳过", async () => {
   const kv = fakeKv();
   seedDoubao(kv);

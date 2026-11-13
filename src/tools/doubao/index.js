@@ -130,6 +130,16 @@ export default {
     },
   ],
 
+  // 一次性迁移：旧版默认是 work，detail 只有 client 能读。已存 work 的配置在打开
+  // 配置页时切成 client，并打上标记；用户之后若主动选回 work，不会被再次改掉。
+  migrateConfig(values) {
+    const current = values && typeof values === "object" ? values : {};
+    if (current.profile === "work" && current.profileMigrated !== "1") {
+      return { ...current, profile: "client", profileMigrated: "1" };
+    }
+    return null;
+  },
+
   uidOf(values) {
     const uid = api.uidFromCookie(values);
     const expiresAt = api.expiresAtFromCookie(values);

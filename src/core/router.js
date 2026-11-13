@@ -301,8 +301,19 @@ async function toolToggle(ctx, tool) {
 }
 
 async function configPage(ctx, tool) {
-  const values = await getJson(requireKv(ctx.env), toolKey(tool.id), {});
-  return htmlRes(renderToolConfig({ pwd: ctx.pwd, tool, values, errors: {}, flash: ctx.flash }));
+  let values = await getJson(requireKv(ctx.env), toolKey(tool.id), {});
+  let flash = ctx.flash;
+  // 旧默认值的迁移必须落在"打开配置页"这一步：只改代码里的 default 不会覆盖已存值，
+  // 页面就会一直显示旧值，和帮助文字自相矛盾。工具自己声明迁移规则，内核不写死具体工具。
+  if (typeof tool.migrateConfig === "function") {
+    const migrated = tool.migrateConfig(values);
+    if (migrated) {
+      values = migrated;
+      await putJson(requireKv(ctx.env), toolKey(tool.id), values);
+      flash = { kind: "info", text: "检测到旧版保存的「工作端」配置，已自动切换为「客户端」并保存；如确需工作端，可再选回后保存。" };
+    }
+  }
+  return htmlRes(renderToolConfig({ pwd: ctx.pwd, tool, values, errors: {}, flash }));
 }
 
 async function configSave(ctx, tool) {
