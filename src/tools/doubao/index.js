@@ -2,11 +2,13 @@ import * as api from "./api.js";
 
 // 豆包工作（doubao.com）签到工具。
 //
-// 流程只有两步：上报落地页事件 → 打签到接口。
+// 流程：detail 只读预检 → 上报落地页事件 → 打签到接口。
 //
-// 不做 detail 预检。2026-11-13 线上 trace 实测：detail 恒回 code:2 campaign not found，
-// 而同一个号、同一套参数下 checkin 正常回 checked_in:true。预检不但白花一次请求，
-// 还会把"这个接口已下线"误报成"活动换季"，再触发一次 180KB 的 launch 启动配置。
+// detail 用客户端身份（aid=1044603）时是活的：2026-11-13 抓包返回 code:0，
+// data.tasks 里的 daily_signin 直接给出 checked_in_today / continuous_days /
+// total_amount。它只用于"今天已签就省掉一次写请求"和展示连续天数，不设闸：
+// detail code:2 只代表这套参数没命中活动组，绝不据此判 inactive（同参数下
+// checkin 仍可能 code:0，线上已实测）。
 //
 // 成功判据完全落在 checkin 的 data.checked_in 上：
 //   checked_in:true + idempotent:false → 本次真的签上
@@ -48,13 +50,13 @@ export default {
       type: "select",
       // 不设 required：这两项都有代码内的默认值，要求"先保存一次配置"才肯跑，
       // 只会让刚加进来的工具在 cron 里静默空转（报缺项的那条文案还说是配置没填）。
-      default: "work",
+      default: "client",
       options: [
-        { value: "work", label: "工作端（aid=497858，免签名，线上 checkin 已实测）" },
-        { value: "client", label: "客户端（aid=1044603，checkin 已实测）" },
+        { value: "client", label: "客户端（aid=1044603，detail + checkin 均已实测）" },
+        { value: "work", label: "工作端（aid=497858，checkin 已实测，detail 不可用）" },
       ],
-      help: "默认已预填，不用动（配置不保存也按默认值跑）。默认的「工作端」在 2026-11-13 线上实测 checkin 返回 code:0；"
-        + "若宿主机出口 IP 被上游按另一套活动拦截，切到「客户端」再试一轮。",
+      help: "默认「客户端」：2026-11-13 抓包里 detail 与 checkin 都回 code:0，是当前唯一能读详情的身份。"
+        + "切回「工作端」后 checkin 仍能跑，但 detail 会回 code:2，只能盲签。",
     },
     {
       key: "campaignGroup",
@@ -66,17 +68,19 @@ export default {
     },
     {
       key: "deviceId",
-      label: "device_id（可选）",
+      label: "设备标识（device_id）",
       type: "text",
-      placeholder: "抓包里的 device_id，留空则不发",
-      help: "同一台设备的值应固定。留空时服务端按其他参数识别，通常也能通过；"
-        + "若切换身份组合后仍报设备不一致，再填这一项。",
+      default: "1202216710179008",
+      placeholder: "抓包里的 device_id",
+      help: "已按 2026-11-13 客户端抓包预填。换机器/换号时改成自己的值；"
+        + "留空则不发送，detail 可能读不到活动，checkin 仍会尝试。",
     },
     {
       key: "webId",
-      label: "web_id（可选）",
+      label: "web_id",
       type: "text",
-      placeholder: "抓包里的 web_id / tea_uuid，留空则不发",
+      default: "7699062794213803529",
+      placeholder: "抓包里的 web_id（tea_uuid 取 device_id）",
     },
     {
       key: "userAgent",
@@ -91,8 +95,8 @@ export default {
       label: "附加查询参数（可选）",
       type: "textarea",
       placeholder: "可直接粘贴抓包 URL 里 ? 之后的一整段",
-      help: "用于补 msToken / a_bogus / fp 等签名参数：同名参数会覆盖默认值。"
-        + "默认的「工作端」链路不需要签名；只有切到「客户端」且被拦时才需要贴。",
+      help: "用于补/换 msToken、a_bogus 等签名参数：同名参数会覆盖内置的抓包默认值。"
+        + "detail 默认会先带抓包签名、失败再自动不带签名重试一次；签名过期时不必手动清空。",
     },
     { key: "timeoutMs", label: "请求超时（毫秒）", type: "text", placeholder: "30000" },
   ],
@@ -147,15 +151,37 @@ export default {
 
   hosts: api.doubaoHosts,
 
-  // 最坏情况：report 1 + checkin 1 = 2。声明 4 而不是 2：
-  // 留两次余量给"签名参数不对、上游 5xx、下一轮再试"这类需要重跑的场景。
+  // 典型 3 次：detail 1 + report 1 + checkin 1；detail 签名回退、签到未确认再复核
+  // 各会多 1 次。声明 5 留余量，单轮预算 45 足够。
   steps: [
     {
       id: "checkin",
       label: "每日签到",
-      cost: 4,
+      cost: 5,
       async run(ctx) {
-        const group = String(ctx.config.campaignGroup || "").trim() || GROUP_FALLBACK;
+        const group = String((ctx.config || {}).campaignGroup || "").trim() || GROUP_FALLBACK;
+
+        // detail 只读预检：登录态失效先报 login_required，今天已签则省掉一次写请求。
+        // detail 的其他失败（code:2 / 5xx / 签名过期）一律不设闸，继续走 checkin。
+        const detail = await api.readDetail(ctx, group);
+        if (detail.kind === "login") {
+          return {
+            status: "login_required",
+            message: `详情读取被拒：登录态已失效（${detail.message || "401/710012001"}），请重新抓取完整 Cookie`,
+            credits: 0,
+          };
+        }
+        if (detail.kind === "ok" && detail.checkedInToday) {
+          const extra = [
+            detail.continuousDays ? `连续 ${detail.continuousDays} 天` : "",
+            detail.totalAmount ? `累计 ${detail.totalAmount} 额度` : "",
+          ].filter(Boolean).join("，");
+          return {
+            status: "already",
+            message: `今日已签到（detail 确认${extra ? `：${extra}` : ""}），不再发签到请求`,
+            credits: 0,
+          };
+        }
 
         // 落地页事件是 best-effort，失败不影响签到
         await api.reportLanding(ctx);
@@ -204,6 +230,17 @@ export default {
           };
         }
         if (claim.kind === "unconfirmed") {
+          // 签到回了 code:0 但没给 checked_in：再用 detail 复核一次。
+          // detail 说已签才算已签，但这次不是"新领取"，额度记 0；detail 也读不到就 waiting。
+          const verify = await api.readDetail(ctx, group);
+          if (verify.kind === "ok" && verify.checkedInToday) {
+            return {
+              status: "already",
+              message: `签到响应未被确认，但 detail 显示今日已签`
+                + `${verify.continuousDays ? `（连续 ${verify.continuousDays} 天）` : ""}；按已签处理，不记额度`,
+              credits: 0,
+            };
+          }
           return {
             status: "waiting",
             message: `${claim.message || "签到未被确认"}：不当作成功，下一轮再试`,
@@ -238,7 +275,8 @@ export default {
     },
   ],
 
-  // 「测试」按钮：只验凭据格式与到期时间，一次请求都不发（detail 已下线）。
+  // 「测试」按钮：先本地验 uid/到期时间，再发一次只读 detail 读今日状态。
+  // detail 失败按原因报，不伪装成"已连通"。
   async validate(ctx) {
     const cred = (ctx.account && ctx.account.cred) || {};
     const uid = api.uidFromCookie(cred);
@@ -261,11 +299,42 @@ export default {
     const tail = expiresAt > 0
       ? `LARK 令牌还剩 ${Math.ceil((expiresAt - ctx.now) / 86400)} 天`
       : "Cookie 里没有 LARK_SUITE_ACCESS_TOKEN，判断不了到期时间";
-    // 豆包没有可靠的只读接口（detail 已下线），所以「测试」只验凭据格式与到期时间。
-    // 真实登录态只能靠一次 checkin 来回答 —— 把这句话写明，比伪装成"已连通"要好。
+
+    // detail 是只读接口，正好拿来当「测试」：既验登录态，也把今日状态带出来。
+    // 它失败不等于凭据不行（签名过期/活动组不对都可能），按失败原因分开报。
+    const group = String((ctx.config || {}).campaignGroup || "").trim() || GROUP_FALLBACK;
+    const detail = await api.readDetail(ctx, group);
+    if (detail.kind === "login") {
+      return {
+        status: "login_required",
+        message: `登录态已失效（${detail.message || "401/710012001"}），请重新抓取整段 Cookie`,
+      };
+    }
+    if (detail.kind === "notfound") {
+      // code:2 只说明这套身份没命中活动组，不能据此断言活动没了 —— 同参数下 checkin 仍可能成功。
+      return {
+        status: "error",
+        message: `detail 回 code:2：活动组 ${group} 在这套身份参数下没读到，请核对「活动组代码」或身份参数；`
+          + "这不代表签到一定失败，点「执行」仍会尝试 checkin",
+      };
+    }
+    if (detail.kind === "ok") {
+      const extra = [
+        detail.checkedInToday ? "今日已签" : "今日未签",
+        detail.continuousDays ? `连续 ${detail.continuousDays} 天` : "",
+        detail.totalAmount ? `累计 ${detail.totalAmount} 额度` : "",
+      ].filter(Boolean).join("，");
+      return {
+        status: "ok",
+        message: `登录态有效：账号 ${uid}，${tail}；${extra}`,
+      };
+    }
+    if (detail.kind === "rate") {
+      return { status: "rate_limited", message: `只读校验被限流：${detail.message || "429"}` };
+    }
     return {
-      status: "ok",
-      message: `凭据格式有效：账号 ${uid}，${tail}。豆包没有只读校验接口，真实登录态请点「执行」跑一次签到验证`,
+      status: "error",
+      message: `只读校验失败：${detail.message || detail.kind || "未知响应"}`,
     };
   },
 };

@@ -12,6 +12,7 @@ const HOST = "www.doubao.com";
 const BASE = `https://${HOST}`;
 const PATH_REPORT = "/alice/ug/campaign/landing/report";
 const PATH_CHECKIN = "/alice/ug/campaign/landing/checkin";
+const PATH_DETAIL = "/alice/ug/campaign/v3/detail/";
 
 // 两套身份参数（aid + device_platform 组合）都来自实证抓包，不是猜的：
 //   · work   —— 2026-11-13 线上 trace 里 checkin 回 code:0（idempotent，同一套参数）
@@ -44,24 +45,37 @@ const PROFILES = {
     doubaoDevicePlatform: "desktop",
     webPlatform: "desktop",
     clientPlatform: "pc_client",
-    pcVersion: "2.33.5",
-    doubaoPcVersion: "2.33.5",
-    runtimeVersion: "3.42.2",
+    pcVersion: "2.36.11",
+    doubaoPcVersion: "2.36.11",
+    runtimeVersion: "3.45.3",
     chromium: "147.0.7727.149",
     channel: "win",
-    uaSuffix: "SamanthaDoubaoWork/2.33.5",
+    uaSuffix: "SamanthaDoubaoWork/2.36.11",
     referer: "https://www.doubao.com/chat/",
   },
 };
 
 const DEFAULT_GROUP = "pc_incentive_task_mvp_v3";
+
+// 2026-11-13 客户端 detail 抓包里的签名参数。它们与当次 URL/Cookie 绑定，
+// 会随会话过期；detail 会先用这份签名、失败后自动退到无签名重试一次
+// （实测这个接口不带 a_bogus/msToken 也能返回 code:0）。
+const DEFAULT_DEVICE_ID = "1202216710179008";
+const DEFAULT_WEB_ID = "7699062794213803529";
+
+const DETAIL_SIGNATURE = {
+  msToken: "E5420j0SNGoEudTNpnBYIyBZ_goDt4DA1pZrhuz6_sGsrxAK6TU4qx-bYqXkJZKvPOpt8yET2psCTzRZy3eScuLXhXdaVRdOUwIjc3rgXMx4DzA1-_psZtxLvE6X5p0CpRHfwuF3hCU8LZwPARSfIlJzhBMp7Fmk",
+  a_bogus: "dy05ge6jQZ/VcdMbYOjZytQVTSO/NPSyAaixRxx5HlG8L7eYt7r6mSecbOTAsMcwQWmTB917GE/wYdDcqW4R3MrkFmkfupXfu059ng0oMqwsG0vQLrj8Su4zFwMN05sql/5GiIU6ZUJ96VVAhHQE/Q-yHKoK5cuBF1xWkZYcN9B6ZzLAE3nePBSkxhiGUH9J",
+};
 const CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
   + "(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
 
 export const doubaoHosts = [HOST];
 export const defaultGroup = DEFAULT_GROUP;
 
-const profileOf = (config) => PROFILES[String(config.profile || "work")] || PROFILES.work;
+// 没保存过配置时也要按客户端身份跑：detail 只有这一套参数能读出活动。
+// 保存过 work 的继续尊重用户选择（work 下 detail 会 code:2，但 checkin 能跑）。
+const profileOf = (config) => PROFILES[String(config.profile || "client")] || PROFILES.client;
 
 const timeoutMs = (config) => {
   const raw = Number(config.timeoutMs);
@@ -129,7 +143,7 @@ export function expiresAtFromCookie(values) {
 const userAgent = (config) => String(config.userAgent || "").trim()
   || `${CHROME_UA} ${profileOf(config).uaSuffix}`;
 
-function queryOf(config) {
+function queryOf(config, { signature = false } = {}) {
   const profile = profileOf(config);
   const params = new URLSearchParams({
     version_code: "20800",
@@ -152,8 +166,9 @@ function queryOf(config) {
   if (profile.clientPlatform) params.set("client_platform", profile.clientPlatform);
   if (profile.chromium) params.set("chromium_version", profile.chromium);
   if (profile.channel) params.set("channel", profile.channel);
-  const deviceId = String(config.deviceId || "").trim();
-  const webId = String(config.webId || "").trim();
+  // undefined = 从未保存过 → 用抓包默认；显式空串 = 用户清空 → 不发。
+  const deviceId = String(config.deviceId === undefined ? DEFAULT_DEVICE_ID : config.deviceId).trim();
+  const webId = String(config.webId === undefined ? DEFAULT_WEB_ID : config.webId).trim();
   if (deviceId) {
     params.set("device_id", deviceId);
     // 客户端里 fp 与 device_id 同源，缺了它有的接口会判"设备不一致"
@@ -161,7 +176,8 @@ function queryOf(config) {
   }
   if (webId) {
     params.set("web_id", webId);
-    params.set("tea_uuid", webId);
+    // 抓包里 tea_uuid 与 device_id 同源（不是 web_id）：两者都填时也按这个口径。
+    params.set("tea_uuid", deviceId || webId);
   }
   // 附加参数整段吃下：允许直接粘贴抓包里的 `...&msToken=...&a_bogus=...`。
   // 同名参数覆盖默认值 —— 用户贴进来的必须是"这次真实请求用的那一份"，
@@ -171,11 +187,18 @@ function queryOf(config) {
     const tail = extra.includes("?") ? extra.slice(extra.indexOf("?") + 1) : extra;
     for (const [key, value] of new URLSearchParams(tail)) if (key) params.set(key, value);
   }
+  // 签名参数只给 detail 用：checkin 不带它们也能跑，带上过期签名反而多一个失败变量。
+  // extraQuery 里贴了新的同名参数时以用户为准，不被默认值覆盖。
+  if (signature) {
+    for (const [key, value] of Object.entries(DETAIL_SIGNATURE)) {
+      if (!params.has(key)) params.set(key, value);
+    }
+  }
   return params;
 }
 
 // 每一次真实请求都只经 ctx.fetch：那里记账、并按 hosts 白名单拒发别的域名
-async function call(ctx, { path, body, referer }) {
+async function call(ctx, { path, body, referer, signature = false }) {
   const config = ctx.config || {};
   const cookie = normalizeCookie(ctx.account && ctx.account.cred && ctx.account.cred.cookie);
   const headers = {
@@ -190,7 +213,7 @@ async function call(ctx, { path, body, referer }) {
   };
   if (cookie) headers.Cookie = cookie;
 
-  const url = `${BASE}${path}?${queryOf(config).toString()}`;
+  const url = `${BASE}${path}?${queryOf(config, { signature }).toString()}`;
   let response;
   try {
     response = await ctx.fetch(url, {
@@ -305,5 +328,49 @@ export async function checkin(ctx, scene = DEFAULT_GROUP) {
     rewardType: String(data.reward_type || ""),
     continuousDays: Number.isFinite(Number(data.continuous_days)) ? Number(data.continuous_days) : 0,
     checkinDate: String(data.checkin_date || ""),
+  };
+}
+
+// 活动详情（只读）。它是"今天签没签、连续几天、累计多少"的一手数据，
+// 但绝不是活动是否在期的判据：code:2 只说明这套身份参数没命中活动组，
+// 不代表 checkin 也会失败（线上实测 detail code:2 时 checkin 仍能 code:0）。
+//
+// 先用抓包签名请求；签名会随会话过期，失败后去掉签名再试一次。
+// 实测这个接口不带 a_bogus/msToken 也能返回 code:0，所以第二次通常才是长期形态。
+export async function readDetail(ctx, group = DEFAULT_GROUP) {
+  const request = (signature) => call(ctx, {
+    path: PATH_DETAIL,
+    body: { campaign_group_code: group },
+    signature,
+  });
+  let result = await request(true);
+  let verdict = classify(result);
+  if (verdict.kind !== "ok" && verdict.kind !== "login") {
+    result = await request(false);
+    verdict = classify(result);
+  }
+  if (verdict.kind !== "ok") {
+    return { kind: verdict.kind, code: verdict.code, message: verdict.message };
+  }
+
+  const data = dataOf(result.payload);
+  const tasks = data && Array.isArray(data.tasks) ? data.tasks : [];
+  const task = tasks.find((item) => item && item.campaign_code === "daily_signin");
+  if (!task) {
+    return { kind: "unconfirmed", message: "活动详情里没有 daily_signin 任务" };
+  }
+  const daily = task.daily_checkin || {};
+  const reward = daily.reward || {};
+  return {
+    kind: "ok",
+    checkedInToday: daily.checked_in_today === true,
+    continuousDays: Number.isFinite(Number(daily.continuous_days)) ? Number(daily.continuous_days) : 0,
+    lastCheckinDate: String(daily.last_checkin_date || ""),
+    rewardAmount: Number.isFinite(Number(reward.reward_amount)) ? Number(reward.reward_amount) : 0,
+    rewardStatus: Number.isFinite(Number(daily.reward_status)) ? Number(daily.reward_status) : 0,
+    totalDays: Number.isFinite(Number(daily.total_days)) ? Number(daily.total_days) : 0,
+    totalAmount: Number.isFinite(Number((data.progress || {}).total_amount))
+      ? Number(data.progress.total_amount) : 0,
+    taskStatus: Number.isFinite(Number(task.task_status)) ? Number(task.task_status) : 0,
   };
 }
